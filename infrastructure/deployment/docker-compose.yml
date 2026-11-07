@@ -1,0 +1,90 @@
+# Development environment for the Kubernetes platform.
+#
+#   Data services only (run API/worker/frontend natively):
+#     docker compose -f infrastructure/deployment/docker-compose.yml up -d
+#
+#   Full stack in containers (API + worker + scheduler):
+#     docker compose -f infrastructure/deployment/docker-compose.yml --profile app up -d --build
+#
+# The management platform deliberately runs OUTSIDE the clusters it manages so a
+# failed cluster never takes the management plane down with it.
+name: kplatform
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: kplatform
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kplatform-dev-only}
+      POSTGRES_DB: kplatform
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kplatform -d kplatform"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    profiles: ["app"]
+    build:
+      context: ../../backend
+      dockerfile: ../infrastructure/containers/backend.Dockerfile
+    env_file: ../../backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://kplatform:${POSTGRES_PASSWORD:-kplatform-dev-only}@postgres:5432/kplatform
+      REDIS_URL: redis://redis:6379/0
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    profiles: ["app"]
+    build:
+      context: ../../backend
+      dockerfile: ../infrastructure/containers/backend.Dockerfile
+    env_file: ../../backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://kplatform:${POSTGRES_PASSWORD:-kplatform-dev-only}@postgres:5432/kplatform
+      REDIS_URL: redis://redis:6379/0
+    command: ["celery", "-A", "app.orchestration.celery_app", "worker", "--loglevel=INFO", "--concurrency=4"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  scheduler:
+    profiles: ["app"]
+    build:
+      context: ../../backend
+      dockerfile: ../infrastructure/containers/backend.Dockerfile
+    env_file: ../../backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://kplatform:${POSTGRES_PASSWORD:-kplatform-dev-only}@postgres:5432/kplatform
+      REDIS_URL: redis://redis:6379/0
+    command: ["celery", "-A", "app.orchestration.celery_app", "beat", "--loglevel=INFO"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+volumes:
+  postgres-data:
+  redis-data:

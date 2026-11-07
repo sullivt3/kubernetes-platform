@@ -1,0 +1,98 @@
+"""Cluster lifecycle workflows. Plans are produced by the cluster's distribution."""
+
+from __future__ import annotations
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.modules.cluster_lifecycle.distributions.base import ClusterPlanInput
+from app.modules.cluster_lifecycle.distributions.registry import distribution_registry
+from app.modules.cluster_lifecycle.models import (
+    Cluster,
+    ClusterLifecycleState,
+    ClusterMachine,
+    MachineMembershipState,
+)
+from app.orchestration.models import Operation, OperationStatus
+from app.orchestration.workflow import OperationTarget, WorkflowDefinition, workflow_registry
+
+CLUSTER_CREATE = "cluster.create"
+CLUSTER_DELETE = "cluster.delete"
+
+
+def _target(p: ClusterPlanInput) -> OperationTarget:
+    return OperationTarget(type="cluster", id=str(p.cluster_id), name=p.cluster_name)
+
+
+def _cluster(session: Session, op: Operation) -> Cluster | None:
+    return session.get(Cluster, ClusterPlanInput.model_validate(op.params).cluster_id)
+
+
+def _set_memberships(session: Session, cluster: Cluster, state: MachineMembershipState) -> None:
+    for membership in session.scalars(select(ClusterMachine).where(ClusterMachine.cluster_id == cluster.id)):
+        membership.membership_state = state
+
+
+def _failure_detail(op: Operation, action: str) -> dict[str, object]:
+    if op.status is OperationStatus.CANCELLED:
+        return {
+            "error": {"code": "cancelled", "message": f"{action} was cancelled"},
+            "operation_id": str(op.id),
+        }
+    return {"error": op.error or {"message": f"{action} failed"}, "operation_id": str(op.id)}
+
+
+def on_create_status(session: Session, op: Operation) -> None:
+    cluster = _cluster(session, op)
+    if cluster is None:
+        return
+    if op.status is OperationStatus.RUNNING:
+        cluster.lifecycle_state = ClusterLifecycleState.PROVISIONING
+        cluster.status_detail = {"operation_id": str(op.id)}
+        _set_memberships(session, cluster, MachineMembershipState.INSTALLING)
+    elif op.status is OperationStatus.SUCCEEDED:
+        cluster.lifecycle_state = ClusterLifecycleState.ACTIVE
+    elif op.status in (OperationStatus.FAILED, OperationStatus.CANCELLED):
+        cluster.lifecycle_state = ClusterLifecycleState.ERROR
+        cluster.status_detail = _failure_detail(op, "Cluster creation")
+        _set_memberships(session, cluster, MachineMembershipState.FAILED)
+
+
+def on_delete_status(session: Session, op: Operation) -> None:
+    cluster = _cluster(session, op)
+    if cluster is None:  # successfully released
+        return
+    if op.status is OperationStatus.RUNNING:
+        cluster.lifecycle_state = ClusterLifecycleState.DELETING
+        _set_memberships(session, cluster, MachineMembershipState.REMOVING)
+    elif op.status in (OperationStatus.FAILED, OperationStatus.CANCELLED):
+        cluster.lifecycle_state = ClusterLifecycleState.ERROR
+        cluster.status_detail = _failure_detail(op, "Cluster deletion")
+
+
+create_workflow = workflow_registry.register(
+    WorkflowDefinition(
+        type=CLUSTER_CREATE,
+        title="Create cluster",
+        description="Prepare machines, install Kubernetes and register the new cluster.",
+        params_model=ClusterPlanInput,
+        plan=lambda p: distribution_registry.get(p.spec.distribution).plan_create(p),
+        target=_target,
+        title_for=lambda p: f"Create cluster {p.cluster_name}",
+        on_status=on_create_status,
+    )
+)
+
+delete_workflow = workflow_registry.register(
+    WorkflowDefinition(
+        type=CLUSTER_DELETE,
+        title="Delete cluster",
+        description="Remove Kubernetes from every node and release the machines.",
+        params_model=ClusterPlanInput,
+        plan=lambda p: distribution_registry.get(p.spec.distribution).plan_delete(p),
+        target=_target,
+        title_for=lambda p: f"Delete cluster {p.cluster_name}",
+        destructive=True,
+        on_status=on_delete_status,
+    )
+)
