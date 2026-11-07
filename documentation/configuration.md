@@ -17,6 +17,8 @@ All settings are validated at startup. Unsafe combinations make the process refu
 | `AUTH_MODE` | `dev` | `dev`: every request runs as a local administrator. **Rejected in staging/production.** `oidc`: planned for Phase 7 (startup fails until implemented). |
 | `OIDC_ISSUER_URL`, `OIDC_AUDIENCE` | — | Required when `AUTH_MODE=oidc`. |
 | `SECRET_ENCRYPTION_KEYS` | — (**required**) | `key_id:fernet_key[,key_id:fernet_key…]`. The first key encrypts new secrets; the others only decrypt. Generate with `python -m app.cli generate-key --key-id k1`. |
+| `DISCOVERY_ALLOW_PUBLIC_RANGES` | `false` | Network discovery only scans private, loopback and link-local addresses unless this is enabled. |
+| `DOCKER_HOST` | system default | Docker daemon used by Local provider connections that do not set `docker_host` themselves. Workers need access to it; access to the Docker daemon is equivalent to root on that host. |
 | `ORCHESTRATION_INLINE` | `false` | Run operations in-process instead of via Celery. **Test only**; rejected in staging/production. |
 | `OPERATION_HEARTBEAT_SECONDS` | `15` | How often a running operation records liveness. |
 | `OPERATION_STALE_AFTER_SECONDS` | `120` | Heartbeat age after which an operation counts as orphaned. |

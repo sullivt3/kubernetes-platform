@@ -98,10 +98,7 @@ class ControlPlaneSpec(NodePoolSpec):
                 raise ValueError("Highly available control planes need an odd member count (3, 5 or 7)")
             if self.load_balancer is LoadBalancerMode.NONE:
                 raise ValueError("Multiple control-plane nodes require a load balancer mode for the API")
-            if (
-                self.load_balancer in (LoadBalancerMode.KUBE_VIP, LoadBalancerMode.EXTERNAL)
-                and not self.endpoint
-            ):
+            if self.load_balancer in (LoadBalancerMode.KUBE_VIP, LoadBalancerMode.EXTERNAL) and not self.endpoint:
                 raise ValueError("A stable API endpoint is required for kube-vip or external load balancing")
         return self
 

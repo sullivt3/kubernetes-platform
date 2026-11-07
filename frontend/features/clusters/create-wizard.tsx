@@ -88,7 +88,9 @@ const INITIAL: WizardState = {
 
 function buildSpec(s: WizardState): ClusterSpecInput {
   const ha = s.cpMachines.length > 1;
-  const options: Record<string, unknown> = { allow_swap: s.allowSwap };
+  // Only explicit choices are sent: the backend fills in defaults (e.g. for container-based machines).
+  const options: Record<string, unknown> = {};
+  if (s.allowSwap) options.allow_swap = true;
   if (s.cpWorkloads !== "auto") options.control_plane_workloads = s.cpWorkloads === "yes";
   if (s.conntrackZero) options.kube_proxy_conntrack_max_per_core = 0;
   if (s.resolvConf.trim()) options.kubelet_resolv_conf = s.resolvConf.trim();
@@ -684,6 +686,11 @@ export function CreateClusterWizard() {
                     </ul>
                   </div>
                 )}
+                {validate.data && validate.data.notes.length > 0 && (
+                  <ul className="space-y-1 rounded-lg border border-sky-500/30 bg-sky-500/5 p-3 text-sm text-sky-200/90">
+                    {validate.data.notes.map((n) => <li key={n}>{n}</li>)}
+                  </ul>
+                )}
                 {validate.data?.valid && (
                   <div className="space-y-3">
                     <p className="flex items-center gap-2 text-sm text-emerald-300"><CheckCircle2 className="size-4" /> Validated against the current inventory. The installation will run these steps:</p>
@@ -697,7 +704,7 @@ export function CreateClusterWizard() {
                     </ol>
                     <p className="text-xs text-muted-foreground">
                       Packages come from pkgs.k8s.io and download.docker.com; images from registry.k8s.io. Nodes need outbound
-                      internet access. Swap is {state.allowSwap ? "left enabled" : "disabled"} on every node.
+                      internet access. Swap is {state.allowSwap || validate.data.notes.some((n) => n.includes("allow_swap")) ? "left enabled" : "disabled"} on every node.
                     </p>
                   </div>
                 )}

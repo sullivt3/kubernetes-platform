@@ -13,7 +13,19 @@ from starlette.concurrency import run_in_threadpool
 from app.api.auth import Authenticator, build_authenticator, get_principal
 from app.api.errors import install_error_handlers
 from app.api.middleware import RequestContextMiddleware
-from app.api.routes import audit, catalog, clusters, credentials, health, machines, operations, system
+from app.api.routes import (
+    audit,
+    catalog,
+    cluster_live,
+    clusters,
+    credentials,
+    health,
+    machines,
+    operations,
+    provider_connections,
+    system,
+    workloads,
+)
 from app.core.config import AuthMode, Settings, get_settings
 from app.core.logging import configure_logging
 from app.db.session import get_session_factory
@@ -71,7 +83,18 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix=settings.api_prefix)
 
     protected = APIRouter(dependencies=[Depends(get_principal)])
-    for module in (system, catalog, operations, credentials, machines, clusters, audit):
+    for module in (
+        system,
+        catalog,
+        operations,
+        credentials,
+        machines,
+        provider_connections,
+        cluster_live,
+        workloads,
+        clusters,
+        audit,
+    ):
         protected.include_router(module.router)
     app.include_router(protected, prefix=settings.api_prefix)
     return app

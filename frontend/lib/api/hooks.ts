@@ -15,7 +15,6 @@ import type {
   MachineRegister,
   Credential,
   CredentialCreate,
-  CredentialDetail,
   DistributionDescriptor,
   OperationDetail,
   OperationLog,
@@ -37,7 +36,6 @@ export const queryKeys = {
   operation: (id: string) => ["operations", "detail", id] as const,
   operationLogs: (id: string) => ["operations", "logs", id] as const,
   credentials: ["credentials"] as const,
-  credential: (id: string) => ["credentials", id] as const,
   audit: (filters: Record<string, unknown>) => ["audit", filters] as const,
   clusters: ["clusters"] as const,
   cluster: (id: string) => ["clusters", id] as const,
@@ -274,14 +272,6 @@ export function useCredentials() {
   return useQuery({
     queryKey: queryKeys.credentials,
     queryFn: () => api.get<Page<Credential>>("/credentials", { limit: 500 }),
-  });
-}
-
-export function useCredential(id: string | null) {
-  return useQuery({
-    queryKey: queryKeys.credential(id ?? ""),
-    queryFn: () => api.get<CredentialDetail>(`/credentials/${id}`),
-    enabled: Boolean(id),
   });
 }
 

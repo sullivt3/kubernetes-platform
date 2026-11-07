@@ -31,6 +31,7 @@ celery_app.conf.update(
     task_default_queue="operations",
     beat_schedule={
         "recover-operations": {"task": "operations.recover", "schedule": 30.0},
+        "probe-clusters": {"task": "clusters.probe", "schedule": 60.0},
     },
     timezone="UTC",
 )
@@ -78,6 +79,18 @@ def recover() -> dict[str, list[str]]:
     if any(summary.values()):
         logger.warning("Operation recovery: %s", summary)
     return summary
+
+
+@celery_app.task(name="clusters.probe")
+def probe_clusters() -> dict[str, int]:
+    """Observe the health of every connected cluster and record it."""
+    from app.core.secrets import get_secret_store
+    from app.db.session import get_session_factory
+    from app.modules.kubernetes.service import probe_clusters as run_probe
+    from app.orchestration.runtime import load_workflows
+
+    load_workflows()
+    return run_probe(get_session_factory(), get_secret_store())
 
 
 # `celery -A app.orchestration.celery_app` looks for `app` or `celery` attributes.

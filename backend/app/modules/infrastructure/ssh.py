@@ -124,9 +124,7 @@ class SshHostExecutor(HostExecutor):
                 observed=host_key_from(exc.key),
             ) from exc
         except paramiko.AuthenticationException as exc:
-            raise HostAccessError(
-                f"Authentication failed for {auth.username}@{endpoint.host}: {exc}"
-            ) from exc
+            raise HostAccessError(f"Authentication failed for {auth.username}@{endpoint.host}: {exc}") from exc
         except (TimeoutError, OSError, paramiko.SSHException) as exc:
             raise HostUnreachableError(f"Cannot connect to {endpoint.host}:{endpoint.port}: {exc}") from exc
 

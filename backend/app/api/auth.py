@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from fastapi import Request
+from starlette.requests import HTTPConnection
 
 from app.core.config import AuthMode, Settings
 from app.core.errors import NotImplementedYetError
@@ -20,7 +20,7 @@ class Authenticator(ABC):
     mode: AuthMode
 
     @abstractmethod
-    def authenticate(self, request: Request) -> Principal: ...
+    def authenticate(self, request: HTTPConnection) -> Principal: ...
 
 
 class DevAuthenticator(Authenticator):
@@ -34,7 +34,7 @@ class DevAuthenticator(Authenticator):
     def __init__(self, principal: Principal) -> None:
         self._principal = principal
 
-    def authenticate(self, request: Request) -> Principal:
+    def authenticate(self, request: HTTPConnection) -> Principal:
         return self._principal
 
 
@@ -43,11 +43,11 @@ def build_authenticator(settings: Settings, dev_principal: Principal | None) -> 
         assert dev_principal is not None
         return DevAuthenticator(dev_principal)
     raise NotImplementedYetError(
-        "AUTH_MODE=oidc is not implemented yet (planned for Phase 7). "
-        "Use AUTH_MODE=dev for local development."
+        "AUTH_MODE=oidc is not implemented yet (planned for Phase 7). Use AUTH_MODE=dev for local development."
     )
 
 
-def get_principal(request: Request) -> Principal:
+def get_principal(request: HTTPConnection) -> Principal:
+    """Resolves the caller for HTTP requests and WebSockets alike."""
     authenticator: Authenticator = request.app.state.authenticator
     return authenticator.authenticate(request)

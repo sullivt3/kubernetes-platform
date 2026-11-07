@@ -52,6 +52,4 @@ def list_audit_events(
         limit=limit,
         offset=offset,
     )
-    return Page(
-        items=[AuditEventOut.model_validate(r) for r in rows], total=total, limit=limit, offset=offset
-    )
+    return Page(items=[AuditEventOut.model_validate(r) for r in rows], total=total, limit=limit, offset=offset)

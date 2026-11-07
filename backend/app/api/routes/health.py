@@ -53,9 +53,7 @@ def check_database() -> ComponentHealth:
             _, latency = _timed(lambda: session.execute(text("SELECT 1")))
             migrations = migration_state(session)
     except Exception as exc:
-        return ComponentHealth(
-            name="database", status="unavailable", message=f"PostgreSQL unreachable: {exc}"
-        )
+        return ComponentHealth(name="database", status="unavailable", message=f"PostgreSQL unreachable: {exc}")
     if not migrations["up_to_date"]:
         return ComponentHealth(
             name="database",
@@ -77,10 +75,7 @@ def check_redis() -> ComponentHealth:
         return ComponentHealth(
             name="redis",
             status="unavailable",
-            message=(
-                "Redis unreachable; operations cannot be queued and live updates fall back to "
-                f"polling ({exc})"
-            ),
+            message=(f"Redis unreachable; operations cannot be queued and live updates fall back to polling ({exc})"),
         )
     finally:
         client.close()
@@ -91,9 +86,7 @@ def check_workers(redis_ok: bool) -> ComponentHealth:
     if get_settings().orchestration_inline:
         return ComponentHealth(name="workers", status="ok", message="Inline execution (test mode)")
     if not redis_ok:
-        return ComponentHealth(
-            name="workers", status="unavailable", message="Cannot query workers without Redis"
-        )
+        return ComponentHealth(name="workers", status="unavailable", message="Cannot query workers without Redis")
     from app.orchestration.celery_app import celery_app
 
     try:

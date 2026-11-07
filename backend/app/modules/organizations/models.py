@@ -28,9 +28,7 @@ class Project(UUIDPrimaryKey, Timestamps, Base):
     __tablename__ = "projects"
     __table_args__ = (UniqueConstraint("organization_id", "slug"),)
 
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("organizations.id", ondelete="RESTRICT"), index=True
-    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), index=True)
     slug: Mapped[str] = mapped_column(String(63))
     name: Mapped[str] = mapped_column(String(255))
 

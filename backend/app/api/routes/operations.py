@@ -110,9 +110,7 @@ def list_operations(
         limit=limit,
         offset=offset,
     )
-    return Page(
-        items=[OperationSummary.model_validate(r) for r in rows], total=total, limit=limit, offset=offset
-    )
+    return Page(items=[OperationSummary.model_validate(r) for r in rows], total=total, limit=limit, offset=offset)
 
 
 @router.get("/{operation_id}", response_model=OperationDetail)
@@ -132,9 +130,7 @@ def get_logs(
     principal: Principal = Depends(get_principal),
     service: OperationService = Depends(get_operation_service),
 ) -> list[LogOut]:
-    return [
-        LogOut.model_validate(r) for r in service.logs(principal, operation_id, after_id=after, limit=limit)
-    ]
+    return [LogOut.model_validate(r) for r in service.logs(principal, operation_id, after_id=after, limit=limit)]
 
 
 @router.post("/{operation_id}/cancel", response_model=OperationDetail)
@@ -214,8 +210,7 @@ def _load_state(principal: Principal, operation_id: uuid.UUID, cursor: int) -> t
         snapshot = OperationDetail.model_validate(op).model_dump_json()
         terminal = op.status.is_terminal
         logs = [
-            LogOut.model_validate(r)
-            for r in service.logs(principal, operation_id, after_id=cursor, limit=LOG_BATCH)
+            LogOut.model_validate(r) for r in service.logs(principal, operation_id, after_id=cursor, limit=LOG_BATCH)
         ]
     return snapshot, logs, terminal
 
@@ -247,9 +242,7 @@ async def stream_operation(
         last_snapshot: str | None = None
         try:
             while True:
-                snapshot, logs, terminal = await run_in_threadpool(
-                    _load_state, principal, operation_id, cursor
-                )
+                snapshot, logs, terminal = await run_in_threadpool(_load_state, principal, operation_id, cursor)
                 for entry in logs:
                     cursor = entry.id
                     yield _sse("log", entry.model_dump_json(), entry.id)
@@ -286,9 +279,7 @@ async def stream_operation(
         "then poll."
     ),
 )
-async def stream_changes(
-    request: Request, principal: Principal = Depends(get_principal)
-) -> StreamingResponse:
+async def stream_changes(request: Request, principal: Principal = Depends(get_principal)) -> StreamingResponse:
     async def events() -> AsyncIterator[str]:
         subscription = await _subscribe(organization_operations_channel(principal.organization_id))
         if subscription is None:
@@ -302,9 +293,7 @@ async def stream_changes(
                 if message is None:
                     yield ": keepalive\n\n"
                     continue
-                data = (
-                    message["data"].decode() if isinstance(message["data"], bytes) else str(message["data"])
-                )
+                data = message["data"].decode() if isinstance(message["data"], bytes) else str(message["data"])
                 yield _sse("change", data)
         finally:
             await _close(subscription)

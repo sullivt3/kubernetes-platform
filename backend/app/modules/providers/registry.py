@@ -23,6 +23,8 @@ class ProviderDescriptor(BaseModel):
     implementation_status: ImplementationStatus
     planned_phase: int | None
     capabilities: list[str]
+    planned_capabilities: list[str]
+    planned_capabilities_phase: int | None
     credential_kinds: list[str]
     credential_required: bool
     config_schema: dict[str, Any]
@@ -81,6 +83,8 @@ class ProviderRegistry:
             implementation_status=cls.implementation_status,
             planned_phase=cls.planned_phase,
             capabilities=sorted(c.value for c in cls.capabilities),
+            planned_capabilities=sorted(c.value for c in cls.planned_capabilities),
+            planned_capabilities_phase=cls.planned_capabilities_phase,
             credential_kinds=sorted(k.value for k in cls.credential_kinds),
             credential_required=cls.credential_required,
             config_schema=cls.config_model.model_json_schema(),

@@ -35,6 +35,7 @@ from app.modules.credentials.service import CredentialService
 from app.modules.infrastructure import facts as facts_mod
 from app.modules.infrastructure.access import connect, run_script, tail
 from app.modules.infrastructure.host_access import HostExecutor
+from app.modules.infrastructure.models import Machine
 from app.orchestration.context import StepContext
 from app.orchestration.workflow import RetryableStepError, StepFailedError
 
@@ -159,15 +160,10 @@ def validate(ctx: StepContext) -> dict[str, Any]:
         result = run_script(executor, facts_mod.detect_script(), sudo=False, timeout_seconds=120)
         facts = facts_mod.parse_facts(result.stdout)
         sudo_ok = executor.run("true", _sudo_opts()).ok
-        failures = [
-            c for c in facts_mod.evaluate(facts, sudo_ok=sudo_ok) if c.status is facts_mod.CheckStatus.FAIL
-        ]
+        failures = [c for c in facts_mod.evaluate(facts, sudo_ok=sudo_ok) if c.status is facts_mod.CheckStatus.FAIL]
         for c in failures:
             problems.append(f"{node.name}: {c.label}: {c.message}")
-        if (
-            node.role == "control_plane"
-            and int(facts.get("cpu_cores") or 0) < facts_mod.MIN_CPUS_CONTROL_PLANE
-        ):
+        if node.role == "control_plane" and int(facts.get("cpu_cores") or 0) < facts_mod.MIN_CPUS_CONTROL_PLANE:
             problems.append(f"{node.name}: control-plane nodes need at least 2 CPUs")
         if facts.get("has_kubelet_conf") == "yes":
             problems.append(
@@ -189,9 +185,7 @@ def validate(ctx: StepContext) -> dict[str, Any]:
     if len(set(ips)) != len(ips):
         problems.append("two or more machines report the same primary IP address")
     if problems:
-        raise StepFailedError(
-            "Machines are not ready for Kubernetes:\n- " + "\n- ".join(problems), code="preflight"
-        )
+        raise StepFailedError("Machines are not ready for Kubernetes:\n- " + "\n- ".join(problems), code="preflight")
     return {"nodes": nodes}
 
 
@@ -260,9 +254,7 @@ def resolve_version(ctx: StepContext) -> dict[str, Any]:
 
     _for_nodes(ctx, [first], run, parallel=False)
     if not resolved.get("version"):
-        raise StepFailedError(
-            "Could not determine the Kubernetes version to install", code="version_unresolved"
-        )
+        raise StepFailedError("Could not determine the Kubernetes version to install", code="version_unresolved")
     ctx.info(f"Kubernetes {requested} resolves to v{resolved['version']}")
     return resolved
 
@@ -346,9 +338,7 @@ def _kubectl(executor: HostExecutor, args: str, *, timeout: float = 120) -> str:
     return result.stdout
 
 
-def _join_material(
-    ctx: StepContext, executor: HostExecutor, *, control_plane: bool
-) -> tuple[str, str | None]:
+def _join_material(ctx: StepContext, executor: HostExecutor, *, control_plane: bool) -> tuple[str, str | None]:
     """Create a fresh bootstrap token (plus a certificate key for control-plane joins) on the first
     control plane."""
     from app.modules.infrastructure.host_access import CommandOptions
@@ -356,9 +346,7 @@ def _join_material(
     token = cfg.generate_bootstrap_token()
     certificate_key = cfg.generate_certificate_key() if control_plane else None
     ctx.redact(token, *([certificate_key] if certificate_key else []))
-    result = executor.run(
-        f"kubeadm token create {token} --ttl 2h", CommandOptions(sudo=True, timeout_seconds=120)
-    )
+    result = executor.run(f"kubeadm token create {token} --ttl 2h", CommandOptions(sudo=True, timeout_seconds=120))
     if not result.ok:
         raise StepFailedError(f"Could not create a join token: {result.stderr.strip()}", code="token_failed")
     if certificate_key:
@@ -464,16 +452,11 @@ def wait_ready(ctx: StepContext) -> dict[str, Any]:
             ready = {
                 n["metadata"]["name"]
                 for n in nodes
-                if any(
-                    c["type"] == "Ready" and c["status"] == "True" for c in n["status"].get("conditions", [])
-                )
+                if any(c["type"] == "Ready" and c["status"] == "True" for c in n["status"].get("conditions", []))
             }
             report = f"{len(ready & expected)}/{len(expected)} nodes Ready"
             if report != last_report:
-                ctx.info(
-                    report
-                    + (f" (waiting for {', '.join(sorted(expected - ready))})" if expected - ready else "")
-                )
+                ctx.info(report + (f" (waiting for {', '.join(sorted(expected - ready))})" if expected - ready else ""))
                 last_report = report
             if expected <= ready:
                 break
@@ -491,9 +474,7 @@ def wait_ready(ctx: StepContext) -> dict[str, Any]:
         ctx.info("Waiting for cluster DNS (CoreDNS)")
         while True:
             ctx.check_cancelled()
-            status = json.loads(_kubectl(executor, "-n kube-system get deployment coredns -o json")).get(
-                "status", {}
-            )
+            status = json.loads(_kubectl(executor, "-n kube-system get deployment coredns -o json")).get("status", {})
             wanted = status.get("replicas") or 0
             if wanted and (status.get("availableReplicas") or 0) >= wanted:
                 ctx.info(f"CoreDNS available ({wanted}/{wanted})")
@@ -550,6 +531,21 @@ def register(ctx: StepContext) -> dict[str, Any]:
             raise StepFailedError("Cluster record was deleted during installation", code="cluster_missing")
         cluster.access_credential_id = credential.id
         cluster.api_endpoint = f"https://{ctx.outputs['init']['api_server_endpoint']}"
+        # Machines whose API port is only reachable through a published endpoint (local
+        # container nodes) get a connection override; the certificate is still verified
+        # against the node's own address.
+        first_cp = session.get(Machine, plan.control_planes[0].machine_id)
+        published = (first_cp.provider_metadata or {}) if first_cp else {}
+        if (
+            not cfg.control_plane_endpoint(plan.spec)
+            and published.get("kube_api_host")
+            and not cluster.api_server_override
+        ):
+            cluster.api_server_override = f"https://{published['kube_api_host']}:{published['kube_api_port']}"
+            cluster.tls_server_name = _ip(ctx, plan.control_planes[0])
+            ctx.info(
+                f"Kubernetes API reachable through {cluster.api_server_override} (TLS name {cluster.tls_server_name})"
+            )
         cluster.kubernetes_version = f"v{_version(ctx)}"
         cluster.lifecycle_state = ClusterLifecycleState.ACTIVE
         cluster.last_contact_at = datetime.now(UTC)
@@ -557,9 +553,7 @@ def register(ctx: StepContext) -> dict[str, Any]:
             "nodes": ctx.outputs.get("wait-ready", {}).get("nodes", []),
             "cni": ctx.outputs.get("cni", {}),
         }
-        for membership in session.scalars(
-            select(ClusterMachine).where(ClusterMachine.cluster_id == plan.cluster_id)
-        ):
+        for membership in session.scalars(select(ClusterMachine).where(ClusterMachine.cluster_id == plan.cluster_id)):
             membership.membership_state = MachineMembershipState.JOINED
         session.commit()
 
@@ -607,8 +601,6 @@ def release(ctx: StepContext) -> dict[str, Any]:
             if credential is not None:
                 session.delete(credential)
         session.delete(cluster)
-    ctx.info(
-        f"Cluster {plan.cluster_name} removed; {len(plan.nodes)} machine(s) released back to the inventory"
-    )
+    ctx.info(f"Cluster {plan.cluster_name} removed; {len(plan.nodes)} machine(s) released back to the inventory")
     ctx.set_result({"cluster": plan.cluster_name, "released_machines": [n.name for n in plan.nodes]})
     return {}

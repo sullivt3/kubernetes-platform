@@ -37,8 +37,10 @@ kubernetes-platform/
 │   │   │   ├── credentials/      encrypted credential storage
 │   │   │   ├── auditing/         append-only audit trail
 │   │   │   ├── providers/        infrastructure provider abstraction + implementations
-│   │   │   ├── infrastructure/   machine inventory + host access (in-guest) interface
-│   │   │   └── cluster_lifecycle/ cluster registration + Kubernetes distribution abstraction
+│   │   │   ├── infrastructure/   machine inventory, provider connections, provisioning, network discovery, host access
+│   │   │   ├── cluster_lifecycle/ cluster registration + Kubernetes distribution abstraction
+│   │   │   ├── kubernetes/       API client, kubeconfig handling, live reads, server-side apply, health probe
+│   │   │   └── workloads/        resource kinds, actions, YAML plan/apply, secrets, logs, terminal bridge
 │   │   ├── orchestration/        operation engine: models, workflow API, executor, dispatch, recovery
 │   │   │   └── workflows/        concrete workflows (system self-check in Phase 0)
 │   │   ├── main.py               application factory
@@ -47,7 +49,7 @@ kubernetes-platform/
 │   └── tests/
 ├── frontend/
 │   ├── app/                      Next.js routes (thin; render feature components)
-│   ├── features/                 dashboard, operations, infrastructure, security, administration
+│   ├── features/                 dashboard, operations, infrastructure, clusters, kubernetes, workloads, security, administration
 │   ├── components/               ui (shadcn), layout (shell), common, providers
 │   └── lib/                      typed API client + hooks, navigation model, formatting
 ├── automation/ansible/           playbooks/roles for OS preparation & Kubernetes install (Phase 3–4)
@@ -66,7 +68,7 @@ kubernetes-platform/
 | `integrations/{ansible,terraform,helm,kubernetes}` not created yet | Empty folders add nothing. They are created with their first implementation. |
 | Installer automation lives with the distribution (`distributions/kubeadm/scripts/*.sh`), not in `automation/ansible` | Ansible cannot use Windows as a control node, and the scripts must ship inside the backend image. See `automation/README.md`. |
 | `frontend/layouts/` merged into `components/layout/` | The App Router owns layouts (`app/layout.tsx`); shell components live with other components. |
-| Planned modules (workloads, networking, storage, monitoring…) not created as empty folders | They are added when implemented. Their navigation entries already exist and show an honest "planned" page. |
+| Planned modules (networking, storage, monitoring…) not created as empty folders | They are added when implemented. Their navigation entries already exist and show an honest "planned" page. |
 
 ## Separation of infrastructure and Kubernetes
 
@@ -75,7 +77,7 @@ Three independent abstractions:
 | Abstraction | Responsibility | Knows about |
 |---|---|---|
 | `InfrastructureProvider` (`modules/providers`) | Machine lifecycle: validate, discover, provision, delete, status, power, network | Its substrate API (Proxmox, EC2…) |
-| `HostExecutor` (`modules/infrastructure/host_access.py`) | In-guest work: run commands, transfer files | SSH (Phase 3) |
+| `HostExecutor` (`modules/infrastructure/host_access.py`) | In-guest work: run commands, transfer files | SSH |
 | `KubernetesDistribution` (`modules/cluster_lifecycle/distributions`) | Turn a `ClusterSpec` into an ordered workflow plan | Kubernetes installation, never a specific provider |
 
 * `Machine` (infrastructure) has no reference to clusters. `ClusterMachine` (cluster_lifecycle) assigns a
@@ -84,6 +86,52 @@ Three independent abstractions:
   Proxmox, existing machines for Kind, an unsupported CNI, or an even-sized HA control plane.
 * Provider-specific code lives only in `modules/providers/implementations/<provider>.py`. Everything else looks
   providers up through `provider_registry`.
+
+### Providers in Phase 3
+
+| Provider | Status | What it does |
+|---|---|---|
+| SSH | Available | Registers existing servers by address. No lifecycle control. |
+| Local (Docker) | Available | Machines are privileged systemd containers (Ubuntu 24.04, OpenSSH, sudo user) on the Docker host the workers use, like Kind nodes. Provision, start/stop/reboot, destroy, discover. |
+| Proxmox VE | Preview | Clones a cloud-init template (full clone), configures CPU/memory/user/SSH key/network, grows the boot disk, starts the VM and reads its IP through the QEMU guest agent. Power, delete, discover, network. |
+| AWS, Azure, GCP | Preview (foundations) | Validate credentials and inventory instances read-only. Provisioning and managed Kubernetes are declared as `planned_capabilities` for Phase 5. |
+| vSphere | Planned | Catalogued only. |
+
+* **Provisioning workflow** (`machine.provision`): create (idempotent) → wait for an address → wait for SSH →
+  connect and pin the host key → inspect. The machine row exists from the start (`requested` →
+  `provisioning` → `ready`), so failures stay visible and can be retried. The provisioning SSH key is a stored
+  credential; only its public key is sent to the provider (cloud-init or the container environment).
+* **Ownership.** `Machine.provisioned` marks machines the platform created; only those can be destroyed
+  (`machine.deprovision`, type-to-confirm). Providers also refuse to touch anything without their own marker:
+  Proxmox VMs carry `managed-by: kubernetes-platform` in their description, local containers a label. A VM or
+  container with the same name that the platform did not create is never adopted, changed or deleted.
+* **Local nodes stay stable across restarts.** Docker re-randomizes ephemeral ports and reassigns container IPs
+  on start, either of which would break SSH access or a Kubernetes node. The provider creates its own network
+  with a free subnet (172.28–31.x.0/24 unless configured) and gives each machine a fixed IP and fixed published
+  ports (SSH and 6443 on 127.0.0.1). The node image is built from `providers/implementations/local_node/` on
+  first use and tagged by content hash.
+* **Container machines and clusters.** `ClusterService.validate` applies `allow_swap`,
+  `kube_proxy_conntrack_max_per_core: 0` and `kubelet_resolv_conf` for container machines unless the user set
+  them, and reports this as a validation note. When the first control plane has a published API endpoint and no
+  load-balancer endpoint is configured, the installer sets the cluster's API server override and TLS server name
+  automatically, so the platform reaches the API through 127.0.0.1 while still verifying the node's certificate.
+* **HTTP and TLS for API providers.** `providers/http.py` is a small urllib3 client with one test seam
+  (`set_transport`). TLS is always verified; Proxmox connections can supply a CA bundle or pin the certificate's
+  SHA-256 fingerprint (how self-signed installations are reached securely). Vendor SDKs are not used: AWS requests
+  are signed with SigV4 (checked against AWS's published test vectors), Azure uses the client-credentials flow and
+  GCP a self-signed service-account JWT.
+* **Testing without the real systems.** Proxmox is exercised against an API simulator (`tests/fake_proxmox.py`),
+  the local provider against a fake Docker engine, the clouds against recorded-style responses. The local provider
+  was additionally verified live: it provisioned a container machine and the kubeadm installer built a working
+  single-node cluster on it.
+
+### Network discovery
+
+`network.discover` probes CIDRs, last-octet ranges or single addresses for SSH: a TCP connect plus reading the
+SSH identification banner, which often names the distribution. No credentials are sent. Only private, loopback
+and link-local ranges are accepted unless `DISCOVERY_ALLOW_PUBLIC_RANGES` is set, and a scan is capped at 8192
+probes. Results are the operation's `result.hosts`, marked with any matching inventory machine; registering a host
+runs the normal inspection.
 
 ### Adding a provider
 
@@ -94,8 +142,9 @@ Three independent abstractions:
 4. Make every mutating method idempotent.
 5. Add the class to `ALL_PROVIDERS`, and add the type to `ProviderType` if it is new. Enums are stored as strings,
    so no migration is needed.
-6. Set `implementation_status = AVAILABLE` only when the provider really works. `ProviderRegistry.create` refuses
-   to instantiate `PLANNED` providers.
+6. Set `implementation_status = AVAILABLE` only when the provider really works; use `PREVIEW` while it has only
+   been tested against simulators. `ProviderRegistry.create` refuses to instantiate `PLANNED` providers.
+   Capabilities that are on the roadmap but not built go in `planned_capabilities` (shown in the catalog only).
 
 Distributions follow the same pattern: subclass `KubernetesDistribution`, implement `plan_*`, and register.
 
@@ -144,7 +193,87 @@ register --> machine.inspect          spec --> POST /clusters/validate       clu
 * kubeadm with Calico or Flannel, on existing Linux machines.
 * HA control planes require an existing external load balancer or DNS name; kube-vip is not yet supported.
 * VM provisioning (Proxmox/cloud), K3s/RKE2 and managed services remain catalogued as planned.
-* The installer was verified end to end on real systemd hosts: see `infrastructure/testing/linux-nodes`.
+* The installer was verified end to end on real systemd hosts (Local provider container nodes).
+
+## Kubernetes connectivity (live cluster data)
+
+`app/modules/kubernetes/` reaches each cluster's API server over HTTPS:
+
+* **Transport.** A small REST client built on urllib3 (`client.py`), not the official Python client.
+  * The official client's recent releases conflict with Celery's pinned `python-dateutil`.
+  * It loads client keys from file paths, whereas this client holds TLS material in memory.
+  * The Kubernetes REST API is the stable contract, and discovery-based server-side apply (`apply.py`) covers any
+    resource, including CRDs.
+* **TLS.**
+  * The server certificate is always verified against the cluster CA.
+  * `insecure-skip-tls-verify` kubeconfigs are rejected.
+  * A per-cluster **API server override** plus **TLS server name** reaches API servers through NAT, proxies or load
+    balancers while verifying their real identity.
+  * Client keys are loaded into an in-memory SSL context; the temporary files `ssl` requires exist only while
+    loading.
+* **Credentials.**
+  * Kubeconfigs are minified to the selected context and stored as encrypted `kubeconfig` credentials.
+  * Pooled clients are cached per cluster for 5 minutes, so normal page loads don't decrypt anything.
+  * `exec`/`auth-provider` plugins are refused: the platform never executes external programs.
+* **Reads happen at request time**, with timeouts (5 s connect, 20 s read). An unreachable cluster returns 503
+  `cluster_unreachable` and never blocks the rest of the platform.
+* **Health observation.**
+  * Celery beat runs `clusters.probe` every 60 s. It stores a summary in `clusters.status_detail.health` with
+    `observed_at`, and moves clusters between `active`, `degraded` and `unreachable`.
+  * States owned by operations (`provisioning`, `deleting`, `error`) are never overwritten.
+  * The dashboard shows these stored observations with their timestamp; detail pages read live data.
+* **Utilization.**
+  * Live usage comes from `metrics.k8s.io` when metrics-server is installed.
+  * Otherwise the UI shows *requested* resources, labelled as such.
+  * Installing metrics-server is a tracked operation (`cluster.addon.metrics_server`): a pinned manifest applied
+    through the API with server-side apply.
+* **Imported clusters.**
+  * `cluster.connect` verifies access and detects the distribution (EKS/GKE/AKS/K3s/RKE2/Kind/kubeadm, otherwise
+    `other`).
+  * *Unregister* forgets the cluster and its kubeconfig without touching the cluster itself.
+
+## Workload management
+
+`app/modules/workloads/` builds on the Kubernetes client to read and change resources inside a cluster.
+
+* **Generic kinds.** `kinds.py` describes each supported kind (API group/version, plural, namespaced, which actions
+  apply). One set of routes (`/clusters/{id}/resources/{kind}`) serves pods, deployments, ReplicaSets,
+  StatefulSets, DaemonSets, Jobs, CronJobs, Services, ConfigMaps and Secrets. Adding a kind is a table entry plus
+  a summary function and a frontend column definition.
+* **Mutations are direct, audited API calls, not operations.** Scale, restart, rollback, CronJob trigger/suspend,
+  delete and apply complete in one request against the API server, so queuing them through Celery would only add
+  latency. Each one writes an audit event with outcome. Long-running, multi-step work (installing clusters or
+  add-ons) stays in the orchestration engine.
+  * Scale uses the `scale` subresource; restart patches `kubectl.kubernetes.io/restartedAt` on the pod template
+    (as `kubectl rollout restart` does); rollback copies the pod template of the chosen revision's ReplicaSet back
+    onto the Deployment with a JSON patch; CronJob trigger creates a Job from `jobTemplate` with an owner reference.
+  * Delete requires `confirm=<name>` (428 otherwise), as everywhere else.
+* **YAML apply is plan-then-apply.**
+  * `POST /apply` with `dry_run: true` parses every document, resolves each kind by discovery (so CRDs work), and
+    runs a **server-side apply with `dryRun=All`**. The response shows per object whether it would be created,
+    changed or left unchanged, plus a unified diff between the live object and the dry-run result. Admission
+    webhooks and schema validation therefore run exactly as they would for real.
+  * Objects in a namespace that the same manifest creates cannot be dry-run (the namespace does not exist yet);
+    they are reported with a note and validated when applied.
+  * `dry_run: false` applies with server-side apply (field manager `kubernetes-platform`, `force=true`). The UI
+    only enables *Apply* after a successful dry run of the current text.
+* **Secrets.** Secret values are replaced by `<redacted>` in every list, detail and YAML view. Apply refuses a
+  manifest that still contains the redaction marker, so a redacted copy can never overwrite real data. Revealing
+  values is a separate POST that is audited.
+* **Logs.** A snapshot endpoint returns the last N lines (current or previous container). The follow endpoint is
+  SSE: the API streams the Kubernetes `follow=true` log response line by line with heartbeats, and stops when the
+  browser disconnects or after 15 minutes.
+* **Terminal.** A WebSocket (`/pods/{ns}/{name}/exec`) bridges the browser to the Kubernetes exec API
+  (`v5.channel.k8s.io`, falling back to `v4`).
+  * The browser speaks a small JSON protocol (`input`, `resize` in; `output`, `exit`, `error` out); the server
+    translates it to the channel protocol, so cluster credentials never reach the browser.
+  * The Origin header must match the host or an allowed CORS origin (cross-site WebSocket hijacking).
+  * The shell tries `bash`, then `sh`. Sessions end after one hour. Start and end are audited.
+  * Next.js rewrites proxy the WebSocket in development and production, so the browser only talks to the UI origin.
+* **Frontend.** `features/workloads/` holds the kind-driven list and detail dialog (overview, pods, history, YAML,
+  events, logs, terminal tabs), the shared `YamlApplyPanel` (CodeMirror with YAML linting, dry-run results and
+  diffs), templates, and the new-deployment form, which generates a manifest client-side and sends it through the
+  same dry-run/apply path.
 
 ## Orchestration engine
 
@@ -220,6 +349,9 @@ migrations. Validation happens in the application.
   * `SecretStore` is an interface; a Vault backend can replace Fernet.
 * **Destructive actions:** the UI asks for type-to-confirm, and the backend separately requires `confirm=<name>`
   (HTTP 428 otherwise).
+* **Cluster access from the browser:** none. Kubeconfigs stay encrypted on the server; logs, apply and the terminal
+  are proxied by the API with the platform's credentials. Secret values are redacted unless explicitly revealed
+  (audited). The terminal WebSocket checks the Origin header.
 * **Audit:**
   * Records actor, action, resource, outcome, request ID and client IP.
   * Detail values whose keys look secret are scrubbed.

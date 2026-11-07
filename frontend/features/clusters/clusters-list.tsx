@@ -1,6 +1,6 @@
 "use client";
 
-import { Boxes, Plus } from "lucide-react";
+import { Boxes, Plus, Upload } from "lucide-react";
 import Link from "next/link";
 
 import { EmptyState, ErrorState, PageHeader, TableSkeleton } from "@/components/common/page";
@@ -18,11 +18,16 @@ export function ClustersList() {
       <PageHeader
         eyebrow="Kubernetes"
         title="Clusters"
-        description="Clusters created by the platform. Importing existing clusters arrives in Phase 1."
+        description="Clusters created by the platform or imported with a kubeconfig. Health is observed every minute."
         actions={
-          <Button asChild size="sm">
-            <Link href="/kubernetes/create"><Plus /> Create cluster</Link>
-          </Button>
+          <>
+            <Button asChild size="sm" variant="outline">
+              <Link href="/kubernetes/import"><Upload /> Import cluster</Link>
+            </Button>
+            <Button asChild size="sm">
+              <Link href="/kubernetes/create"><Plus /> Create cluster</Link>
+            </Button>
+          </>
         }
       />
       <Card className="py-0">
@@ -52,6 +57,7 @@ export function ClustersList() {
                   <TableHead>Distribution</TableHead>
                   <TableHead>Version</TableHead>
                   <TableHead>Nodes</TableHead>
+                  <TableHead>Pods</TableHead>
                   <TableHead>API endpoint</TableHead>
                   <TableHead>Created</TableHead>
                 </TableRow>
@@ -71,9 +77,24 @@ export function ClustersList() {
                         )}
                       </div>
                     </TableCell>
-                    <TableCell className="text-sm">{c.distribution}</TableCell>
+                    <TableCell className="text-sm">
+                      {c.distribution}
+                      {c.origin === "imported" && <span className="ml-1 text-xs text-muted-foreground">(imported)</span>}
+                    </TableCell>
                     <TableCell className="font-mono text-xs">{c.kubernetes_version ?? "—"}</TableCell>
-                    <TableCell className="tabular-nums">{c.node_count}</TableCell>
+                    <TableCell className="tabular-nums">
+                      {c.health ? `${c.health.nodes.ready}/${c.health.nodes.total} ready` : c.node_count}
+                    </TableCell>
+                    <TableCell className="tabular-nums text-sm">
+                      {c.health ? (
+                        <>
+                          {c.health.pods.running}/{c.health.pods.total}
+                          {c.health.pods.problems > 0 && <span className="ml-1 text-red-400">({c.health.pods.problems} failing)</span>}
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{c.api_endpoint ?? "—"}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{formatRelative(c.created_at)}</TableCell>
                   </TableRow>

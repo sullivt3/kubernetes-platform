@@ -25,6 +25,7 @@ const TERMINAL: Record<string, "success" | "error" | "warning"> = {
   cancelled: "warning",
 };
 const RECONNECT_MS = 30_000;
+const RESOURCE_KEYS = [["machines"], ["clusters"], ["provider-connections"]] as const;
 
 /**
  * Subscribes to the organization's operation change feed (SSE). Changes invalidate
@@ -63,6 +64,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         if (change.kind === "log") return; // logs are streamed by the detail view itself
         scheduleInvalidate();
         void queryClient.invalidateQueries({ queryKey: ["operations", "detail", change.operation_id] });
+        if (change.kind === "status") {
+          // Operations change the resources they act on: refresh those views too.
+          for (const key of RESOURCE_KEYS) void queryClient.invalidateQueries({ queryKey: key });
+        }
         const tone = change.kind === "status" && change.status ? TERMINAL[change.status] : undefined;
         if (tone) {
           toast[tone](`Operation ${change.status}`, {

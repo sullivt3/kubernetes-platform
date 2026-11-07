@@ -152,9 +152,7 @@ class OperationExecutor:
         if [s.key for s in plan] != list(rows):
             message = "Workflow plan no longer matches the persisted steps; the workflow changed incompatibly"
             self._log(operation_id, LogLevel.ERROR, message, None, redactions)
-            self._finish(
-                operation_id, OperationStatus.FAILED, error={"code": "plan_mismatch", "message": message}
-            )
+            self._finish(operation_id, OperationStatus.FAILED, error={"code": "plan_mismatch", "message": message})
             return OperationStatus.FAILED
 
         resumed = any(status is StepStatus.SUCCEEDED for _, status, _ in rows.values())
@@ -162,9 +160,7 @@ class OperationExecutor:
         banner += f", recovery {recovery})" if recovery else ")"
         self._log(operation_id, LogLevel.INFO, banner, None, redactions)
         if resumed:
-            self._log(
-                operation_id, LogLevel.INFO, "Resuming: completed steps will be skipped", None, redactions
-            )
+            self._log(operation_id, LogLevel.INFO, "Resuming: completed steps will be skipped", None, redactions)
 
         outputs: dict[str, dict[str, Any]] = {
             key: output for key, (_, status, output) in rows.items() if status is StepStatus.SUCCEEDED
@@ -231,9 +227,7 @@ class OperationExecutor:
                 output = step.fn(ctx) or {}
             except OperationCancelledError:
                 self._mark_step(step_id, StepStatus.CANCELLED, finished=True)
-                self._log(
-                    operation_id, LogLevel.WARNING, f"Step '{step.name}' cancelled", step.key, redactions
-                )
+                self._log(operation_id, LogLevel.WARNING, f"Step '{step.name}' cancelled", step.key, redactions)
                 return StepStatus.CANCELLED, None
             except RetryableStepError as exc:
                 message = self._redact(str(exc), redactions)
@@ -300,10 +294,7 @@ class OperationExecutor:
 
     def _cancel_requested(self, operation_id: uuid.UUID) -> bool:
         with self._sf() as session:
-            return (
-                session.scalar(select(Operation.cancel_requested_at).where(Operation.id == operation_id))
-                is not None
-            )
+            return session.scalar(select(Operation.cancel_requested_at).where(Operation.id == operation_id)) is not None
 
     def _interruptible_sleep(self, operation_id: uuid.UUID, seconds: float) -> bool:
         """Sleep in short slices; returns True if cancellation was requested meanwhile."""
@@ -409,9 +400,7 @@ class OperationExecutor:
             values["result"] = result
         with self._sf() as session:
             session.execute(
-                update(Operation)
-                .where(Operation.id == operation_id, Operation.status.in_(_EXECUTING))
-                .values(**values)
+                update(Operation).where(Operation.id == operation_id, Operation.status.in_(_EXECUTING)).values(**values)
             )
             session.commit()
         run_status_hook_new_session(self._sf, self._registry, operation_id)
@@ -430,9 +419,7 @@ class OperationExecutor:
             message = message[:_MAX_LOG_CHARS] + "… [truncated]"
         logger.log(logging.getLevelNamesMapping()[level.value.upper()], "[op %s] %s", operation_id, message)
         with self._sf() as session:
-            session.add(
-                OperationLog(operation_id=operation_id, level=level, step_key=step_key, message=message)
-            )
+            session.add(OperationLog(operation_id=operation_id, level=level, step_key=step_key, message=message))
             session.commit()
         self._publish(operation_id, ChangeKind.LOG)
 

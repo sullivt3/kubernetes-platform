@@ -80,6 +80,11 @@ class MachineAddress(BaseModel):
     address: str
 
 
+class Endpoint(BaseModel):
+    host: str
+    port: int
+
+
 class DiscoveredMachine(BaseModel):
     external_id: str
     name: str
@@ -88,6 +93,15 @@ class DiscoveredMachine(BaseModel):
     hardware: HardwareSpec | None = None
     os: OSInfo | None = None
     provider_metadata: dict[str, str] = Field(default_factory=dict)
+    # How the platform reaches the machine's SSH server when that differs from its
+    # internal address (e.g. a port published on the workstation for local nodes).
+    ssh_endpoint: Endpoint | None = None
+    # How the platform reaches a Kubernetes API server on this machine, if it differs
+    # from <internal address>:6443 (used to configure cluster connections).
+    kube_api_endpoint: Endpoint | None = None
+    # Machines the provider can resolve to an SSH-ready guest (not templates, not cloud
+    # instances discovered read-only).
+    importable: bool = True
 
 
 class MachineSpecRequest(BaseModel):
@@ -101,6 +115,9 @@ class MachineSpecRequest(BaseModel):
     network: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     provider_options: dict[str, object] = Field(default_factory=dict)
+    # Access injected into the new machine (cloud-init / container env). Public key only.
+    ssh_username: str = Field(default="platform", pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
+    ssh_public_key: str | None = None
 
 
 class MachineStatus(BaseModel):
@@ -108,6 +125,8 @@ class MachineStatus(BaseModel):
     exists: bool
     power_state: str
     addresses: list[MachineAddress] = Field(default_factory=list)
+    ssh_endpoint: Endpoint | None = None
+    kube_api_endpoint: Endpoint | None = None
 
 
 class NetworkConfigRequest(BaseModel):

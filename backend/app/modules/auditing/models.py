@@ -32,9 +32,7 @@ class AuditEvent(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     occurred_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    organization_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("organizations.id", ondelete="RESTRICT")
-    )
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"))
     actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     actor_subject: Mapped[str] = mapped_column(String(512))
     action: Mapped[str] = mapped_column(String(128))

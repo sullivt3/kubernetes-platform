@@ -123,9 +123,7 @@ def test_workflows() -> Iterator[None]:
 
 def logs_of(session: Session, op_id: uuid.UUID) -> list[OperationLog]:
     return list(
-        session.scalars(
-            select(OperationLog).where(OperationLog.operation_id == op_id).order_by(OperationLog.id)
-        )
+        session.scalars(select(OperationLog).where(OperationLog.operation_id == op_id).order_by(OperationLog.id))
     )
 
 
@@ -224,9 +222,7 @@ def test_unexpected_exception_is_captured(
     assert debug and "Traceback" in debug[0].message
 
 
-def test_only_failed_or_cancelled_can_be_retried(
-    inline_service: OperationService, principal: Principal
-) -> None:
+def test_only_failed_or_cancelled_can_be_retried(inline_service: OperationService, principal: Principal) -> None:
     op = inline_service.submit(principal, TEST_WORKFLOW, {})
     with pytest.raises(InvalidStateError):
         inline_service.retry(principal, op.id)
@@ -269,9 +265,7 @@ def test_cancelled_operation_can_be_retried(
 # ---------------------------------------------------------------------------- exclusivity & idempotency
 
 
-def test_single_claim(
-    deferred_service: OperationService, principal: Principal, executor: OperationExecutor
-) -> None:
+def test_single_claim(deferred_service: OperationService, principal: Principal, executor: OperationExecutor) -> None:
     op = deferred_service.submit(principal, TEST_WORKFLOW, {})
     assert executor.execute(op.id) is OperationStatus.SUCCEEDED
     assert executor.execute(op.id) is None  # duplicate delivery is a no-op
@@ -283,19 +277,12 @@ def test_one_active_operation_per_target(deferred_service: OperationService, pri
     with pytest.raises(ConflictError, match="already in progress for alpha"):
         deferred_service.submit(principal, TEST_WORKFLOW, {"target": "alpha"})
     # A different target is unaffected.
-    assert (
-        deferred_service.submit(principal, TEST_WORKFLOW, {"target": "beta"}).status is OperationStatus.QUEUED
-    )
+    assert deferred_service.submit(principal, TEST_WORKFLOW, {"target": "beta"}).status is OperationStatus.QUEUED
 
 
-def test_target_is_free_again_after_completion(
-    inline_service: OperationService, principal: Principal
-) -> None:
+def test_target_is_free_again_after_completion(inline_service: OperationService, principal: Principal) -> None:
     inline_service.submit(principal, TEST_WORKFLOW, {"target": "alpha"})
-    assert (
-        inline_service.submit(principal, TEST_WORKFLOW, {"target": "alpha"}).status
-        is OperationStatus.SUCCEEDED
-    )
+    assert inline_service.submit(principal, TEST_WORKFLOW, {"target": "alpha"}).status is OperationStatus.SUCCEEDED
 
 
 def test_idempotency_key_returns_existing_operation(
@@ -309,9 +296,7 @@ def test_idempotency_key_returns_existing_operation(
         deferred_service.submit(principal, DESTRUCTIVE_WORKFLOW, {}, idempotency_key="abc", confirm="alpha")
 
 
-def test_destructive_operations_require_confirmation(
-    inline_service: OperationService, principal: Principal
-) -> None:
+def test_destructive_operations_require_confirmation(inline_service: OperationService, principal: Principal) -> None:
     with pytest.raises(ConfirmationRequiredError) as exc_info:
         inline_service.submit(principal, DESTRUCTIVE_WORKFLOW, {"target": "alpha"})
     assert exc_info.value.details == {"expected_confirmation": "alpha"}
@@ -333,9 +318,7 @@ def test_registered_secrets_are_redacted_from_logs(
     assert "connecting with password ********" in text
 
 
-def test_tenancy_isolation(
-    deferred_service: OperationService, principal: Principal, session: Session
-) -> None:
+def test_tenancy_isolation(deferred_service: OperationService, principal: Principal, session: Session) -> None:
     from app.core.errors import NotFoundError
     from app.modules.organizations.models import Organization
 
@@ -430,9 +413,7 @@ def test_repeated_crashes_eventually_fail(
     op = deferred_service.submit(principal, TEST_WORKFLOW, {})
     _simulate_crash(session, op.id)
     session.execute(
-        update(Operation)
-        .where(Operation.id == op.id)
-        .values(recovery_count=get_settings().operation_max_recoveries)
+        update(Operation).where(Operation.id == op.id).values(recovery_count=get_settings().operation_max_recoveries)
     )
     session.commit()
 
@@ -486,9 +467,7 @@ def test_healthy_running_operation_is_left_alone(
 ) -> None:
     op = deferred_service.submit(principal, TEST_WORKFLOW, {})
     session.execute(
-        update(Operation)
-        .where(Operation.id == op.id)
-        .values(status=OperationStatus.RUNNING, heartbeat_at=utcnow())
+        update(Operation).where(Operation.id == op.id).values(status=OperationStatus.RUNNING, heartbeat_at=utcnow())
     )
     session.commit()
     report = _recover(RecordingDispatcher(), publisher)

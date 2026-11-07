@@ -29,7 +29,9 @@ def spec(**overrides: Any) -> ClusterSpec:
 
 
 def test_every_distribution_registered_with_metadata() -> None:
-    assert {d.distribution_type for d in distribution_registry.all()} == set(DistributionType)
+    # OTHER marks imported clusters of unknown origin; it is never installable.
+    expected = set(DistributionType) - {DistributionType.OTHER}
+    assert {d.distribution_type for d in distribution_registry.all()} == expected
     for d in distribution_registry.all():
         descriptor = distribution_registry.describe(d)
         assert descriptor.supported_providers
@@ -90,11 +92,7 @@ class TestSpecValidation:
     def test_invalid_label_rejected(self) -> None:
         template = {"cpu_cores": 2, "memory_mb": 4096, "disk_gb": 40}
         with pytest.raises(ValidationError, match="Invalid label key"):
-            spec(
-                worker_pools=[
-                    {"name": "w", "count": 1, "machine_template": template, "labels": {"bad key": "x"}}
-                ]
-            )
+            spec(worker_pools=[{"name": "w", "count": 1, "machine_template": template, "labels": {"bad key": "x"}}])
 
 
 class TestCompatibility:
@@ -130,9 +128,7 @@ PLANNED = [d for d in distribution_registry.all() if d.implementation_status.val
 def test_planned_distributions_refuse_to_plan(d: Any) -> None:
     kind_spec = spec(
         distribution=d.distribution_type.value,
-        control_plane={"count": 0}
-        if d.kind is DistributionKind.MANAGED
-        else spec().control_plane.model_dump(),
+        control_plane={"count": 0} if d.kind is DistributionKind.MANAGED else spec().control_plane.model_dump(),
     )
     plan = ClusterPlanInput(cluster_id=uuid.uuid4(), cluster_name="x", spec=kind_spec, nodes=[])
     with pytest.raises(NotImplementedYetError):

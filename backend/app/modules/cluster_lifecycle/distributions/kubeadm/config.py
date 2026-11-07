@@ -112,9 +112,7 @@ def _extra_args(version: str, args: dict[str, str]) -> Any:
 def generate_bootstrap_token() -> str:
     alphabet = string.ascii_lowercase + string.digits
     return (
-        "".join(secrets.choice(alphabet) for _ in range(6))
-        + "."
-        + "".join(secrets.choice(alphabet) for _ in range(16))
+        "".join(secrets.choice(alphabet) for _ in range(6)) + "." + "".join(secrets.choice(alphabet) for _ in range(16))
     )
 
 

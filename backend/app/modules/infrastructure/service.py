@@ -75,9 +75,7 @@ class MachineService:
 
         connection = self.ensure_ssh_connection(principal)
         provider = provider_registry.create(ProviderType.SSH, connection.config, None)
-        endpoint = provider.connection_endpoint(
-            host, port, username or credential.public_metadata.get("username")
-        )
+        endpoint = provider.connection_endpoint(host, port, username or credential.public_metadata.get("username"))
         external_id = f"{endpoint.host}:{endpoint.port}"
         if self.session.scalar(
             select(func.count()).where(
@@ -146,6 +144,15 @@ class MachineService:
             .order_by(Machine.name)
         ).all()
         return [(m, c, r.value if r else None) for m, c, r in rows]
+
+    def connections(self, principal: Principal) -> dict[uuid.UUID, tuple[str, str]]:
+        """Connection id -> (name, provider type), for labelling machines."""
+        rows = self.session.execute(
+            select(ProviderConnection.id, ProviderConnection.name, ProviderConnection.provider_type).where(
+                ProviderConnection.organization_id == principal.organization_id
+            )
+        ).all()
+        return {cid: (name, ptype.value) for cid, name, ptype in rows}
 
     def get(self, principal: Principal, machine_id: uuid.UUID) -> Machine:
         machine = self.session.get(Machine, machine_id, populate_existing=True)

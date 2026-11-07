@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     # decrypted during key rotation.
     secret_encryption_keys: SecretStr | None = None
 
+    # --- Infrastructure --------------------------------------------------------
+    # Network discovery only scans private, loopback and link-local ranges unless enabled.
+    discovery_allow_public_ranges: bool = False
+
     # --- Orchestration -------------------------------------------------------
     # When true, operations execute in-process instead of via Celery (tests only).
     orchestration_inline: bool = False
@@ -83,9 +87,7 @@ class Settings(BaseSettings):
         if protected and self.auth_mode is AuthMode.DEV:
             raise ValueError("AUTH_MODE=dev is not permitted when ENVIRONMENT is staging or production")
         if self.secret_encryption_keys is None:
-            raise ValueError(
-                "SECRET_ENCRYPTION_KEYS must be set (generate one with: python -m app.cli generate-key)"
-            )
+            raise ValueError("SECRET_ENCRYPTION_KEYS must be set (generate one with: python -m app.cli generate-key)")
         if protected and self.orchestration_inline:
             raise ValueError("ORCHESTRATION_INLINE is a test-only setting")
         if self.auth_mode is AuthMode.OIDC and not (self.oidc_issuer_url and self.oidc_audience):

@@ -36,6 +36,13 @@ class ClusterOut(ApiModel):
     created_at: datetime
     node_count: int = 0
     active_operation_id: uuid.UUID | None = None
+    kubeconfig_context: str | None = None
+    api_server_override: str | None = None
+    tls_server_name: str | None = None
+    connected: bool = False
+    health: dict[str, Any] | None = None
+    health_error: dict[str, Any] | None = None
+    observed_at: str | None = None
 
 
 class ClusterNode(BaseModel):
@@ -68,6 +75,7 @@ class ClusterValidation(BaseModel):
     problems: list[str]
     steps: list[dict[str, str]]
     nodes: list[dict[str, Any]]
+    notes: list[str] = []
 
 
 class ClusterCreated(BaseModel):
@@ -77,7 +85,12 @@ class ClusterCreated(BaseModel):
 
 def _summary(service: ClusterService, cluster: Cluster, counts: dict[uuid.UUID, int]) -> ClusterOut:
     out = ClusterOut.model_validate(cluster)
-    out.node_count = counts.get(cluster.id, 0)
+    detail = cluster.status_detail or {}
+    out.connected = cluster.access_credential_id is not None
+    out.health = detail.get("health")
+    out.health_error = detail.get("health_error")
+    out.observed_at = detail.get("observed_at")
+    out.node_count = counts.get(cluster.id) or (out.health or {}).get("nodes", {}).get("total", 0)
     active = service.active_operation(cluster.id)
     out.active_operation_id = active.id if active else None
     return out
@@ -104,6 +117,7 @@ def validate_cluster(
         problems=result.problems,
         steps=result.steps,
         nodes=[n.model_dump(mode="json") for n in result.nodes],
+        notes=result.notes,
     )
 
 
@@ -143,9 +157,7 @@ def get_cluster(
         )
         for membership, machine in service.node_details(cluster.id)
     ]
-    history, _ = operations.list_operations(
-        principal, target_type="cluster", target_id=str(cluster.id), limit=20
-    )
+    history, _ = operations.list_operations(principal, target_type="cluster", target_id=str(cluster.id), limit=20)
     return ClusterDetail(
         **summary.model_dump(),
         spec=cluster.spec,

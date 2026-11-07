@@ -70,6 +70,11 @@ class InfrastructureProvider(ABC):
     capabilities: ClassVar[frozenset[ProviderCapability]]
     implementation_status: ClassVar[ImplementationStatus]
     planned_phase: ClassVar[int | None] = None
+    # Capabilities on the roadmap but not implemented yet (shown in the catalog only).
+    planned_capabilities: ClassVar[frozenset[ProviderCapability]] = frozenset()
+    planned_capabilities_phase: ClassVar[int | None] = None
+    # Provisioned machines are disposable containers (affects defaults such as kubelet DNS).
+    container_machines: ClassVar[bool] = False
     config_model: ClassVar[type[BaseModel]] = EmptyConfig
     credential_kinds: ClassVar[frozenset[CredentialKind]] = frozenset()
     credential_required: ClassVar[bool] = True

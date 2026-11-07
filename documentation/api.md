@@ -82,22 +82,90 @@ The machine-readable contract is the OpenAPI document at `/api/v1/openapi.json`.
 | GET | `/machines/{id}` | One machine. |
 | POST | `/machines/{id}/inspect` | Re-inspect (202). Body `{accept_new_host_key}`; accepting a new host key requires `?confirm=<name>`. |
 | DELETE | `/machines/{id}?confirm=<name>` | Remove from the inventory. 409 while the machine belongs to a cluster. The server itself is not changed. |
+| POST | `/machines/{id}/power` | `{action: start\|stop\|reboot}` → `machine.power` (202). Stopping or rebooting a cluster node requires `?confirm=<name>`. Only for providers with the `power` capability. |
+| POST | `/machines/{id}/destroy?confirm=<name>` | Delete a platform-provisioned machine at its provider, then remove it from the inventory (`machine.deprovision`, 202). 409 for registered (not provisioned) machines and cluster nodes. |
+
+Machines include `provider_type`, `connection_name`, `external_id`, `power_state`, `provisioned`,
+`requested_spec` and `provider_metadata` (for local machines: the published Kubernetes API endpoint).
+
+### Provider connections and provisioning
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/provider-connections` | Connections with status, capabilities and machine count. |
+| POST | `/provider-connections` | `{name, provider_type, config, credential_id?}` (201) → the connection plus its `provider.validate` operation. Planned providers and `ssh` are rejected; the credential kind must match the provider. |
+| GET | `/provider-connections/{id}` | One connection. |
+| PUT | `/provider-connections/{id}` | `{config?, credential_id?, clear_credential?}` → re-validates. |
+| DELETE | `/provider-connections/{id}?confirm=<name>` | 409 while machines belong to it (204). Nothing changes at the provider. |
+| POST | `/provider-connections/{id}/validate` | Re-validate (202). |
+| POST | `/provider-connections/{id}/discover` | `provider.discover` (202). `result.machines`: discovered machines with `inventory_machine`, `importable`, `ssh_endpoint`, `kube_api_endpoint`. Read-only. |
+| POST | `/provider-connections/{id}/machines` | `{names[1..20], cpu_cores, memory_mb, disk_gb, credential_id, ssh_username?, network?, labels?, provider_options?}` (202) → one `machine.provision` operation per machine. `credential_id` must be an SSH private key; its public key is installed. Proxmox: `provider_options.ipconfig` (cloud-init `ipconfig0`). |
+| POST | `/provider-connections/{id}/import` | `{external_id, name, host, port, username?, credential_id, kube_api_host?, kube_api_port?}` (201): add a discovered machine to the inventory and inspect it. Not for cloud instances (read-only until Phase 5). |
+
+### Network discovery
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/network-discovery` | `{ranges[], ports=[22], timeout_seconds=1.5}` (202) → `network.discover`. `result.hosts`: `{address, port, banner, os_hint, hostname, registered_as}`. Public ranges are rejected unless allowed by configuration. |
 
 ### Clusters
 
 | Method | Path | Description |
 |---|---|---|
 | GET | `/clusters` | Clusters with state, version, node count and any active operation. |
-| POST | `/clusters/validate` | Check `{spec}` against distribution rules and the live inventory. Returns `{valid, problems, steps, nodes}`; no side effects. |
+| POST | `/clusters/validate` | Check `{spec}` against distribution rules and the live inventory. Returns `{valid, problems, steps, nodes, notes}`; no side effects. `notes` lists defaults applied automatically (e.g. for container machines). |
 | POST | `/clusters` | Create `{spec, description?}` (202). Returns the cluster plus the `cluster.create` operation. 422 with `details.problems` when invalid. |
 | GET | `/clusters/{id}` | Detail: spec, nodes, status detail (including the last failure), operation history. The kubeconfig is never included. |
 | DELETE | `/clusters/{id}?confirm=<name>&force=<bool>` | Reset all nodes and release the machines (202). `force` continues past unreachable nodes. |
 
 `ClusterSpec` (abridged):
-`{name, distribution: "kubeadm", provider_type: "ssh", kubernetes_version: "1.37" | "1.37.2", network: {cni, pod_cidr,
+`{name, distribution: "kubeadm", provider_type: "ssh" (existing machines from any provider), kubernetes_version: "1.37" | "1.37.2", network: {cni, pod_cidr,
 service_cidr, dns_domain}, control_plane: {count, existing_machine_ids, endpoint?, load_balancer: "none"|"external"},
 worker_pools: [{name, count, existing_machine_ids, labels, taints}], options: {allow_swap, control_plane_workloads,
 kube_proxy_conntrack_max_per_core, ignore_preflight_errors, api_server_extra_sans, ready_timeout_seconds}}`
+
+### Cluster connectivity and live data
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/clusters/import/inspect` | `{kubeconfig}` → contexts with auth type and whether each is usable. Nothing is stored. |
+| POST | `/clusters/import` | `{name, kubeconfig, context?, server_override?, tls_server_name?, description?}` (202). Stores the minified context encrypted and starts `cluster.connect`. |
+| PUT | `/clusters/{id}/connection` | `{server_override, tls_server_name}`, then re-verifies (202). |
+| POST | `/clusters/{id}/connect` | Re-verify the connection and refresh health (202). |
+| POST | `/clusters/{id}/unregister?confirm=<name>` | Imported clusters only (204). Forgets the cluster and its kubeconfig; the cluster is not changed. |
+| POST | `/clusters/{id}/addons/metrics-server` | `{kubelet_insecure_tls}` → installs metrics-server v0.9.1 (202). |
+| GET | `/clusters/{id}/health` | Live summary: version, readiness checks, nodes, pods, CPU/memory (allocatable, requested, used), alerts. |
+| GET | `/clusters/{id}/nodes` | Live nodes with roles, conditions, capacity, requested and used resources, pod counts. |
+| GET | `/clusters/{id}/nodes/{name}` | One node plus its pods and events. |
+| GET | `/clusters/{id}/namespaces` | Namespaces with pod counts and failing pods. |
+| GET | `/clusters/{id}/pods?namespace=&node=&problems=` | Pods with kubectl-style status, readiness, restarts, owner. |
+| GET | `/clusters/{id}/events?namespace=&warnings=&limit=` | Recent events, newest first. |
+| GET | `/clusters/{id}/topology` | Nodes with their pods (and unscheduled pods). |
+
+Live endpoints return **503 `cluster_unreachable`** or **502 `cluster_auth_failed`** when the cluster cannot be
+used. `GET /clusters` and `GET /clusters/{id}` include the last observed `health`, `health_error` and
+`observed_at`.
+
+### Workloads and resources
+
+`{kind}` is one of `pods`, `deployments`, `replicasets`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs`,
+`services`, `configmaps`, `secrets`. All paths are under `/clusters/{id}`.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/resources/{kind}?namespace=` | Summaries (status, readiness, images, age…). `truncated` is set when the list was capped. |
+| GET | `/resources/{kind}/{namespace}/{name}` | `{kind, summary, object, yaml, events, capabilities}`, plus `rollout`/`history` for deployments, owned `pods` for controllers and `containers` for pods. Secret values are `<redacted>`. |
+| DELETE | `/resources/{kind}/{namespace}/{name}?confirm=<name>` | Delete (204). |
+| POST | `/resources/{kind}/{namespace}/{name}/scale` | `{replicas}` (deployments, statefulsets, replicasets). |
+| POST | `/resources/{kind}/{namespace}/{name}/restart` | Rolling restart (deployments, statefulsets, daemonsets). |
+| POST | `/deployments/{namespace}/{name}/rollback` | `{revision}` → restore that revision's pod template. |
+| POST | `/cronjobs/{namespace}/{name}/trigger` | Create a Job from the CronJob now; returns the Job name. |
+| POST | `/cronjobs/{namespace}/{name}/suspend` | `{suspend: bool}`. |
+| POST | `/apply` | `{manifest, namespace?, dry_run}`. Multi-document YAML. Returns per-object `{kind, namespace, name, action: create\|update\|unchanged, diff, note?}`. Refuses manifests containing `<redacted>`. |
+| POST | `/secrets/{namespace}/{name}/reveal` | Decoded secret values (audited). |
+| GET | `/pods/{namespace}/{name}/logs?container=&tail=&previous=&timestamps=` | Log snapshot as `text/plain`. |
+| GET | `/pods/{namespace}/{name}/logs/stream?container=&tail=` | **SSE** `line` events while following (`error` on failure, `end` when the stream closes; capped at 15 minutes). |
+| WS | `/pods/{namespace}/{name}/exec?container=` | Interactive shell. Client sends `{"type":"input","data"}` and `{"type":"resize","cols","rows"}`; server sends `output`, `exit` and `error`. Close codes 4403 (origin) and 4400 (invalid reference). |
 
 ### Audit
 

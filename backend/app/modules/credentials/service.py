@@ -162,9 +162,7 @@ class CredentialService:
         ]
         refs += [
             f"machine '{n}'"
-            for n in self.session.scalars(
-                select(Machine.name).where(Machine.access_credential_id == credential_id)
-            )
+            for n in self.session.scalars(select(Machine.name).where(Machine.access_credential_id == credential_id))
         ]
         refs += [
             f"cluster '{n}'"
@@ -183,9 +181,7 @@ class CredentialService:
             )
         in_use = self.usages(credential.id)
         if in_use:
-            raise ConflictError(
-                "Credential is still in use and cannot be deleted", details={"used_by": in_use}
-            )
+            raise ConflictError("Credential is still in use and cannot be deleted", details={"used_by": in_use})
         audit.record(
             self.session,
             principal=principal,
@@ -201,9 +197,7 @@ class CredentialService:
     def reveal(self, organization_id: uuid.UUID, credential_id: uuid.UUID) -> bytes:
         """Decrypt a credential for use by an orchestration step. NEVER expose via the API."""
         credential = self.session.scalar(
-            select(Credential).where(
-                Credential.id == credential_id, Credential.organization_id == organization_id
-            )
+            select(Credential).where(Credential.id == credential_id, Credential.organization_id == organization_id)
         )
         if credential is None:
             raise NotFoundError("Credential not found")

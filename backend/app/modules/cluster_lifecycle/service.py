@@ -24,12 +24,15 @@ from app.modules.cluster_lifecycle.models import (
     NodeRole,
 )
 from app.modules.cluster_lifecycle.workflows import CLUSTER_CREATE, CLUSTER_DELETE
-from app.modules.infrastructure.models import Machine, MachineLifecycleState
+from app.modules.infrastructure.models import Machine, MachineLifecycleState, ProviderConnection
 from app.modules.infrastructure.service import MachineService
 from app.modules.providers.registry import provider_registry
 from app.modules.providers.types import ImplementationStatus, ProviderCapability
 from app.orchestration.models import ACTIVE_STATUSES, Operation
 from app.orchestration.service import OperationService
+
+# Written by the local provider's node image (see providers/implementations/local_node).
+CONTAINER_RESOLV_CONF = "/etc/kplatform-node/resolv.conf"
 
 
 @dataclass
@@ -37,6 +40,7 @@ class ValidationResult:
     problems: list[str] = field(default_factory=list)
     nodes: list[PlannedNode] = field(default_factory=list)
     steps: list[dict[str, str]] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
     @property
     def valid(self) -> bool:
@@ -55,9 +59,7 @@ class ClusterService:
         distribution = distribution_registry.get(spec.distribution)
         if distribution.implementation_status is ImplementationStatus.PLANNED:
             phase = f" (planned for Phase {distribution.planned_phase})" if distribution.planned_phase else ""
-            result.problems.append(
-                f"{distribution.display_name} cluster creation is not implemented yet{phase}"
-            )
+            result.problems.append(f"{distribution.display_name} cluster creation is not implemented yet{phase}")
             return result
         provider_cls = provider_registry.get_class(spec.provider_type)
         if provider_cls.implementation_status is ImplementationStatus.PLANNED:
@@ -67,15 +69,13 @@ class ClusterService:
         )
         if needs_provisioning and ProviderCapability.PROVISION not in provider_cls.capabilities:
             result.problems.append(
-                f"{provider_cls.display_name} cannot provision new machines; "
-                "select registered machines for every node"
+                f"{provider_cls.display_name} cannot provision new machines; select registered machines for every node"
             )
+        result.notes.extend(self._container_defaults(principal, spec))
         result.problems.extend(distribution.validate_spec(spec))
 
         if self.session.scalar(
-            select(Cluster.id).where(
-                Cluster.organization_id == principal.organization_id, Cluster.name == spec.name
-            )
+            select(Cluster.id).where(Cluster.organization_id == principal.organization_id, Cluster.name == spec.name)
         ):
             result.problems.append(f"A cluster named '{spec.name}' already exists")
 
@@ -84,11 +84,38 @@ class ClusterService:
             return result
 
         result.nodes = self._planned_nodes(principal, spec)
-        preview = ClusterPlanInput(
-            cluster_id=uuid.uuid4(), cluster_name=spec.name, spec=spec, nodes=result.nodes
-        )
+        preview = ClusterPlanInput(cluster_id=uuid.uuid4(), cluster_name=spec.name, spec=spec, nodes=result.nodes)
         result.steps = [{"key": s.key, "name": s.name} for s in distribution.plan_create(preview)]
         return result
+
+    def _container_defaults(self, principal: Principal, spec: ClusterSpec) -> list[str]:
+        """Container-based machines (local provider) need kubelet/kube-proxy settings that real
+        hosts don't: swap belongs to the container host, conntrack limits cannot be changed from
+        inside a container, and Docker's embedded DNS is unusable for pods. Fill them in unless
+        the user chose values explicitly."""
+        ids = [m for pool in (spec.control_plane, *spec.worker_pools) for m in pool.existing_machine_ids]
+        if not ids:
+            return []
+        rows = self.session.execute(
+            select(Machine.name, ProviderConnection.provider_type)
+            .join(ProviderConnection, ProviderConnection.id == Machine.provider_connection_id)
+            .where(Machine.id.in_(ids), Machine.organization_id == principal.organization_id)
+        ).all()
+        containers = sorted(name for name, ptype in rows if provider_registry.get_class(ptype).container_machines)
+        if not containers:
+            return []
+        defaults = {
+            "allow_swap": True,
+            "kube_proxy_conntrack_max_per_core": 0,
+            "kubelet_resolv_conf": CONTAINER_RESOLV_CONF,
+        }
+        applied = [key for key, value in defaults.items() if spec.options.setdefault(key, value) == value]
+        if not applied:
+            return []
+        return [
+            f"Container-based machines ({', '.join(containers)}): applied {', '.join(applied)} "
+            "(swap and conntrack belong to the container host; pods need real upstream DNS servers)"
+        ]
 
     def _check_machines(self, principal: Principal, spec: ClusterSpec) -> list[str]:
         problems: list[str] = []
@@ -98,9 +125,7 @@ class ClusterService:
         machines = {
             m.id: m
             for m in self.session.scalars(
-                select(Machine).where(
-                    Machine.id.in_(ids), Machine.organization_id == principal.organization_id
-                )
+                select(Machine).where(Machine.id.in_(ids), Machine.organization_id == principal.organization_id)
             )
         }
         assigned = dict(
@@ -116,14 +141,11 @@ class ClusterService:
                 problems.append(f"Machine {machine_id} is not registered")
                 continue
             if machine_id in assigned:
-                problems.append(
-                    f"Machine '{machine.name}' already belongs to cluster '{assigned[machine_id]}'"
-                )
+                problems.append(f"Machine '{machine.name}' already belongs to cluster '{assigned[machine_id]}'")
             if machine.lifecycle_state is not MachineLifecycleState.READY:
                 detail = f": {machine.last_error}" if machine.last_error else ""
                 problems.append(
-                    f"Machine '{machine.name}' is {machine.lifecycle_state.value}{detail}; "
-                    "inspect it until it is ready"
+                    f"Machine '{machine.name}' is {machine.lifecycle_state.value}{detail}; inspect it until it is ready"
                 )
         for machine_id in spec.control_plane.existing_machine_ids:
             machine = machines.get(machine_id)
@@ -201,9 +223,7 @@ class ClusterService:
             self.session.rollback()
             raise ConflictError("A selected machine was assigned to another cluster concurrently") from exc
 
-        plan = ClusterPlanInput(
-            cluster_id=cluster.id, cluster_name=spec.name, spec=spec, nodes=validation.nodes
-        )
+        plan = ClusterPlanInput(cluster_id=cluster.id, cluster_name=spec.name, spec=spec, nodes=validation.nodes)
         operation = self.operations.submit(principal, CLUSTER_CREATE, plan.model_dump(mode="json"))
         return self.get(principal, cluster.id), operation
 
@@ -214,9 +234,7 @@ class ClusterService:
         if cluster.origin is not ClusterOrigin.PROVISIONED:
             raise ValidationFailedError("Only clusters created by the platform can be deleted here")
         nodes = [
-            PlannedNode(
-                machine_id=m.machine_id, name=m.node_name or str(m.machine_id), role=m.role.value, pool="-"
-            )
+            PlannedNode(machine_id=m.machine_id, name=m.node_name or str(m.machine_id), role=m.role.value, pool="-")
             for m in self.memberships(cluster.id)
         ]
         plan = ClusterPlanInput(
@@ -226,9 +244,7 @@ class ClusterService:
             nodes=nodes,
             force=force,
         )
-        operation = self.operations.submit(
-            principal, CLUSTER_DELETE, plan.model_dump(mode="json"), confirm=confirm
-        )
+        operation = self.operations.submit(principal, CLUSTER_DELETE, plan.model_dump(mode="json"), confirm=confirm)
         audit.record(
             self.session,
             principal=principal,
@@ -246,9 +262,7 @@ class ClusterService:
     def list_clusters(self, principal: Principal) -> list[Cluster]:
         return list(
             self.session.scalars(
-                select(Cluster)
-                .where(Cluster.organization_id == principal.organization_id)
-                .order_by(Cluster.name)
+                select(Cluster).where(Cluster.organization_id == principal.organization_id).order_by(Cluster.name)
             )
         )
 

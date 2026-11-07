@@ -14,6 +14,8 @@ class DistributionType(StrEnum):
     EKS = "eks"
     AKS = "aks"
     GKE = "gke"
+    # Imported clusters whose distribution could not be identified. Not installable.
+    OTHER = "other"
 
 
 class DistributionKind(StrEnum):

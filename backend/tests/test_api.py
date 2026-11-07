@@ -8,8 +8,7 @@ from fastapi.testclient import TestClient
 
 API = "/api/v1"
 KUBECONFIG = (
-    "apiVersion: v1\nclusters:\n- name: c\ncontexts:\n- name: x\n"
-    "users:\n- name: u\n  token: s3cr3t-token-value\n"
+    "apiVersion: v1\nclusters:\n- name: c\ncontexts:\n- name: x\nusers:\n- name: u\n  token: s3cr3t-token-value\n"
 )
 
 
@@ -68,8 +67,15 @@ class TestCatalog:
         providers = client.get(f"{API}/catalog/providers").json()
         assert {p["type"] for p in providers} == {"local", "ssh", "proxmox", "vsphere", "aws", "azure", "gcp"}
         status = {p["type"]: p["implementation_status"] for p in providers}
-        assert status.pop("ssh") == "available"
-        assert set(status.values()) == {"planned"}
+        assert status == {
+            "ssh": "available",
+            "local": "available",
+            "proxmox": "preview",
+            "aws": "preview",
+            "azure": "preview",
+            "gcp": "preview",
+            "vsphere": "planned",
+        }
         proxmox = next(p for p in providers if p["type"] == "proxmox")
         assert "api_url" in proxmox["config_schema"]["properties"]
 
@@ -93,7 +99,7 @@ class TestOperations:
         assert [s["key"] for s in op["steps"]] == ["worker", "database", "redis", "secret_store", "catalogs"]
         assert all(s["status"] == "succeeded" for s in op["steps"])
         assert op["result"]["database"]["schema_revision"]
-        assert op["result"]["providers"] == {"available": 1, "planned": 6}
+        assert op["result"]["providers"] == {"available": 2, "preview": 4, "planned": 1}
         assert op["result"]["distributions"] == {"available": 1, "planned": 7}
 
         listed = client.get(f"{API}/operations").json()
@@ -176,9 +182,7 @@ class TestCredentials:
         for r in (detail, listing):
             assert "s3cr3t-token-value" not in r.text
 
-    def test_secret_is_encrypted_at_rest_and_decryptable_by_workers(
-        self, client: TestClient, session
-    ) -> None:  # type: ignore[no-untyped-def]
+    def test_secret_is_encrypted_at_rest_and_decryptable_by_workers(self, client: TestClient, session) -> None:  # type: ignore[no-untyped-def]
         from sqlalchemy import select
 
         from app.core.secrets import get_secret_store
@@ -210,9 +214,7 @@ class TestCredentials:
 
     def test_rotation(self, client: TestClient) -> None:
         created = self.create(client).json()
-        rotated = client.put(
-            f"{API}/credentials/{created['id']}/secret", json={"secret_value": KUBECONFIG + "#"}
-        )
+        rotated = client.put(f"{API}/credentials/{created['id']}/secret", json={"secret_value": KUBECONFIG + "#"})
         assert rotated.status_code == 200 and rotated.json()["rotated_at"]
 
     def test_delete_requires_confirmation(self, client: TestClient) -> None:

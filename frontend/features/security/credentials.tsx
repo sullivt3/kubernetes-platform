@@ -33,10 +33,10 @@ const SECRET_HINT: Record<CredentialKind, string> = {
   ssh_private_key: "PEM or OpenSSH private key (-----BEGIN … PRIVATE KEY-----)",
   ssh_password: "SSH password",
   kubeconfig: "Complete kubeconfig YAML",
-  proxmox_api_token: "Proxmox API token secret",
+  proxmox_api_token: "Proxmox API token secret (the UUID; the token ID goes in the provider connection)",
   vsphere_password: "vCenter password",
-  aws_access_key: "AWS secret access key (put the access key ID in metadata)",
-  azure_service_principal: "Service principal client secret",
+  aws_access_key: "AWS secret access key (the access key ID goes in the provider connection)",
+  azure_service_principal: "Service principal client secret (tenant and client IDs go in the provider connection)",
   gcp_service_account: "Service account key JSON",
   generic_token: "Token value",
 };

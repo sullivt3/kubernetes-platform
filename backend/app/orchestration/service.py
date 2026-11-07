@@ -138,17 +138,13 @@ class OperationService:
                     return self._idempotent_match(existing, workflow_type)
             raise
 
-        self.publisher.publish(
-            principal.organization_id, op_id, ChangeKind.STATUS, OperationStatus.PENDING.value
-        )
+        self.publisher.publish(principal.organization_id, op_id, ChangeKind.STATUS, OperationStatus.PENDING.value)
         self.dispatch(op_id)
         return self.get(principal, op_id)
 
     def dispatch(self, operation_id: uuid.UUID) -> bool:
         """Hand the operation to the execution backend. Failure leaves it PENDING for the recovery job."""
-        organization_id = self.session.scalar(
-            select(Operation.organization_id).where(Operation.id == operation_id)
-        )
+        organization_id = self.session.scalar(select(Operation.organization_id).where(Operation.id == operation_id))
         self.session.commit()  # end the read transaction before a potentially slow hand-off
         if organization_id is None:
             raise NotFoundError("Operation not found")
@@ -313,9 +309,7 @@ class OperationService:
 
     def _find_idempotent(self, organization_id: uuid.UUID, key: str) -> Operation | None:
         return self.session.scalar(
-            select(Operation).where(
-                Operation.organization_id == organization_id, Operation.idempotency_key == key
-            )
+            select(Operation).where(Operation.organization_id == organization_id, Operation.idempotency_key == key)
         )
 
     @staticmethod
@@ -398,9 +392,7 @@ def recover_operations(
                 op.finished_at = now
                 for step in interrupted:
                     step.status, step.finished_at = StepStatus.CANCELLED, now
-                session.add(
-                    OperationLog(operation_id=op.id, level=LogLevel.WARNING, message=f"{lost}; cancelled")
-                )
+                session.add(OperationLog(operation_id=op.id, level=LogLevel.WARNING, message=f"{lost}; cancelled"))
                 report.cancelled.append(str(op.id))
             elif op.recovery_count < settings.operation_max_recoveries:
                 op.status = OperationStatus.PENDING

@@ -68,6 +68,9 @@ class DistributionRegistry:
             options_schema=d.options_model.model_json_schema(),
         )
 
+    def is_registered(self, distribution_type: DistributionType) -> bool:
+        return distribution_type in self._items
+
     def describe_all(self) -> list[DistributionDescriptor]:
         return [self.describe(d) for d in self._items.values()]
 

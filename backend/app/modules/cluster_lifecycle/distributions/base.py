@@ -70,9 +70,7 @@ class KubernetesDistribution(ABC):
     planned_phase: ClassVar[int | None] = None
     supported_providers: ClassVar[frozenset[ProviderType]]
     supported_runtimes: ClassVar[frozenset[ContainerRuntime]] = frozenset({ContainerRuntime.CONTAINERD})
-    supported_cnis: ClassVar[frozenset[CniPlugin]] = frozenset(
-        {CniPlugin.CALICO, CniPlugin.CILIUM, CniPlugin.FLANNEL}
-    )
+    supported_cnis: ClassVar[frozenset[CniPlugin]] = frozenset({CniPlugin.CALICO, CniPlugin.CILIUM, CniPlugin.FLANNEL})
     default_cni: ClassVar[CniPlugin] = CniPlugin.CALICO
     supports_existing_machines: ClassVar[bool] = True
     options_model: ClassVar[type[BaseModel]] = EmptyOptions
@@ -87,8 +85,7 @@ class KubernetesDistribution(ABC):
         if spec.provider_type not in self.supported_providers:
             supported = ", ".join(sorted(p.value for p in self.supported_providers))
             problems.append(
-                f"{self.display_name} cannot run on '{spec.provider_type}' infrastructure "
-                f"(supported: {supported})"
+                f"{self.display_name} cannot run on '{spec.provider_type}' infrastructure (supported: {supported})"
             )
         if spec.container_runtime not in self.supported_runtimes:
             problems.append(f"{self.display_name} does not support the '{spec.container_runtime}' runtime")

@@ -44,9 +44,7 @@ def ssh_credential(client: TestClient) -> str:
 
 
 def register(client: TestClient, credential_id: str, name: str, host: str) -> dict[str, Any]:
-    response = client.post(
-        f"{API}/machines", json={"name": name, "host": host, "credential_id": credential_id}
-    )
+    response = client.post(f"{API}/machines", json={"name": name, "host": host, "credential_id": credential_id})
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -90,9 +88,7 @@ def all_logs(client: TestClient, operation_id: str) -> str:
 
 
 class TestMachines:
-    def test_registration_inspects_and_pins_host_key(
-        self, client: TestClient, machines: dict[str, str]
-    ) -> None:
+    def test_registration_inspects_and_pins_host_key(self, client: TestClient, machines: dict[str, str]) -> None:
         machine = client.get(f"{API}/machines/{machines['cp-1']}").json()
         assert machine["lifecycle_state"] == "ready"
         assert machine["host_key_fingerprint"] == "SHA256:cp1"
@@ -122,9 +118,7 @@ class TestMachines:
         credential_id = ssh_credential(client)
         result = register(client, credential_id, "cp-1", "10.0.0.11")
         assert result["operation"]["status"] == "failed"
-        assert (
-            client.get(f"{API}/machines/{result['machine']['id']}").json()["lifecycle_state"] == "unreachable"
-        )
+        assert client.get(f"{API}/machines/{result['machine']['id']}").json()["lifecycle_state"] == "unreachable"
 
     def test_failed_prerequisites_block_readiness(self, client: TestClient, fleet: FakeCluster) -> None:
         fleet.hosts["10.0.0.11:22"].os_id = "gentoo"
@@ -183,9 +177,7 @@ class TestValidation:
         assert not result["valid"]
         assert any(fragment in p for p in result["problems"]), result["problems"]
 
-    def test_machine_requirements(
-        self, client: TestClient, machines: dict[str, str], fleet: FakeCluster
-    ) -> None:
+    def test_machine_requirements(self, client: TestClient, machines: dict[str, str], fleet: FakeCluster) -> None:
         fleet.hosts["10.0.0.11:22"].cpus = 1
         client.post(f"{API}/machines/{machines['cp-1']}/inspect", json={})
         result = client.post(f"{API}/clusters/validate", json={"spec": spec(machines)}).json()
@@ -199,9 +191,7 @@ class TestValidation:
                 "machine_template": {"cpu_cores": 2, "memory_mb": 4096, "disk_gb": 40},
             }
         ]
-        result = client.post(
-            f"{API}/clusters/validate", json={"spec": spec(machines, worker_pools=pools)}
-        ).json()
+        result = client.post(f"{API}/clusters/validate", json={"spec": spec(machines, worker_pools=pools)}).json()
         assert any("cannot provision new machines" in p for p in result["problems"])
 
     def test_create_rejects_invalid_spec(self, client: TestClient, machines: dict[str, str]) -> None:
@@ -214,9 +204,7 @@ class TestValidation:
 
 
 class TestClusterLifecycle:
-    def test_create_cluster_end_to_end(
-        self, client: TestClient, machines: dict[str, str], fleet: FakeCluster
-    ) -> None:
+    def test_create_cluster_end_to_end(self, client: TestClient, machines: dict[str, str], fleet: FakeCluster) -> None:
         response = client.post(f"{API}/clusters", json={"spec": spec(machines)})
         assert response.status_code == 202, response.text
         op = response.json()["operation"]
@@ -491,15 +479,11 @@ def test_loopback_dns_is_flagged() -> None:
     }
     loop = {
         c.key: c
-        for c in facts.evaluate(
-            {**base, "nameservers": "127.0.0.11", "systemd_resolved": "inactive"}, sudo_ok=True
-        )
+        for c in facts.evaluate({**base, "nameservers": "127.0.0.11", "systemd_resolved": "inactive"}, sudo_ok=True)
     }
     assert loop["dns"].status is facts.CheckStatus.WARN
     resolved = {
         c.key: c
-        for c in facts.evaluate(
-            {**base, "nameservers": "127.0.0.53", "systemd_resolved": "active"}, sudo_ok=True
-        )
+        for c in facts.evaluate({**base, "nameservers": "127.0.0.53", "systemd_resolved": "active"}, sudo_ok=True)
     }
     assert resolved["dns"].status is facts.CheckStatus.PASS

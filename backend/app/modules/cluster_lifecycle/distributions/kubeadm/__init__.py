@@ -57,9 +57,7 @@ class Kubeadm(KubernetesDistribution):
                 "use 'external' with an existing load balancer or DNS name for HA"
             )
         if spec.control_plane.count > 1 and not spec.control_plane.endpoint:
-            problems.append(
-                "Highly available control planes need a stable API endpoint (load balancer address)"
-            )
+            problems.append("Highly available control planes need a stable API endpoint (load balancer address)")
         for pool in (spec.control_plane, *spec.worker_pools):
             if pool.count > len(pool.existing_machine_ids):
                 problems.append(

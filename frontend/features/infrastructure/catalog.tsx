@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ConnectionsSection } from "@/features/infrastructure/connections";
 import { useDistributions, useProviders } from "@/lib/api/hooks";
 import type { JsonSchema } from "@/lib/api/types";
 import { humanize } from "@/lib/format";
@@ -61,8 +62,10 @@ export function ProviderCatalog() {
       <PageHeader
         eyebrow="Infrastructure"
         title="Infrastructure providers"
-        description="Where machines come from: physical servers over SSH, virtualization platforms and public clouds. Providers manage machine lifecycle only; Kubernetes installation is handled separately by distributions."
+        description="Where machines come from: physical servers over SSH, local Docker nodes, virtualization platforms and public clouds. Providers manage machine lifecycle only; Kubernetes installation is handled separately by distributions."
       />
+      <ConnectionsSection providers={providers.data} />
+      <h2 className="pt-2 font-semibold">Supported providers</h2>
       <CatalogNotice what="infrastructure providers" />
       {providers.isLoading && <CardGridSkeleton />}
       {providers.isError && <ErrorState error={providers.error} onRetry={() => providers.refetch()} />}
@@ -87,6 +90,11 @@ export function ProviderCatalog() {
                     {p.capabilities.map((c) => (
                       <Badge key={c} variant="secondary" className="font-normal">
                         {humanize(c)}
+                      </Badge>
+                    ))}
+                    {p.planned_capabilities.map((c) => (
+                      <Badge key={c} variant="outline" className="font-normal text-muted-foreground" title={`Planned for Phase ${p.planned_capabilities_phase}`}>
+                        {humanize(c)} · P{p.planned_capabilities_phase}
                       </Badge>
                     ))}
                   </div>

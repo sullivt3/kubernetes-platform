@@ -36,9 +36,7 @@ class ProviderConnection(UUIDPrimaryKey, Timestamps, OrganizationScoped, Base):
     # Non-secret configuration, validated against the provider's config schema.
     config: Mapped[JsonDict] = mapped_column(default=dict)
     credential_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("credentials.id", ondelete="RESTRICT"))
-    status: Mapped[ConnectionStatus] = mapped_column(
-        str_enum(ConnectionStatus), default=ConnectionStatus.UNKNOWN
-    )
+    status: Mapped[ConnectionStatus] = mapped_column(str_enum(ConnectionStatus), default=ConnectionStatus.UNKNOWN)
     status_message: Mapped[str | None] = mapped_column(Text)
     last_validated_at: Mapped[datetime | None]
 
@@ -82,9 +80,7 @@ class Machine(UUIDPrimaryKey, Timestamps, OrganizationScoped, Base):
     ssh_host: Mapped[str | None] = mapped_column(String(255))
     ssh_port: Mapped[int] = mapped_column(default=22)
     ssh_username: Mapped[str | None] = mapped_column(String(64))
-    access_credential_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("credentials.id", ondelete="RESTRICT")
-    )
+    access_credential_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("credentials.id", ondelete="RESTRICT"))
 
     # Pinned SSH host key (trust-on-first-use, then strictly verified).
     host_key_type: Mapped[str | None] = mapped_column(String(64))
@@ -97,6 +93,14 @@ class Machine(UUIDPrimaryKey, Timestamps, OrganizationScoped, Base):
     # Prerequisite checks: [{"key", "label", "status": pass|warn|fail, "message"}]
     checks: Mapped[JsonList] = mapped_column(default=list)
     labels: Mapped[JsonDict] = mapped_column(default=dict)
+
+    # Created (and destroyable) by the platform through its provider, as opposed to a
+    # server that existed before and was only registered.
+    provisioned: Mapped[bool] = mapped_column(default=False, server_default="false")
+    # Size requested at provisioning time: {"cpu_cores", "memory_mb", "disk_gb"}.
+    requested_spec: Mapped[JsonDict] = mapped_column(default=dict, server_default="{}")
+    # Non-secret provider facts (VMID, container ID, published Kubernetes API endpoint...).
+    provider_metadata: Mapped[JsonDict] = mapped_column(default=dict, server_default="{}")
     last_error: Mapped[str | None] = mapped_column(Text)
     last_seen_at: Mapped[datetime | None]
     inspected_at: Mapped[datetime | None]

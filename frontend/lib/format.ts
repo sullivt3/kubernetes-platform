@@ -74,3 +74,30 @@ export function humanize(value: string): string {
 export function shortId(id: string): string {
   return id.slice(0, 8);
 }
+
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined) return "—";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+export function formatCpu(millicores: number | null | undefined): string {
+  if (millicores === null || millicores === undefined) return "—";
+  return millicores >= 1000 ? `${(millicores / 1000).toFixed(millicores % 1000 === 0 ? 0 : 1)} cores` : `${millicores}m`;
+}
+
+/** Kubernetes-style age: 45s, 12m, 3h, 5d. */
+export function formatAge(iso: string | null | undefined, now: number = Date.now()): string {
+  if (!iso) return "—";
+  const seconds = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
+  if (seconds < 120) return `${seconds}s`;
+  if (seconds < 7200) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 172800) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}

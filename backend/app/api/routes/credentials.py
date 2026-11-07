@@ -81,9 +81,7 @@ def list_credentials(
     service: CredentialService = Depends(get_credential_service),
 ) -> Page[CredentialOut]:
     rows, total = service.list_credentials(principal, kind=kind, limit=limit, offset=offset)
-    return Page(
-        items=[CredentialOut.model_validate(r) for r in rows], total=total, limit=limit, offset=offset
-    )
+    return Page(items=[CredentialOut.model_validate(r) for r in rows], total=total, limit=limit, offset=offset)
 
 
 @router.get("/{credential_id}", response_model=CredentialDetail)

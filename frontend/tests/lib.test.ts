@@ -62,3 +62,18 @@ describe("api client", () => {
     await expect(apiRequest("/x", { method: "DELETE" })).resolves.toBeUndefined();
   });
 });
+
+describe("resource formatting", () => {
+  it("formats bytes, cpu and age", async () => {
+    const { formatAge, formatBytes, formatCpu } = await import("@/lib/format");
+    expect(formatBytes(134217728)).toBe("128 MiB");
+    expect(formatBytes(1.5 * 1024 ** 3)).toBe("1.5 GiB");
+    expect(formatCpu(250)).toBe("250m");
+    expect(formatCpu(2000)).toBe("2 cores");
+    expect(formatCpu(1500)).toBe("1.5 cores");
+    const now = Date.parse("2026-01-02T00:00:00Z");
+    expect(formatAge("2026-01-01T23:59:30Z", now)).toBe("30s");
+    expect(formatAge("2026-01-01T21:00:00Z", now)).toBe("3h");
+    expect(formatAge("2025-12-28T00:00:00Z", now)).toBe("5d");
+  });
+});

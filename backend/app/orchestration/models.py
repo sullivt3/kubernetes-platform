@@ -75,9 +75,7 @@ class Operation(UUIDPrimaryKey, Timestamps, OrganizationScoped, Base):
 
     type: Mapped[str] = mapped_column(String(128))
     title: Mapped[str] = mapped_column(String(255))
-    status: Mapped[OperationStatus] = mapped_column(
-        str_enum(OperationStatus, 16), default=OperationStatus.PENDING
-    )
+    status: Mapped[OperationStatus] = mapped_column(str_enum(OperationStatus, 16), default=OperationStatus.PENDING)
 
     target_type: Mapped[str | None] = mapped_column(String(64))
     target_id: Mapped[str | None] = mapped_column(String(128))
@@ -99,9 +97,7 @@ class Operation(UUIDPrimaryKey, Timestamps, OrganizationScoped, Base):
 
     requested_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     requested_by_subject: Mapped[str] = mapped_column(String(512))
-    parent_operation_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("operations.id", ondelete="SET NULL")
-    )
+    parent_operation_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("operations.id", ondelete="SET NULL"))
 
     dispatch_id: Mapped[str | None] = mapped_column(String(128))
     worker_id: Mapped[str | None] = mapped_column(String(255))

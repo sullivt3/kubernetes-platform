@@ -47,10 +47,8 @@ def test_provider_metadata_is_complete(cls: type[InfrastructureProvider]) -> Non
 
 
 def test_planned_providers_cannot_be_instantiated() -> None:
-    with pytest.raises(NotImplementedYetError, match="Phase 3"):
-        provider_registry.create(
-            ProviderType.PROXMOX, {"api_url": "https://pve:8006", "node": "pve1"}, credential=b"token"
-        )
+    with pytest.raises(NotImplementedYetError, match="Phase 5"):
+        provider_registry.create(ProviderType.VSPHERE, {"server": "vc", "datacenter": "dc1"}, credential=b"pw")
 
 
 def test_config_validation_reports_field_errors() -> None:
@@ -60,7 +58,9 @@ def test_config_validation_reports_field_errors() -> None:
 
 
 def test_valid_config_is_parsed() -> None:
-    config = provider_registry.validate_config(ProviderType.AWS, {"region": "us-east-1"})
+    config = provider_registry.validate_config(
+        ProviderType.AWS, {"access_key_id": "AKIAIOSFODNN7EXAMPLE", "region": "us-east-1"}
+    )
     assert config.region == "us-east-1"  # type: ignore[attr-defined]
 
 

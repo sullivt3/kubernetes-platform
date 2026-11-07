@@ -83,9 +83,7 @@ class StepContext:
 
     def is_cancel_requested(self) -> bool:
         with self.db() as session:
-            requested = session.scalar(
-                select(Operation.cancel_requested_at).where(Operation.id == self.operation_id)
-            )
+            requested = session.scalar(select(Operation.cancel_requested_at).where(Operation.id == self.operation_id))
         return requested is not None
 
     def check_cancelled(self) -> None:

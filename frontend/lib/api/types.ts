@@ -47,6 +47,8 @@ export interface ProviderDescriptor {
   implementation_status: ImplementationStatus;
   planned_phase: number | null;
   capabilities: string[];
+  planned_capabilities: string[];
+  planned_capabilities_phase: number | null;
   credential_kinds: string[];
   credential_required: boolean;
   config_schema: JsonSchema;
@@ -212,6 +214,14 @@ export interface ClusterSummary {
   created_at: string;
   node_count: number;
   active_operation_id: string | null;
+  kubeconfig_context: string | null;
+  api_server_override: string | null;
+  tls_server_name: string | null;
+  connected: boolean;
+  /** Last observed health (periodic probe); see observed_at. */
+  health: import("./kube").ClusterHealth | null;
+  health_error: { code: string; message: string; observed_at?: string; operation_id?: string } | null;
+  observed_at: string | null;
 }
 
 export interface ClusterNode {
@@ -265,6 +275,7 @@ export interface ClusterValidation {
   problems: string[];
   steps: { key: string; name: string }[];
   nodes: { machine_id: string; name: string; role: string; pool: string }[];
+  notes: string[];
 }
 
 export interface KubernetesVersions {
@@ -319,8 +330,61 @@ export interface Machine {
   last_error: string | null;
   inspected_at: string | null;
   created_at: string;
+  provider_connection_id: string;
+  external_id: string;
+  power_state: "unknown" | "running" | "stopped" | "suspended";
+  provisioned: boolean;
+  requested_spec: { cpu_cores?: number; memory_mb?: number; disk_gb?: number };
+  provider_metadata: Record<string, string>;
+  connection_name: string | null;
+  provider_type: string | null;
   cluster_name: string | null;
   cluster_role: string | null;
+}
+
+export interface ProviderConnection {
+  id: string;
+  name: string;
+  provider_type: string;
+  provider_name: string;
+  category: string;
+  implementation_status: ImplementationStatus;
+  capabilities: string[];
+  config: Record<string, unknown>;
+  credential_id: string | null;
+  status: "unknown" | "connected" | "error";
+  status_message: string | null;
+  last_validated_at: string | null;
+  created_at: string;
+  machine_count: number;
+}
+
+export interface Endpoint {
+  host: string;
+  port: number;
+}
+
+export interface DiscoveredMachine {
+  external_id: string;
+  name: string;
+  addresses: { type: string; address: string }[];
+  power_state: string;
+  hardware: { cpu_cores?: number | null; memory_mb?: number | null; architecture?: string | null } | null;
+  os: { family?: string | null; distribution?: string | null; version?: string | null } | null;
+  provider_metadata: Record<string, string>;
+  ssh_endpoint: Endpoint | null;
+  kube_api_endpoint: Endpoint | null;
+  importable: boolean;
+  inventory_machine: string | null;
+}
+
+export interface NetworkHost {
+  address: string;
+  port: number;
+  banner: string;
+  os_hint: string | null;
+  hostname: string | null;
+  registered_as: string | null;
 }
 
 export interface MachineRegister {

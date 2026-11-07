@@ -137,9 +137,7 @@ def inline_service(
 def deferred_service(
     session: Session, recording_dispatcher: RecordingDispatcher, publisher: RecordingEventPublisher
 ) -> OperationService:
-    return OperationService(
-        session, registry=workflow_registry, dispatcher=recording_dispatcher, publisher=publisher
-    )
+    return OperationService(session, registry=workflow_registry, dispatcher=recording_dispatcher, publisher=publisher)
 
 
 @pytest.fixture

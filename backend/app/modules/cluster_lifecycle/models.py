@@ -54,13 +54,16 @@ class Cluster(UUIDPrimaryKey, Timestamps, OrganizationScoped, Base):
 
     # Kubeconfig (or managed-service credential) used by the platform to reach the API.
     # Stored encrypted in ``credentials``; never sent to the browser.
-    access_credential_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("credentials.id", ondelete="RESTRICT")
-    )
+    access_credential_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("credentials.id", ondelete="RESTRICT"))
     # Infrastructure the cluster runs on (null for imported clusters of unknown origin).
     provider_connection_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("provider_connections.id", ondelete="RESTRICT")
     )
+
+    # How the platform reaches the API server (imported clusters, NAT, proxies).
+    kubeconfig_context: Mapped[str | None] = mapped_column(String(253))
+    api_server_override: Mapped[str | None] = mapped_column(String(512))
+    tls_server_name: Mapped[str | None] = mapped_column(String(253))
 
     spec: Mapped[JsonDict] = mapped_column(default=dict)  # desired configuration (ClusterSpec)
     status_detail: Mapped[JsonDict] = mapped_column(default=dict)  # last observed health summary

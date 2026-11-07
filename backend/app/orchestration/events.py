@@ -47,13 +47,6 @@ class EventPublisher(ABC):
         """Announce a change. Must never raise."""
 
 
-class NullEventPublisher(EventPublisher):
-    def publish(
-        self, organization_id: uuid.UUID, operation_id: uuid.UUID, kind: ChangeKind, status: str | None = None
-    ) -> None:
-        return None
-
-
 class RecordingEventPublisher(EventPublisher):
     """Test double that records every notification."""
 

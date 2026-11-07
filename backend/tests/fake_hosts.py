@@ -217,9 +217,7 @@ class FakeExecutor(HostExecutor):
     def get_file(self, remote_path: str, *, sudo: bool = False) -> bytes:
         if remote_path == "/etc/kubernetes/admin.conf" and self.host.initialized:
             return (
-                "apiVersion: v1\nclusters:\n- cluster: {server: https://"
-                + self.host.ip
-                + ":6443}\n  name: lab\n"
+                "apiVersion: v1\nclusters:\n- cluster: {server: https://" + self.host.ip + ":6443}\n  name: lab\n"
                 "contexts:\n- context: {cluster: lab, user: admin}\n  name: admin@lab\n"
                 "users:\n- name: admin\n  user:\n    client-key-data: SECRETKEYDATA\n"
             ).encode()

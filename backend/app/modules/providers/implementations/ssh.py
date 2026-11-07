@@ -42,6 +42,4 @@ class SshProvider(InfrastructureProvider):
 
     def connection_endpoint(self, host: str, port: int | None, username: str | None) -> HostEndpoint:
         config: SshConfig = self.config  # type: ignore[assignment]
-        return HostEndpoint(
-            host=host, port=port or config.default_port, username=username or config.default_username
-        )
+        return HostEndpoint(host=host, port=port or config.default_port, username=username or config.default_username)

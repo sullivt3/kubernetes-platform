@@ -11,11 +11,7 @@ from typing import Any
 
 @cache
 def detect_script() -> str:
-    return (
-        (resources.files("app.modules.infrastructure") / "scripts" / "detect.sh")
-        .read_text()
-        .replace("\r\n", "\n")
-    )
+    return (resources.files("app.modules.infrastructure") / "scripts" / "detect.sh").read_text().replace("\r\n", "\n")
 
 
 def parse_facts(output: str) -> dict[str, str]:
@@ -95,9 +91,7 @@ def evaluate(facts: dict[str, str], *, sudo_ok: bool) -> list[Check]:
         "systemd",
         "systemd",
         CheckStatus.PASS if facts.get("systemd") == "yes" else CheckStatus.FAIL,
-        "systemd is the init system"
-        if facts.get("systemd") == "yes"
-        else "systemd is required to run kubelet",
+        "systemd is the init system" if facts.get("systemd") == "yes" else "systemd is required to run kubelet",
     )
     add(
         "sudo",
@@ -114,11 +108,7 @@ def evaluate(facts: dict[str, str], *, sudo_ok: bool) -> list[Check]:
         "CPU",
         CheckStatus.PASS if cpus >= MIN_CPUS_CONTROL_PLANE else CheckStatus.WARN,
         f"{cpus} core(s)"
-        + (
-            ""
-            if cpus >= MIN_CPUS_CONTROL_PLANE
-            else "; control-plane nodes need at least 2 (workers may use 1)"
-        ),
+        + ("" if cpus >= MIN_CPUS_CONTROL_PLANE else "; control-plane nodes need at least 2 (workers may use 1)"),
     )
     memory = _int(facts.get("memory_mb")) or 0
     add(

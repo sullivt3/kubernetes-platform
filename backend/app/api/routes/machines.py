@@ -10,12 +10,14 @@ from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 
 from app.api.auth import get_principal
-from app.api.deps import get_machine_service
+from app.api.deps import get_connection_service, get_machine_service
 from app.api.routes.operations import OperationDetail
 from app.api.schemas import ApiModel
 from app.core.principal import Principal
+from app.modules.infrastructure.connections import ProviderConnectionService
 from app.modules.infrastructure.models import Machine
 from app.modules.infrastructure.service import MachineService
+from app.modules.providers.types import PowerAction
 
 router = APIRouter(prefix="/machines", tags=["machines"])
 
@@ -31,6 +33,10 @@ class MachineRegister(BaseModel):
 
 class MachineInspect(BaseModel):
     accept_new_host_key: bool = False
+
+
+class MachinePower(BaseModel):
+    action: PowerAction
 
 
 class MachineOut(ApiModel):
@@ -50,6 +56,14 @@ class MachineOut(ApiModel):
     last_error: str | None
     inspected_at: datetime | None
     created_at: datetime
+    provider_connection_id: uuid.UUID
+    external_id: str
+    power_state: str
+    provisioned: bool
+    requested_spec: dict[str, Any]
+    provider_metadata: dict[str, Any]
+    connection_name: str | None = None
+    provider_type: str | None = None
     cluster_name: str | None = None
     cluster_role: str | None = None
 
@@ -59,9 +73,13 @@ class MachineRegistered(BaseModel):
     operation: OperationDetail
 
 
-def _out(machine: Machine, cluster: str | None, role: str | None) -> MachineOut:
+def _out(
+    machine: Machine, cluster: str | None, role: str | None, connections: dict[uuid.UUID, tuple[str, str]] | None = None
+) -> MachineOut:
     out = MachineOut.model_validate(machine)
     out.cluster_name, out.cluster_role = cluster, role
+    if connections and machine.provider_connection_id in connections:
+        out.connection_name, out.provider_type = connections[machine.provider_connection_id]
     return out
 
 
@@ -69,7 +87,8 @@ def _out(machine: Machine, cluster: str | None, role: str | None) -> MachineOut:
 def list_machines(
     principal: Principal = Depends(get_principal), service: MachineService = Depends(get_machine_service)
 ) -> list[MachineOut]:
-    return [_out(m, c, r) for m, c, r in service.list_machines(principal)]
+    connections = service.connections(principal)
+    return [_out(m, c, r, connections) for m, c, r in service.list_machines(principal)]
 
 
 @router.post("", response_model=MachineRegistered, status_code=201)
@@ -88,9 +107,7 @@ def register_machine(
         credential_id=body.credential_id,
         labels=body.labels,
     )
-    return MachineRegistered(
-        machine=_out(machine, None, None), operation=OperationDetail.model_validate(operation)
-    )
+    return MachineRegistered(machine=_out(machine, None, None), operation=OperationDetail.model_validate(operation))
 
 
 @router.get("/{machine_id}", response_model=MachineOut)
@@ -100,22 +117,18 @@ def get_machine(
     service: MachineService = Depends(get_machine_service),
 ) -> MachineOut:
     machine = service.get(principal, machine_id)
-    return _out(machine, *service.assignment(machine.id))
+    return _out(machine, *service.assignment(machine.id), service.connections(principal))
 
 
 @router.post("/{machine_id}/inspect", response_model=OperationDetail, status_code=202)
 def inspect_machine(
     machine_id: uuid.UUID,
     body: MachineInspect,
-    confirm: str | None = Query(
-        default=None, description="Machine name; required when accepting a new host key"
-    ),
+    confirm: str | None = Query(default=None, description="Machine name; required when accepting a new host key"),
     principal: Principal = Depends(get_principal),
     service: MachineService = Depends(get_machine_service),
 ) -> OperationDetail:
-    operation = service.inspect(
-        principal, machine_id, accept_new_host_key=body.accept_new_host_key, confirm=confirm
-    )
+    operation = service.inspect(principal, machine_id, accept_new_host_key=body.accept_new_host_key, confirm=confirm)
     return OperationDetail.model_validate(operation)
 
 
@@ -129,3 +142,26 @@ def delete_machine(
     """Remove the machine from the inventory. Nothing is changed on the server itself."""
     service.delete(principal, machine_id, confirm=confirm)
     return Response(status_code=204)
+
+
+@router.post("/{machine_id}/power", response_model=OperationDetail, status_code=202)
+def power_machine(
+    machine_id: uuid.UUID,
+    body: MachinePower,
+    confirm: str | None = Query(default=None, description="Machine name; required to stop/reboot a cluster node"),
+    principal: Principal = Depends(get_principal),
+    service: ProviderConnectionService = Depends(get_connection_service),
+) -> OperationDetail:
+    """Start, stop or reboot a machine through its provider (`machine.power`)."""
+    return OperationDetail.model_validate(service.power(principal, machine_id, body.action, confirm=confirm))
+
+
+@router.post("/{machine_id}/destroy", response_model=OperationDetail, status_code=202)
+def destroy_machine(
+    machine_id: uuid.UUID,
+    confirm: str | None = Query(default=None, description="Must equal the machine name"),
+    principal: Principal = Depends(get_principal),
+    service: ProviderConnectionService = Depends(get_connection_service),
+) -> OperationDetail:
+    """Delete a platform-provisioned machine at its provider, then remove it from the inventory."""
+    return OperationDetail.model_validate(service.destroy(principal, machine_id, confirm=confirm))

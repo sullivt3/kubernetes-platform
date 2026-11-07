@@ -35,9 +35,7 @@ class InspectParams(BaseModel):
 def step_connect(ctx: StepContext) -> dict[str, Any]:
     p: InspectParams = ctx.params  # type: ignore[assignment]
     with connect(ctx, p.machine_id, accept_new_host_key=p.accept_new_host_key) as executor:
-        ctx.info(
-            f"Connected to {executor.endpoint.host}:{executor.endpoint.port} as {executor.endpoint.username}"
-        )
+        ctx.info(f"Connected to {executor.endpoint.host}:{executor.endpoint.port} as {executor.endpoint.username}")
         sudo = executor.run("true", CommandOptions(sudo=True, timeout_seconds=30))
         sudo_ok = sudo.ok
         if sudo_ok:
@@ -53,9 +51,7 @@ def step_inspect(ctx: StepContext) -> dict[str, Any]:
     with connect(ctx, p.machine_id) as executor:
         result = run_script(executor, facts_mod.detect_script(), sudo=False, timeout_seconds=120)
     if not result.ok:
-        raise StepFailedError(
-            f"Inspection script failed: {result.stderr.strip()[-500:]}", code="inspection_failed"
-        )
+        raise StepFailedError(f"Inspection script failed: {result.stderr.strip()[-500:]}", code="inspection_failed")
     facts = facts_mod.parse_facts(result.stdout)
     checks = facts_mod.evaluate(facts, sudo_ok=bool(ctx.outputs.get("connect", {}).get("sudo_ok")))
     os_info, hardware, addresses = facts_mod.summarize(facts)
@@ -94,9 +90,7 @@ def step_inspect(ctx: StepContext) -> dict[str, Any]:
     }
     ctx.set_result(summary)
     if failures:
-        ctx.warning(
-            f"{len(failures)} prerequisite check(s) failed; the machine cannot be used for clusters yet"
-        )
+        ctx.warning(f"{len(failures)} prerequisite check(s) failed; the machine cannot be used for clusters yet")
     return summary
 
 

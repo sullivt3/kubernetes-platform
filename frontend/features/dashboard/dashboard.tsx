@@ -1,6 +1,6 @@
 "use client";
 
-import { Boxes, Cpu, Database, KeyRound, Server, Workflow } from "lucide-react";
+import { Boxes, Cpu, Server, Workflow } from "lucide-react";
 import Link from "next/link";
 
 import { EmptyState, ErrorState, PageHeader, Section, TableSkeleton } from "@/components/common/page";
@@ -8,6 +8,7 @@ import { HealthBadge, HEALTH_TONE, StatusDot } from "@/components/common/status"
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ClusterHealthSection } from "@/features/dashboard/cluster-health";
 import { OperationsTable } from "@/features/operations/operations-table";
 import { SelfCheckButton } from "@/features/operations/self-check-button";
 import {
@@ -186,51 +187,6 @@ function SystemCard() {
   );
 }
 
-function ClusterUtilization() {
-  const clusters = useClusters();
-  return (
-    <Section
-      title="Cluster health & utilization"
-      description="CPU, memory, storage and workload status across connected clusters"
-    >
-      {clusters.isLoading ? (
-        <Skeleton className="h-40" />
-      ) : clusters.isError ? (
-        <ErrorState error={clusters.error} onRetry={() => clusters.refetch()} />
-      ) : clusters.data && clusters.data.length > 0 ? (
-        <EmptyState
-          icon={Database}
-          title={`${clusters.data.length} cluster(s) managed by the platform`}
-          description="Live health and utilization metrics are collected from cluster APIs starting in Phase 1."
-          action={
-            <Button asChild variant="outline" size="sm">
-              <Link href="/kubernetes/clusters">View clusters</Link>
-            </Button>
-          }
-        />
-      ) : (
-        <EmptyState
-          icon={Database}
-          title="No clusters connected"
-          description="Register Linux machines and the platform installs Kubernetes on them. Live health and utilization metrics from cluster APIs arrive in Phase 1."
-          action={
-            <div className="flex gap-2">
-              <Button asChild variant="outline" size="sm">
-                <Link href="/infrastructure/machines">
-                  <KeyRound /> Register machines
-                </Link>
-              </Button>
-              <Button asChild size="sm">
-                <Link href="/kubernetes/create">Create cluster</Link>
-              </Button>
-            </div>
-          }
-        />
-      )}
-    </Section>
-  );
-}
-
 function RecentOperations() {
   const operations = useOperations({ limit: 8 });
   return (
@@ -286,7 +242,7 @@ export function Dashboard() {
         <PlatformHealthCard />
         <SystemCard />
       </div>
-      <ClusterUtilization />
+      <ClusterHealthSection />
       <RecentOperations />
     </div>
   );

@@ -95,11 +95,6 @@ def build_secret_store(settings: Settings) -> SecretStore:
     return FernetSecretStore.from_config(settings.secret_encryption_keys.get_secret_value())
 
 
-def generate_key_entry(key_id: str = "k1") -> str:
-    """Return a new ``key_id:fernet_key`` entry suitable for SECRET_ENCRYPTION_KEYS."""
-    return f"{key_id}:{Fernet.generate_key().decode()}"
-
-
 @lru_cache
 def get_secret_store() -> SecretStore:
     return build_secret_store(get_settings())

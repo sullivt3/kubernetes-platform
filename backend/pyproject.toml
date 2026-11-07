@@ -15,6 +15,9 @@ dependencies = [
     "redis>=5.2",
     "cryptography>=43",
     "paramiko>=3.5",
+    "pyyaml>=6.0",
+    "websockets>=13",
+    "docker>=7.1",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +36,7 @@ build-backend = "setuptools.build_meta"
 include = ["app*"]
 
 [tool.setuptools.package-data]
-"*" = ["scripts/*.sh"]
+"*" = ["scripts/*.sh", "local_node/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -41,7 +44,7 @@ addopts = "-ra --strict-markers"
 filterwarnings = ["ignore::DeprecationWarning:celery.*"]
 
 [tool.ruff]
-line-length = 110
+line-length = 120
 target-version = "py312"
 
 [tool.ruff.lint]
