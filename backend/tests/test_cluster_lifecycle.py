@@ -167,7 +167,7 @@ class TestValidation:
         [
             ({"network": {"cni": "cilium"}}, "CNI 'cilium' is not supported"),
             ({"kubernetes_version": "1.27"}, "not supported; use 1.30"),
-            ({"provider_type": "proxmox"}, "cannot run on 'proxmox'"),
+            ({"provider_type": "aws"}, "cannot run on 'aws'"),
         ],
     )
     def test_unsupported_choices(
@@ -183,7 +183,7 @@ class TestValidation:
         result = client.post(f"{API}/clusters/validate", json={"spec": spec(machines)}).json()
         assert any("needs at least 2 CPUs" in p for p in result["problems"])
 
-    def test_provisioning_not_available(self, client: TestClient, machines: dict[str, str]) -> None:
+    def test_provisioning_needs_a_connection(self, client: TestClient, machines: dict[str, str]) -> None:
         pools = [
             {
                 "name": "auto",
@@ -192,7 +192,8 @@ class TestValidation:
             }
         ]
         result = client.post(f"{API}/clusters/validate", json={"spec": spec(machines, worker_pools=pools)}).json()
-        assert any("cannot provision new machines" in p for p in result["problems"])
+        assert any("need a provider connection" in p for p in result["problems"])
+        assert any("need an SSH key credential" in p for p in result["problems"])
 
     def test_create_rejects_invalid_spec(self, client: TestClient, machines: dict[str, str]) -> None:
         response = client.post(f"{API}/clusters", json={"spec": spec(machines, network={"cni": "cilium"})})

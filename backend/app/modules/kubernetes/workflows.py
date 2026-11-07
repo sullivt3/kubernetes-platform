@@ -227,3 +227,42 @@ workflow_registry.register(
         title_for=lambda p: f"Install metrics-server on {p.cluster_name}",
     )
 )
+
+
+# --------------------------------------------------------------------------- node drain
+
+NODE_DRAIN = "cluster.node.drain"
+
+
+class DrainParams(ConnectParams):
+    node: str
+    options: dict[str, Any] = {}
+
+
+def step_drain(ctx: StepContext) -> dict[str, Any]:
+    from app.modules.kubernetes import nodes as knodes
+
+    p: DrainParams = ctx.params  # type: ignore[assignment]
+    api = _api(ctx, p.cluster_id)
+    options = knodes.DrainOptions.model_validate(p.options)
+    try:
+        result = knodes.drain(api, p.node, options, log=ctx.info, should_stop=ctx.check_cancelled)
+    except ClusterUnreachableError as exc:
+        raise RetryableStepError(exc.message) from exc
+    except PlatformError as exc:
+        raise StepFailedError(exc.message, code=exc.code, details=exc.details) from exc
+    ctx.set_result({"node": p.node, **result})
+    return {"evicted": result["evicted"]}
+
+
+workflow_registry.register(
+    WorkflowDefinition(
+        type=NODE_DRAIN,
+        title="Drain node",
+        description="Cordon a node and evict its pods (respecting PodDisruptionBudgets).",
+        params_model=DrainParams,
+        plan=lambda p: [StepDefinition("drain", f"Cordon and drain {p.node}", step_drain, max_attempts=2)],
+        target=lambda p: OperationTarget(type="node", id=f"{p.cluster_id}/{p.node}", name=p.node),
+        title_for=lambda p: f"Drain {p.node} ({p.cluster_name})",
+    )
+)

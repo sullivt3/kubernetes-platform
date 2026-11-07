@@ -116,12 +116,15 @@ Machines include `provider_type`, `connection_name`, `external_id`, `power_state
 | POST | `/clusters/validate` | Check `{spec}` against distribution rules and the live inventory. Returns `{valid, problems, steps, nodes, notes}`; no side effects. `notes` lists defaults applied automatically (e.g. for container machines). |
 | POST | `/clusters` | Create `{spec, description?}` (202). Returns the cluster plus the `cluster.create` operation. 422 with `details.problems` when invalid. |
 | GET | `/clusters/{id}` | Detail: spec, nodes, status detail (including the last failure), operation history. The kubeconfig is never included. |
-| DELETE | `/clusters/{id}?confirm=<name>&force=<bool>` | Reset all nodes and release the machines (202). `force` continues past unreachable nodes. |
+| DELETE | `/clusters/{id}?confirm=<name>&force=<bool>&destroy_machines=<bool>` | Reset all nodes and release the machines (202). `force` continues past unreachable nodes; `destroy_machines` also destroys machines the platform provisioned. |
+| POST | `/clusters/{id}/nodes` | `{pool, existing_machine_ids[], provision_count, machine_template?, provider_connection_id?, machine_credential_id?, labels?, taints?}` → `cluster.nodes.add` (202). `pool` may be an existing pool, the control-plane pool (clusters with a shared endpoint only) or a new worker pool (then `labels`/`taints` apply). |
+| DELETE | `/clusters/{id}/nodes/{node}?confirm=<node>&destroy_machine=<bool>&force=<bool>` | Drain, reset and release the node (`cluster.nodes.remove`, 202). The last control plane cannot be removed. |
 
 `ClusterSpec` (abridged):
-`{name, distribution: "kubeadm", provider_type: "ssh" (existing machines from any provider), kubernetes_version: "1.37" | "1.37.2", network: {cni, pod_cidr,
-service_cidr, dns_domain}, control_plane: {count, existing_machine_ids, endpoint?, load_balancer: "none"|"external"},
-worker_pools: [{name, count, existing_machine_ids, labels, taints}], options: {allow_swap, control_plane_workloads,
+`{name, distribution: "kubeadm", provider_type: "ssh"|"local"|"proxmox", provider_connection_id?, machine_credential_id?,
+machine_username?, kubernetes_version: "1.37" | "1.37.2", network: {cni, pod_cidr, service_cidr, dns_domain},
+control_plane: {count, existing_machine_ids, machine_template?, endpoint?, load_balancer: "none"|"kube-vip"|"external"},
+worker_pools: [{name, count, existing_machine_ids, machine_template?, labels, taints}], options: {allow_swap, control_plane_workloads,
 kube_proxy_conntrack_max_per_core, ignore_preflight_errors, api_server_extra_sans, ready_timeout_seconds}}`
 
 ### Cluster connectivity and live data
@@ -137,6 +140,11 @@ kube_proxy_conntrack_max_per_core, ignore_preflight_errors, api_server_extra_san
 | GET | `/clusters/{id}/health` | Live summary: version, readiness checks, nodes, pods, CPU/memory (allocatable, requested, used), alerts. |
 | GET | `/clusters/{id}/nodes` | Live nodes with roles, conditions, capacity, requested and used resources, pod counts. |
 | GET | `/clusters/{id}/nodes/{name}` | One node plus its pods and events. |
+| POST | `/clusters/{id}/nodes/{name}/cordon` · `/uncordon` | Mark the node (un)schedulable; returns the node. |
+| PATCH | `/clusters/{id}/nodes/{name}/labels` | `{set: {k: v}, remove: [k]}`; Kubernetes-maintained labels are refused. |
+| PUT | `/clusters/{id}/nodes/{name}/taints` | `{taints: [{key, value?, effect}]}` replaces the user-managed taints. |
+| POST | `/clusters/{id}/nodes/{name}/drain` | `{force, delete_emptydir_data, grace_period_seconds?, timeout_seconds}` → `cluster.node.drain` (202). |
+| GET | `/clusters/{id}/nodes/{name}/logs?unit=kubelet\|containerd&lines=` | Journal of the node as text (platform-installed clusters). |
 | GET | `/clusters/{id}/namespaces` | Namespaces with pod counts and failing pods. |
 | GET | `/clusters/{id}/pods?namespace=&node=&problems=` | Pods with kubectl-style status, readiness, restarts, owner. |
 | GET | `/clusters/{id}/events?namespace=&warnings=&limit=` | Recent events, newest first. |

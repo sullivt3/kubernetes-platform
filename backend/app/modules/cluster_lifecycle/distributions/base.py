@@ -40,6 +40,8 @@ class PlannedNode(BaseModel):
     name: str
     role: Literal["control_plane", "worker"]
     pool: str
+    # Created by the platform for this cluster (waits for provisioning; destroyable with the cluster).
+    provisioned: bool = False
 
 
 class ClusterPlanInput(BaseModel):
@@ -49,7 +51,11 @@ class ClusterPlanInput(BaseModel):
     cluster_name: str
     spec: ClusterSpec
     nodes: list[PlannedNode]
-    force: bool = Field(default=False, description="Delete: continue past unreachable nodes")
+    force: bool = Field(default=False, description="Delete/remove: continue past unreachable nodes")
+    # Node add/remove: an existing, joined control plane used to issue join tokens and run kubectl.
+    anchor: PlannedNode | None = None
+    # Delete/remove: also destroy platform-provisioned machines at their provider.
+    destroy_machines: bool = False
 
     @property
     def control_planes(self) -> list[PlannedNode]:
@@ -58,6 +64,13 @@ class ClusterPlanInput(BaseModel):
     @property
     def workers(self) -> list[PlannedNode]:
         return [n for n in self.nodes if n.role == "worker"]
+
+    @property
+    def lead(self) -> PlannedNode:
+        """The control plane that drives the operation: the anchor, or the first new control plane."""
+        if self.anchor is not None:
+            return self.anchor
+        return self.control_planes[0]
 
 
 class KubernetesDistribution(ABC):
@@ -119,10 +132,12 @@ class KubernetesDistribution(ABC):
     def plan_create(self, plan: ClusterPlanInput) -> list[StepDefinition]:
         raise self._not_ready("cluster creation")
 
-    def plan_add_nodes(self, plan: ClusterPlanInput, new_nodes: list[PlannedNode]) -> list[StepDefinition]:
+    def plan_add_nodes(self, plan: ClusterPlanInput) -> list[StepDefinition]:
+        """``plan.nodes`` are the new nodes; ``plan.anchor`` is an existing control plane."""
         raise self._not_ready("node addition")
 
-    def plan_remove_nodes(self, plan: ClusterPlanInput, node_names: list[str]) -> list[StepDefinition]:
+    def plan_remove_nodes(self, plan: ClusterPlanInput) -> list[StepDefinition]:
+        """``plan.nodes`` are the nodes to remove; ``plan.anchor`` is a control plane that stays."""
         raise self._not_ready("node removal")
 
     def plan_upgrade(self, plan: ClusterPlanInput, target_version: str) -> list[StepDefinition]:

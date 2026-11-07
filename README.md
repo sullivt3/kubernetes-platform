@@ -3,15 +3,21 @@
 A platform for provisioning infrastructure and managing Kubernetes clusters. It aims to cover provisioning,
 installation, cluster administration, workload management and monitoring from a single web interface.
 
-**Status: the platform can create Kubernetes clusters.**
+**Status: the platform provisions machines, installs and operates Kubernetes clusters (HA included), and manages their workloads.**
 * **Machines:** register existing Linux servers over SSH, find them with network discovery, or provision new
   ones: as Docker containers on this computer (Local provider) or as VMs on Proxmox VE (preview). The platform
   pins host keys and inspects OS, hardware and prerequisites, and can start, stop, reboot and destroy the machines
   it provisioned.
 * **Cloud accounts (preview):** validate AWS, Azure and Google Cloud credentials and inventory their instances
   (read-only).
-* **Clusters:** a wizard installs Kubernetes with kubeadm (containerd, Calico or Flannel, single or HA control
-  plane, worker pools with labels and taints), stores the kubeconfig encrypted, and can delete the cluster again.
+* **Clusters:** a wizard installs Kubernetes with kubeadm (containerd, Calico or Flannel, worker pools with labels
+  and taints) on registered machines and/or machines it provisions for the cluster. Highly available control planes
+  get a kube-vip virtual IP (or use an external load balancer). Every install ends with a smoke test (pod scheduling,
+  image pull, cluster DNS). The kubeconfig is stored encrypted.
+* **Cluster lifecycle:** add nodes (registered or newly provisioned, workers or control planes) and remove them
+  (drain, reset, leave etcd, optionally destroy the machine); delete clusters with or without their machines.
+* **Node management:** cordon, uncordon, drain (PodDisruptionBudget-aware), labels, taints and kubelet/containerd
+  logs from each node.
 * **Visibility:** import existing clusters by kubeconfig and see live health, nodes, namespaces, pods, events,
   topology and CPU/memory utilization (metrics-server can be installed from the UI). Health is observed every minute.
 * **Workloads:** browse and manage pods, deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs, CronJobs,
@@ -117,11 +123,10 @@ npm run build
 |---|---|
 | 0 | Foundation ✅ |
 | 3 | SSH machines, inspection, network discovery, local Docker provider, Proxmox VE (preview), cloud foundations (preview) ✅ |
-| 4 (core) | kubeadm installation engine, cluster create/delete ✅ |
+| 4 | kubeadm installation engine, cluster create/delete, provisioning during install, kube-vip HA, node add/remove, node management, post-install smoke test ✅ |
 | 1 | Dashboard and cluster connectivity: import, live health/nodes/namespaces/pods/events, utilization ✅ |
 | 2 | Kubernetes workload management: resources, YAML apply with dry-run diff, logs, terminal ✅ |
-| 4 (rest) | kube-vip HA, node add/remove |
-| 5 | Full cluster lifecycle, HA, managed Kubernetes |
+| 5 | Cluster upgrades, scaling policies, cloud provisioning and load balancers, managed Kubernetes (EKS/AKS/GKE) |
 | 6 | Networking and storage |
 | 7 | Enterprise administration (OIDC, RBAC, organizations, backup) |
 | 8 | Advanced operations (Prometheus, Grafana, Loki, Helm, GitOps, CRDs) |

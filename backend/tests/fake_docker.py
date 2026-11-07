@@ -128,7 +128,12 @@ class _Containers:
         if kwargs.get("network") not in self.engine.network_map:
             raise docker.errors.APIError(f"network {kwargs.get('network')} not found")
         container = FakeContainer(self.engine, kwargs["name"], image, kwargs)
+        in_use = {c.ip for c in self.engine.containers_by_name.values() if c.status == "running"}
         self.engine.containers_by_name[container.name] = container
+        if container.ip and container.ip in in_use:
+            # Like Docker: the container was created, starting it fails.
+            container.status = "created"
+            raise docker.errors.APIError("failed to set up container networking: Address already in use")
         self.engine.runs.append(kwargs)
         return container
 

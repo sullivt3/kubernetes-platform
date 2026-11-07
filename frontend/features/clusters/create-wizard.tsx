@@ -19,12 +19,14 @@ import { MachineStateBadge, primaryAddress } from "@/features/infrastructure/mac
 import { ApiError } from "@/lib/api/client";
 import {
   useCreateCluster,
+  useCredentials,
   useDistributions,
   useKubernetesVersions,
   useMachines,
   useProviders,
   useValidateCluster,
 } from "@/lib/api/hooks";
+import { useConnections } from "@/lib/api/infra";
 import type { ClusterSpecInput, DistributionDescriptor, Machine, Taint } from "@/lib/api/types";
 import { humanize } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -35,6 +37,15 @@ const DNS_LABEL = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
 const CIDR = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 const VERSION = /^1\.\d{1,2}(\.\d{1,3})?$/;
 const LABEL_KEY = /^([a-z0-9]([-a-z0-9.]*[a-z0-9])?\/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$/;
+const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+
+interface Size {
+  cpu: number;
+  memory: number;
+  disk: number;
+}
+const DEFAULT_SIZE: Size = { cpu: 2, memory: 2048, disk: 20 };
+type LbMode = "none" | "kube-vip" | "external";
 
 interface KeyValue {
   key: string;
@@ -43,10 +54,12 @@ interface KeyValue {
 interface PoolState {
   name: string;
   machines: string[];
+  newCount: number;
+  size: Size;
   labels: KeyValue[];
   taints: Taint[];
 }
-interface WizardState {
+export interface WizardState {
   provider: string;
   distribution: string;
   name: string;
@@ -57,7 +70,12 @@ interface WizardState {
   serviceCidr: string;
   dnsDomain: string;
   cpMachines: string[];
+  cpNew: number;
+  cpSize: Size;
+  lbMode: LbMode;
   cpEndpoint: string;
+  connectionId: string;
+  credentialId: string;
   pools: PoolState[];
   allowSwap: boolean;
   cpWorkloads: "auto" | "yes" | "no";
@@ -66,7 +84,7 @@ interface WizardState {
   resolvConf: string;
 }
 
-const INITIAL: WizardState = {
+export const INITIAL: WizardState = {
   provider: "",
   distribution: "",
   name: "",
@@ -77,8 +95,13 @@ const INITIAL: WizardState = {
   serviceCidr: "10.96.0.0/12",
   dnsDomain: "cluster.local",
   cpMachines: [],
+  cpNew: 0,
+  cpSize: DEFAULT_SIZE,
+  lbMode: "none",
   cpEndpoint: "",
-  pools: [{ name: "workers", machines: [], labels: [], taints: [] }],
+  connectionId: "",
+  credentialId: "",
+  pools: [{ name: "workers", machines: [], newCount: 0, size: DEFAULT_SIZE, labels: [], taints: [] }],
   allowSwap: false,
   cpWorkloads: "auto",
   conntrackZero: false,
@@ -86,8 +109,14 @@ const INITIAL: WizardState = {
   resolvConf: "",
 };
 
-function buildSpec(s: WizardState): ClusterSpecInput {
-  const ha = s.cpMachines.length > 1;
+const template = (size: Size) => ({ cpu_cores: size.cpu, memory_mb: size.memory, disk_gb: size.disk });
+
+function newMachines(s: WizardState): number {
+  return s.cpNew + s.pools.reduce((n, p) => n + p.newCount, 0);
+}
+
+export function buildSpec(s: WizardState): ClusterSpecInput {
+  const provisioning = newMachines(s) > 0;
   // Only explicit choices are sent: the backend fills in defaults (e.g. for container-based machines).
   const options: Record<string, unknown> = {};
   if (s.allowSwap) options.allow_swap = true;
@@ -100,22 +129,26 @@ function buildSpec(s: WizardState): ClusterSpecInput {
     name: s.name,
     distribution: s.distribution,
     provider_type: s.provider,
+    provider_connection_id: provisioning ? s.connectionId || null : null,
+    machine_credential_id: provisioning ? s.credentialId || null : null,
     kubernetes_version: s.version,
     container_runtime: "containerd",
     network: { pod_cidr: s.podCidr, service_cidr: s.serviceCidr, dns_domain: s.dnsDomain, cni: s.cni },
     control_plane: {
       name: "control-plane",
-      count: s.cpMachines.length,
+      count: s.cpMachines.length + s.cpNew,
       existing_machine_ids: s.cpMachines,
-      endpoint: ha ? s.cpEndpoint.trim() : null,
-      load_balancer: ha ? "external" : "none",
+      machine_template: s.cpNew > 0 ? template(s.cpSize) : null,
+      endpoint: s.lbMode === "none" ? null : s.cpEndpoint.trim(),
+      load_balancer: s.lbMode,
     },
     worker_pools: s.pools
-      .filter((p) => p.machines.length > 0)
+      .filter((p) => p.machines.length + p.newCount > 0)
       .map((p) => ({
         name: p.name,
-        count: p.machines.length,
+        count: p.machines.length + p.newCount,
         existing_machine_ids: p.machines,
+        machine_template: p.newCount > 0 ? template(p.size) : null,
         labels: Object.fromEntries(p.labels.filter((l) => l.key).map((l) => [l.key, l.value])),
         taints: p.taints.filter((t) => t.key),
       })),
@@ -235,6 +268,59 @@ function MachinePicker({
   );
 }
 
+function SizeEditor({ size, onChange }: { size: Size; onChange: (size: Size) => void }) {
+  const num = (v: string) => Math.max(0, Number(v.replace(/\D/g, "")) || 0);
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      <Field label="CPU">
+        <Input value={size.cpu} onChange={(e) => onChange({ ...size, cpu: num(e.target.value) })} inputMode="numeric" />
+      </Field>
+      <Field label="Memory (MB)">
+        <Input value={size.memory} onChange={(e) => onChange({ ...size, memory: num(e.target.value) })} inputMode="numeric" />
+      </Field>
+      <Field label="Disk (GB)">
+        <Input value={size.disk} onChange={(e) => onChange({ ...size, disk: num(e.target.value) })} inputMode="numeric" />
+      </Field>
+    </div>
+  );
+}
+
+function NewMachines({
+  enabled,
+  count,
+  size,
+  onChange,
+}: {
+  enabled: boolean;
+  count: number;
+  size: Size;
+  onChange: (patch: { count?: number; size?: Size }) => void;
+}) {
+  if (!enabled) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        To have the platform create machines, choose a provider connection and SSH key in step 1 (Local Docker or Proxmox).
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-3 rounded-md border border-dashed border-border p-3">
+      <div className="flex items-end gap-3">
+        <Field label="New machines to provision">
+          <Input
+            value={count}
+            onChange={(e) => onChange({ count: Math.min(20, Math.max(0, Number(e.target.value.replace(/\D/g, "")) || 0)) })}
+            inputMode="numeric"
+            className="w-24"
+          />
+        </Field>
+        <p className="pb-2 text-xs text-muted-foreground">Created, inspected and joined automatically.</p>
+      </div>
+      {count > 0 && <SizeEditor size={size} onChange={(next) => onChange({ size: next })} />}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------- steps
 
 const STEPS = [
@@ -250,6 +336,9 @@ const STEPS = [
 function stepErrors(step: number, s: WizardState, distribution?: DistributionDescriptor): string[] {
   const errors: string[] = [];
   if (step === 0 && !s.provider) errors.push("Choose an infrastructure provider");
+  if ((step === 3 || step === 4) && newMachines(s) > 0 && (!s.connectionId || !s.credentialId)) {
+    errors.push("New machines need a provider connection and an SSH key (step 1, Infrastructure)");
+  }
   if (step === 1 && !s.distribution) errors.push("Choose a Kubernetes distribution");
   if (step === 2) {
     if (!DNS_LABEL.test(s.name)) errors.push("Name: lowercase letters, digits and '-' (max 63)");
@@ -259,10 +348,13 @@ function stepErrors(step: number, s: WizardState, distribution?: DistributionDes
     if (!s.cni || (distribution && !distribution.supported_cnis.includes(s.cni))) errors.push("Choose a pod network");
   }
   if (step === 3) {
-    const n = s.cpMachines.length;
-    if (n === 0) errors.push("Select at least one control-plane machine");
+    const n = s.cpMachines.length + s.cpNew;
+    if (n === 0) errors.push("Select or provision at least one control-plane machine");
     if (n > 1 && n % 2 === 0) errors.push("Highly available control planes need an odd number of machines (3 or 5)");
-    if (n > 1 && !s.cpEndpoint.trim()) errors.push("Provide the load balancer address for the API server");
+    if (n > 1 && s.lbMode === "none") errors.push("Several control planes need a shared API endpoint: kube-vip or a load balancer");
+    if (s.lbMode === "kube-vip" && !IPV4.test(s.cpEndpoint.trim())) errors.push("kube-vip needs a free IPv4 address on the machines' network");
+    if (s.lbMode === "external" && !s.cpEndpoint.trim()) errors.push("Provide the load balancer address for the API server");
+    if (s.cpNew > 0 && s.cpSize.cpu < 2) errors.push("Control-plane machines need at least 2 CPUs");
   }
   if (step === 4) {
     const names = s.pools.map((p) => p.name);
@@ -328,6 +420,8 @@ export function CreateClusterWizard() {
   const distributions = useDistributions();
   const versions = useKubernetesVersions();
   const machines = useMachines();
+  const connections = useConnections();
+  const credentials = useCredentials();
   const validate = useValidateCluster();
   const create = useCreateCluster();
 
@@ -342,6 +436,11 @@ export function CreateClusterWizard() {
   const errors = stepErrors(step, state, distribution);
   const spec = useMemo(() => buildSpec(state), [state]);
 
+  const provisionable = (connections.data ?? []).filter(
+    (c) => c.provider_type === state.provider && c.capabilities.includes("provision"),
+  );
+  const sshKeys = (credentials.data?.items ?? []).filter((c) => c.kind === "ssh_private_key");
+  const canProvision = Boolean(state.connectionId && state.credentialId);
   const workerIds = new Set(state.pools.flatMap((p) => p.machines));
   const cpIds = new Set(state.cpMachines);
 
@@ -426,10 +525,41 @@ export function CreateClusterWizard() {
                       badge={<ImplementationBadge status={p.implementation_status} phase={p.planned_phase} />}
                       selected={state.provider === p.type}
                       disabled={p.implementation_status === "planned"}
-                      onSelect={() => update({ provider: p.type, distribution: "" })}
+                      onSelect={() => update({ provider: p.type, distribution: "", connectionId: "" })}
                     />
                   ))}
                 </div>
+                {providers.data?.find((p) => p.type === state.provider)?.capabilities.includes("provision") && (
+                  <div className="space-y-3 rounded-lg border border-border p-4">
+                    <div>
+                      <p className="text-sm font-medium">New machines (optional)</p>
+                      <p className="text-xs text-muted-foreground">
+                        Lets the platform create machines for the cluster. Registered machines can be used either way.
+                      </p>
+                    </div>
+                    {provisionable.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">
+                        No {humanize(state.provider)} connection yet.{" "}
+                        <Link href="/infrastructure/providers" className="text-foreground underline underline-offset-4">Add one</Link>.
+                      </p>
+                    ) : (
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <Field label="Connection">
+                          <Select value={state.connectionId} onValueChange={(v) => update({ connectionId: v })}>
+                            <SelectTrigger className="w-full"><SelectValue placeholder="Choose a connection" /></SelectTrigger>
+                            <SelectContent>{provisionable.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+                          </Select>
+                        </Field>
+                        <Field label="SSH key installed on new machines">
+                          <Select value={state.credentialId} onValueChange={(v) => update({ credentialId: v })}>
+                            <SelectTrigger className="w-full"><SelectValue placeholder="Choose a key" /></SelectTrigger>
+                            <SelectContent>{sshKeys.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+                          </Select>
+                        </Field>
+                      </div>
+                    )}
+                  </div>
+                )}
               </section>
             )}
 
@@ -528,7 +658,8 @@ export function CreateClusterWizard() {
                 <div>
                   <h2 className="font-semibold">Control plane</h2>
                   <p className="text-sm text-muted-foreground">
-                    One machine for a single control plane, or 3/5 for high availability behind your load balancer.
+                    One machine for a single control plane, or 3/5 for high availability. With a shared API endpoint,
+                    control planes can also be added later.
                   </p>
                 </div>
                 <MachinePicker
@@ -538,10 +669,37 @@ export function CreateClusterWizard() {
                   takenElsewhere={workerIds}
                   requireTwoCpus
                 />
-                {state.cpMachines.length > 1 && (
+                <NewMachines
+                  enabled={canProvision}
+                  count={state.cpNew}
+                  size={state.cpSize}
+                  onChange={({ count, size }) => update({ ...(count !== undefined && { cpNew: count }), ...(size && { cpSize: size }) })}
+                />
+                <Field label="API server endpoint">
+                  <Select value={state.lbMode} onValueChange={(v) => update({ lbMode: v as LbMode })}>
+                    <SelectTrigger className="w-full md:w-96"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">The first control plane (single control plane)</SelectItem>
+                      <SelectItem value="kube-vip">Virtual IP managed by the cluster (kube-vip)</SelectItem>
+                      <SelectItem value="external">An existing load balancer or DNS name</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                {state.lbMode === "kube-vip" && (
                   <Field
-                    label="API server endpoint (load balancer)"
-                    hint="host[:port] of an existing TCP load balancer or DNS name in front of port 6443 on all control-plane machines."
+                    label="Virtual IP"
+                    hint={
+                      "A free IPv4 address on the control-plane machines' subnet. kube-vip announces it (ARP) from whichever control plane leads, so the API stays reachable when one fails." +
+                      (state.provider === "local" ? " Local (Docker) machines get .10–.199 of their network, so use .200–.254." : "")
+                    }
+                  >
+                    <Input value={state.cpEndpoint} onChange={(e) => update({ cpEndpoint: e.target.value })} placeholder="10.0.0.100" className="w-56 font-mono" />
+                  </Field>
+                )}
+                {state.lbMode === "external" && (
+                  <Field
+                    label="Load balancer address"
+                    hint="host[:port] of a TCP load balancer or DNS name in front of port 6443 on all control-plane machines."
                   >
                     <Input value={state.cpEndpoint} onChange={(e) => update({ cpEndpoint: e.target.value })} placeholder="k8s-api.example.internal:6443" className="font-mono" />
                   </Field>
@@ -561,7 +719,14 @@ export function CreateClusterWizard() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => update({ pools: [...state.pools, { name: `pool-${state.pools.length + 1}`, machines: [], labels: [], taints: [] }] })}
+                    onClick={() =>
+                      update({
+                        pools: [
+                          ...state.pools,
+                          { name: `pool-${state.pools.length + 1}`, machines: [], newCount: 0, size: DEFAULT_SIZE, labels: [], taints: [] },
+                        ],
+                      })
+                    }
                   >
                     <Plus /> Add pool
                   </Button>
@@ -576,7 +741,9 @@ export function CreateClusterWizard() {
                         <Field label="Pool name">
                           <Input value={pool.name} onChange={(e) => setPool({ name: e.target.value })} className="w-56" />
                         </Field>
-                        <span className="pb-2 text-sm text-muted-foreground">{pool.machines.length} machine(s)</span>
+                        <span className="pb-2 text-sm text-muted-foreground">
+                          {pool.machines.length + pool.newCount} machine(s){pool.newCount > 0 ? ` (${pool.newCount} new)` : ""}
+                        </span>
                         {state.pools.length > 1 && (
                           <Button variant="ghost" size="sm" className="ml-auto" onClick={() => update({ pools: state.pools.filter((_, i) => i !== index) })}>
                             <Trash2 /> Remove pool
@@ -588,6 +755,12 @@ export function CreateClusterWizard() {
                         selected={pool.machines}
                         onChange={(ids) => setPool({ machines: ids })}
                         takenElsewhere={new Set([...cpIds, ...otherPools])}
+                      />
+                      <NewMachines
+                        enabled={canProvision}
+                        count={pool.newCount}
+                        size={pool.size}
+                        onChange={({ count, size }) => setPool({ ...(count !== undefined && { newCount: count }), ...(size && { size }) })}
                       />
                       <div className="grid gap-4 md:grid-cols-2">
                         <Field label="Labels">
@@ -666,7 +839,11 @@ export function CreateClusterWizard() {
                       ["Provider / distribution", `${humanize(state.provider)} · ${distribution?.display_name}`],
                       ["Kubernetes", state.version],
                       ["Network", `${state.cni} · pods ${state.podCidr} · services ${state.serviceCidr}`],
-                      ["Control plane", `${state.cpMachines.length} node(s)${state.cpMachines.length > 1 ? ` behind ${state.cpEndpoint}` : ""}`],
+                      [
+                        "Control plane",
+                        `${spec.control_plane.count} node(s)${state.cpNew ? ` (${state.cpNew} new)` : ""}` +
+                          (state.lbMode === "kube-vip" ? ` · kube-vip ${state.cpEndpoint}` : state.lbMode === "external" ? ` behind ${state.cpEndpoint}` : ""),
+                      ],
                       ["Workers", `${spec.worker_pools.reduce((n, p) => n + p.count, 0)} node(s) in ${spec.worker_pools.length} pool(s)`],
                     ] as const
                   ).map(([label, value]) => (

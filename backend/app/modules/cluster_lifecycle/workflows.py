@@ -18,6 +18,8 @@ from app.orchestration.workflow import OperationTarget, WorkflowDefinition, work
 
 CLUSTER_CREATE = "cluster.create"
 CLUSTER_DELETE = "cluster.delete"
+CLUSTER_ADD_NODES = "cluster.nodes.add"
+CLUSTER_REMOVE_NODES = "cluster.nodes.remove"
 
 
 def _target(p: ClusterPlanInput) -> OperationTarget:
@@ -94,5 +96,56 @@ delete_workflow = workflow_registry.register(
         title_for=lambda p: f"Delete cluster {p.cluster_name}",
         destructive=True,
         on_status=on_delete_status,
+    )
+)
+
+
+def _set_node_states(session: Session, op: Operation, state: MachineMembershipState) -> None:
+    plan = ClusterPlanInput.model_validate(op.params)
+    ids = [n.machine_id for n in plan.nodes]
+    for membership in session.scalars(
+        select(ClusterMachine).where(ClusterMachine.cluster_id == plan.cluster_id, ClusterMachine.machine_id.in_(ids))
+    ):
+        membership.membership_state = state
+
+
+def on_add_status(session: Session, op: Operation) -> None:
+    # The cluster keeps serving while nodes join; only the new memberships change state.
+    if op.status is OperationStatus.RUNNING:
+        _set_node_states(session, op, MachineMembershipState.INSTALLING)
+    elif op.status in (OperationStatus.FAILED, OperationStatus.CANCELLED):
+        _set_node_states(session, op, MachineMembershipState.FAILED)
+
+
+def on_remove_status(session: Session, op: Operation) -> None:
+    if op.status is OperationStatus.RUNNING:
+        _set_node_states(session, op, MachineMembershipState.REMOVING)
+    elif op.status in (OperationStatus.FAILED, OperationStatus.CANCELLED):
+        _set_node_states(session, op, MachineMembershipState.FAILED)
+
+
+add_nodes_workflow = workflow_registry.register(
+    WorkflowDefinition(
+        type=CLUSTER_ADD_NODES,
+        title="Add nodes",
+        description="Provision or prepare machines and join them to an existing cluster.",
+        params_model=ClusterPlanInput,
+        plan=lambda p: distribution_registry.get(p.spec.distribution).plan_add_nodes(p),
+        target=_target,
+        title_for=lambda p: f"Add {', '.join(n.name for n in p.nodes)} to {p.cluster_name}",
+        on_status=on_add_status,
+    )
+)
+
+remove_nodes_workflow = workflow_registry.register(
+    WorkflowDefinition(
+        type=CLUSTER_REMOVE_NODES,
+        title="Remove nodes",
+        description="Drain nodes, reset Kubernetes on them and release (or destroy) their machines.",
+        params_model=ClusterPlanInput,
+        plan=lambda p: distribution_registry.get(p.spec.distribution).plan_remove_nodes(p),
+        target=_target,
+        title_for=lambda p: f"Remove {', '.join(n.name for n in p.nodes)} from {p.cluster_name}",
+        on_status=on_remove_status,
     )
 )

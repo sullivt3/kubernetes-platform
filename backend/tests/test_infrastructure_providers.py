@@ -464,6 +464,32 @@ def test_local_provision_builds_image_and_creates_node(engine: FakeDocker) -> No
     assert len(engine.runs) == 2 and len(engine.builds) == 1
 
 
+def test_local_retries_when_a_parallel_provision_took_the_address(
+    engine: FakeDocker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = provider_registry.create(ProviderType.LOCAL, {}, None)
+    provider.provision(_request("dev-1"))  # holds 172.28.1.10
+    real = provider._free_ip
+    stale = iter(["172.28.1.10"])  # what a concurrent provision saw a moment earlier
+
+    def racing(network: Any, exclude: set[str] | None = None) -> str:
+        return next(stale, None) or real(network, exclude)
+
+    monkeypatch.setattr(provider, "_free_ip", racing)
+    machine = provider.provision(_request("dev-2"))
+    assert machine.addresses[0].address == "172.28.1.11"
+    assert engine.containers_by_name["kplatform-dev-2"].status == "running"
+
+
+def test_local_addresses_leave_room_for_virtual_ips(engine: FakeDocker) -> None:
+    provider = provider_registry.create(ProviderType.LOCAL, {}, None)
+    provider.provision(_request("dev-1"))
+    network = engine.network_map["kplatform-local"]
+    taken = {f"172.28.1.{i}" for i in range(10, 200)}
+    with pytest.raises(ProviderApiError):
+        provider._free_ip(network, exclude=taken)
+
+
 def test_local_power_discover_delete(engine: FakeDocker) -> None:
     provider = provider_registry.create(ProviderType.LOCAL, {}, None)
     provider.provision(_request("dev-1"))

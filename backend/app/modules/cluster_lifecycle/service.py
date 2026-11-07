@@ -9,12 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.errors import ConflictError, NotFoundError, ValidationFailedError
+from app.core.errors import ConfirmationRequiredError, ConflictError, NotFoundError, ValidationFailedError
 from app.core.principal import Principal
 from app.modules.auditing import service as audit
 from app.modules.cluster_lifecycle.distributions.base import ClusterPlanInput, PlannedNode
 from app.modules.cluster_lifecycle.distributions.registry import distribution_registry
-from app.modules.cluster_lifecycle.distributions.spec import ClusterSpec
+from app.modules.cluster_lifecycle.distributions.spec import ClusterSpec, MachineTemplate, NodePoolSpec, Taint
+from app.modules.cluster_lifecycle.distributions.types import DistributionCapability
 from app.modules.cluster_lifecycle.models import (
     Cluster,
     ClusterLifecycleState,
@@ -23,8 +24,14 @@ from app.modules.cluster_lifecycle.models import (
     MachineMembershipState,
     NodeRole,
 )
-from app.modules.cluster_lifecycle.workflows import CLUSTER_CREATE, CLUSTER_DELETE
-from app.modules.infrastructure.models import Machine, MachineLifecycleState, ProviderConnection
+from app.modules.cluster_lifecycle.workflows import (
+    CLUSTER_ADD_NODES,
+    CLUSTER_CREATE,
+    CLUSTER_DELETE,
+    CLUSTER_REMOVE_NODES,
+)
+from app.modules.credentials.models import Credential, CredentialKind
+from app.modules.infrastructure.models import ConnectionStatus, Machine, MachineLifecycleState, ProviderConnection
 from app.modules.infrastructure.service import MachineService
 from app.modules.providers.registry import provider_registry
 from app.modules.providers.types import ImplementationStatus, ProviderCapability
@@ -64,13 +71,9 @@ class ClusterService:
         provider_cls = provider_registry.get_class(spec.provider_type)
         if provider_cls.implementation_status is ImplementationStatus.PLANNED:
             result.problems.append(f"The {provider_cls.display_name} provider is not implemented yet")
-        needs_provisioning = any(
-            pool.count > len(pool.existing_machine_ids) for pool in (spec.control_plane, *spec.worker_pools)
-        )
-        if needs_provisioning and ProviderCapability.PROVISION not in provider_cls.capabilities:
-            result.problems.append(
-                f"{provider_cls.display_name} cannot provision new machines; select registered machines for every node"
-            )
+        new_machines = self._new_machine_names(spec)
+        if new_machines:
+            result.problems.extend(self._provisioning_problems(principal, spec, [n for _, n in new_machines]))
         result.notes.extend(self._container_defaults(principal, spec))
         result.problems.extend(distribution.validate_spec(spec))
 
@@ -83,7 +86,20 @@ class ClusterService:
         if result.problems:
             return result
 
-        result.nodes = self._planned_nodes(principal, spec)
+        result.nodes = self._planned_nodes(principal, spec) + [
+            PlannedNode(
+                machine_id=uuid.uuid4(),
+                name=name,
+                role="control_plane" if pool is spec.control_plane else "worker",
+                pool=pool.name,
+                provisioned=True,
+            )
+            for pool, name in new_machines
+        ]
+        if new_machines:
+            result.notes.append(
+                f"{len(new_machines)} machine(s) will be provisioned: {', '.join(n for _, n in new_machines)}"
+            )
         preview = ClusterPlanInput(cluster_id=uuid.uuid4(), cluster_name=spec.name, spec=spec, nodes=result.nodes)
         result.steps = [{"key": s.key, "name": s.name} for s in distribution.plan_create(preview)]
         return result
@@ -94,14 +110,21 @@ class ClusterService:
         inside a container, and Docker's embedded DNS is unusable for pods. Fill them in unless
         the user chose values explicitly."""
         ids = [m for pool in (spec.control_plane, *spec.worker_pools) for m in pool.existing_machine_ids]
-        if not ids:
-            return []
-        rows = self.session.execute(
-            select(Machine.name, ProviderConnection.provider_type)
-            .join(ProviderConnection, ProviderConnection.id == Machine.provider_connection_id)
-            .where(Machine.id.in_(ids), Machine.organization_id == principal.organization_id)
-        ).all()
+        rows = (
+            self.session.execute(
+                select(Machine.name, ProviderConnection.provider_type)
+                .join(ProviderConnection, ProviderConnection.id == Machine.provider_connection_id)
+                .where(Machine.id.in_(ids), Machine.organization_id == principal.organization_id)
+            ).all()
+            if ids
+            else []
+        )
         containers = sorted(name for name, ptype in rows if provider_registry.get_class(ptype).container_machines)
+        new_machines = self._new_machine_names(spec)
+        if new_machines and spec.provider_connection_id:
+            connection = self.session.get(ProviderConnection, spec.provider_connection_id)
+            if connection is not None and provider_registry.get_class(connection.provider_type).container_machines:
+                containers += [name for _, name in new_machines]
         if not containers:
             return []
         defaults = {
@@ -117,9 +140,99 @@ class ClusterService:
             "(swap and conntrack belong to the container host; pods need real upstream DNS servers)"
         ]
 
-    def _check_machines(self, principal: Principal, spec: ClusterSpec) -> list[str]:
+    @staticmethod
+    def _machine_name(cluster: str, pool: NodePoolSpec, index: int, control_plane: bool) -> str:
+        return f"{cluster}-{'cp' if control_plane else pool.name}-{index}"[:63].rstrip("-")
+
+    def _new_machine_names(self, spec: ClusterSpec, *, taken: set[str] | None = None) -> list[tuple[NodePoolSpec, str]]:
+        """(pool, machine name) for every machine the platform must provision."""
+        used = set(taken or ())
+        result: list[tuple[NodePoolSpec, str]] = []
+        for pool in (spec.control_plane, *spec.worker_pools):
+            index = 1
+            for _ in range(pool.count - len(pool.existing_machine_ids)):
+                name = self._machine_name(spec.name, pool, index, pool is spec.control_plane)
+                while name in used:
+                    index += 1
+                    name = self._machine_name(spec.name, pool, index, pool is spec.control_plane)
+                used.add(name)
+                result.append((pool, name))
+                index += 1
+        return result
+
+    def _provisioning_problems(
+        self,
+        principal: Principal,
+        spec: ClusterSpec,
+        names: list[str],
+        *,
+        connection_id: uuid.UUID | None = None,
+        credential_id: uuid.UUID | None = None,
+    ) -> list[str]:
         problems: list[str] = []
+        connection_id = connection_id or spec.provider_connection_id
+        credential_id = credential_id or spec.machine_credential_id
+        connection = self.session.get(ProviderConnection, connection_id) if connection_id else None
+        if connection is None or connection.organization_id != principal.organization_id:
+            problems.append("New machines need a provider connection to provision them (provider_connection_id)")
+        else:
+            cls = provider_registry.get_class(connection.provider_type)
+            if ProviderCapability.PROVISION not in cls.capabilities:
+                problems.append(f"{cls.display_name} connections cannot provision machines")
+            elif connection.status is ConnectionStatus.ERROR:
+                problems.append(f"Connection '{connection.name}' failed validation: {connection.status_message}")
+        credential = self.session.get(Credential, credential_id) if credential_id else None
+        if credential is None or credential.organization_id != principal.organization_id:
+            problems.append("New machines need an SSH key credential (machine_credential_id)")
+        elif credential.kind is not CredentialKind.SSH_PRIVATE_KEY:
+            problems.append("machine_credential_id must be an SSH private key (its public key is installed)")
+        if names:
+            existing = set(
+                self.session.scalars(
+                    select(Machine.name).where(
+                        Machine.organization_id == principal.organization_id, Machine.name.in_(names)
+                    )
+                )
+            )
+            if existing:
+                problems.append(f"Machine names already in use: {', '.join(sorted(existing))}")
+        return problems
+
+    def _provision(
+        self,
+        principal: Principal,
+        *,
+        connection_id: uuid.UUID,
+        credential_id: uuid.UUID,
+        username: str,
+        pool: NodePoolSpec,
+        template: MachineTemplate,
+        names: list[str],
+    ) -> list[Machine]:
+        from app.modules.infrastructure.connections import ProviderConnectionService
+
+        results = ProviderConnectionService(self.session, self.operations).provision(
+            principal,
+            connection_id,
+            names=names,
+            cpu_cores=template.cpu_cores,
+            memory_mb=template.memory_mb,
+            disk_gb=template.disk_gb,
+            credential_id=credential_id,
+            ssh_username=username,
+            labels={"kplatform.io/pool": pool.name},
+            provider_options=template.provider_options,
+        )
+        return [machine for machine, _ in results]
+
+    def _check_machines(self, principal: Principal, spec: ClusterSpec) -> list[str]:
         ids = [m for pool in (spec.control_plane, *spec.worker_pools) for m in pool.existing_machine_ids]
+        return self._check_machine_ids(principal, ids, spec.control_plane.existing_machine_ids)
+
+    def _check_machine_ids(
+        self, principal: Principal, ids: list[uuid.UUID], control_plane_ids: list[uuid.UUID]
+    ) -> list[str]:
+        problems: list[str] = []
         if not ids:
             return problems
         machines = {
@@ -147,7 +260,7 @@ class ClusterService:
                 problems.append(
                     f"Machine '{machine.name}' is {machine.lifecycle_state.value}{detail}; inspect it until it is ready"
                 )
-        for machine_id in spec.control_plane.existing_machine_ids:
+        for machine_id in control_plane_ids:
             machine = machines.get(machine_id)
             if machine and (machine.hardware.get("cpu_cores") or 0) < 2:
                 problems.append(f"Control-plane machine '{machine.name}' needs at least 2 CPUs")
@@ -180,6 +293,30 @@ class ClusterService:
             raise ValidationFailedError(
                 "The cluster specification is not valid", details={"problems": validation.problems}
             )
+        nodes = [n for n in validation.nodes if not n.provisioned]
+        new_machines = self._new_machine_names(spec)
+        if new_machines:
+            assert spec.provider_connection_id and spec.machine_credential_id  # checked by validate()
+            for pool in (spec.control_plane, *spec.worker_pools):
+                names = [name for p, name in new_machines if p is pool]
+                if not names:
+                    continue
+                assert pool.machine_template is not None  # enforced by the spec model
+                created = self._provision(
+                    principal,
+                    connection_id=spec.provider_connection_id,
+                    credential_id=spec.machine_credential_id,
+                    username=spec.machine_username,
+                    pool=pool,
+                    template=pool.machine_template,
+                    names=names,
+                )
+                pool.existing_machine_ids.extend(m.id for m in created)
+                role = "control_plane" if pool is spec.control_plane else "worker"
+                nodes += [
+                    PlannedNode(machine_id=m.id, name=m.name, role=role, pool=pool.name, provisioned=True)
+                    for m in created
+                ]
         connection = MachineService(self.session, self.operations).ensure_ssh_connection(principal)
         cluster = Cluster(
             organization_id=principal.organization_id,
@@ -194,7 +331,7 @@ class ClusterService:
         )
         self.session.add(cluster)
         self.session.flush()
-        for node in validation.nodes:
+        for node in nodes:
             self.session.add(
                 ClusterMachine(
                     cluster_id=cluster.id,
@@ -214,7 +351,8 @@ class ClusterService:
             details={
                 "distribution": spec.distribution.value,
                 "kubernetes_version": spec.kubernetes_version,
-                "nodes": [n.name for n in validation.nodes],
+                "nodes": [n.name for n in nodes],
+                "provisioned": [n.name for n in nodes if n.provisioned],
             },
         )
         try:
@@ -223,19 +361,31 @@ class ClusterService:
             self.session.rollback()
             raise ConflictError("A selected machine was assigned to another cluster concurrently") from exc
 
-        plan = ClusterPlanInput(cluster_id=cluster.id, cluster_name=spec.name, spec=spec, nodes=validation.nodes)
+        plan = ClusterPlanInput(cluster_id=cluster.id, cluster_name=spec.name, spec=spec, nodes=nodes)
         operation = self.operations.submit(principal, CLUSTER_CREATE, plan.model_dump(mode="json"))
         return self.get(principal, cluster.id), operation
 
     def delete(
-        self, principal: Principal, cluster_id: uuid.UUID, *, confirm: str | None, force: bool = False
+        self,
+        principal: Principal,
+        cluster_id: uuid.UUID,
+        *,
+        confirm: str | None,
+        force: bool = False,
+        destroy_machines: bool = False,
     ) -> Operation:
         cluster = self.get(principal, cluster_id)
         if cluster.origin is not ClusterOrigin.PROVISIONED:
             raise ValidationFailedError("Only clusters created by the platform can be deleted here")
         nodes = [
-            PlannedNode(machine_id=m.machine_id, name=m.node_name or str(m.machine_id), role=m.role.value, pool="-")
-            for m in self.memberships(cluster.id)
+            PlannedNode(
+                machine_id=m.machine_id,
+                name=m.node_name or machine.name,
+                role=m.role.value,
+                pool="-",
+                provisioned=machine.provisioned,
+            )
+            for m, machine in self.node_details(cluster.id)
         ]
         plan = ClusterPlanInput(
             cluster_id=cluster.id,
@@ -243,6 +393,7 @@ class ClusterService:
             spec=ClusterSpec.model_validate(cluster.spec),
             nodes=nodes,
             force=force,
+            destroy_machines=destroy_machines,
         )
         operation = self.operations.submit(principal, CLUSTER_DELETE, plan.model_dump(mode="json"), confirm=confirm)
         audit.record(
@@ -252,10 +403,237 @@ class ClusterService:
             resource_type="cluster",
             resource_id=cluster.id,
             resource_name=cluster.name,
-            details={"force": force, "operation_id": str(operation.id)},
+            details={"force": force, "destroy_machines": destroy_machines, "operation_id": str(operation.id)},
         )
         self.session.commit()
         return operation
+
+    # ------------------------------------------------------------------ node add / remove
+
+    def _managed(self, principal: Principal, cluster_id: uuid.UUID, capability: DistributionCapability) -> Cluster:
+        cluster = self.get(principal, cluster_id)
+        if cluster.origin is not ClusterOrigin.PROVISIONED:
+            raise ValidationFailedError(
+                "Nodes of imported clusters are managed by whoever created the cluster; the platform can only "
+                "cordon, drain, label and taint them"
+            )
+        if cluster.lifecycle_state not in (ClusterLifecycleState.ACTIVE, ClusterLifecycleState.DEGRADED):
+            raise ConflictError(
+                f"The cluster is {cluster.lifecycle_state.value}; nodes can be changed when it is active"
+            )
+        distribution = distribution_registry.get(cluster.distribution)
+        if capability not in distribution.capabilities:
+            raise ValidationFailedError(f"{distribution.display_name} clusters do not support this yet")
+        if self.active_operation(cluster.id) is not None:
+            raise ConflictError("Another operation is running on this cluster")
+        return cluster
+
+    def _anchor(self, cluster_id: uuid.UUID, *, exclude: frozenset[uuid.UUID] = frozenset()) -> PlannedNode:
+        for membership, machine in self.node_details(cluster_id):
+            if (
+                membership.role is NodeRole.CONTROL_PLANE
+                and membership.membership_state is MachineMembershipState.JOINED
+                and membership.machine_id not in exclude
+            ):
+                return PlannedNode(
+                    machine_id=machine.id,
+                    name=membership.node_name or machine.name,
+                    role="control_plane",
+                    pool="-",
+                )
+        raise ConflictError("No joined control-plane node is available to coordinate the change")
+
+    def add_nodes(
+        self,
+        principal: Principal,
+        cluster_id: uuid.UUID,
+        *,
+        pool_name: str,
+        existing_machine_ids: list[uuid.UUID],
+        provision_count: int = 0,
+        machine_template: MachineTemplate | None = None,
+        connection_id: uuid.UUID | None = None,
+        credential_id: uuid.UUID | None = None,
+        labels: dict[str, str] | None = None,
+        taints: list[Taint] | None = None,
+    ) -> Operation:
+        cluster = self._managed(principal, cluster_id, DistributionCapability.ADD_NODES)
+        spec = ClusterSpec.model_validate(cluster.spec)
+        if not existing_machine_ids and provision_count < 1:
+            raise ValidationFailedError("Select machines to add or a number of machines to provision")
+        control_plane = pool_name == spec.control_plane.name
+        if control_plane and not spec.control_plane.endpoint:
+            raise ValidationFailedError(
+                "This cluster was created with a single control plane and no stable API endpoint (VIP or load "
+                "balancer), so more control planes cannot join. Worker nodes can be added."
+            )
+        pool: NodePoolSpec | None = (
+            spec.control_plane if control_plane else next((p for p in spec.worker_pools if p.name == pool_name), None)
+        )
+        new_pool = pool is None
+        if pool is None:
+            pool = NodePoolSpec(name=pool_name, count=0, labels=labels or {}, taints=taints or [])
+        elif labels or taints:
+            raise ValidationFailedError(f"Pool '{pool_name}' exists; its labels and taints come from the pool")
+
+        problems = self._check_machine_ids(
+            principal, existing_machine_ids, existing_machine_ids if control_plane else []
+        )
+
+        # Machines to provision
+        template = machine_template or pool.machine_template
+        names: list[str] = []
+        if provision_count:
+            if template is None:
+                problems.append("Give the size (CPU, memory, disk) for the machines to provision")
+            taken = set(
+                self.session.scalars(select(Machine.name).where(Machine.organization_id == principal.organization_id))
+            )
+            index = 1
+            while len(names) < provision_count:
+                name = self._machine_name(spec.name, pool, index, control_plane)
+                if name not in taken:
+                    names.append(name)
+                index += 1
+            problems += self._provisioning_problems(
+                principal, spec, names, connection_id=connection_id, credential_id=credential_id
+            )
+        if problems:
+            raise ValidationFailedError("Nodes cannot be added", details={"problems": problems})
+
+        anchor = self._anchor(cluster.id)
+        role = "control_plane" if control_plane else "worker"
+        machine_names = (
+            dict(
+                self.session.execute(select(Machine.id, Machine.name).where(Machine.id.in_(existing_machine_ids))).all()
+            )
+            if existing_machine_ids
+            else {}
+        )
+        nodes = [
+            PlannedNode(machine_id=m, name=machine_names[m], role=role, pool=pool.name) for m in existing_machine_ids
+        ]
+        if names:
+            assert template is not None
+            created = self._provision(
+                principal,
+                connection_id=(connection_id or spec.provider_connection_id),  # type: ignore[arg-type]
+                credential_id=(credential_id or spec.machine_credential_id),  # type: ignore[arg-type]
+                username=spec.machine_username,
+                pool=pool,
+                template=template,
+                names=names,
+            )
+            nodes += [
+                PlannedNode(machine_id=m.id, name=m.name, role=role, pool=pool.name, provisioned=True) for m in created
+            ]
+
+        # The desired state after the change.
+        pool.existing_machine_ids = [*pool.existing_machine_ids, *(n.machine_id for n in nodes)]
+        pool.count = len(pool.existing_machine_ids)
+        if new_pool:
+            spec.worker_pools.append(pool)
+        for node in nodes:
+            self.session.add(
+                ClusterMachine(
+                    cluster_id=cluster.id,
+                    machine_id=node.machine_id,
+                    role=NodeRole(node.role),
+                    node_name=node.name,
+                    membership_state=MachineMembershipState.PLANNED,
+                )
+            )
+        audit.record(
+            self.session,
+            principal=principal,
+            action="cluster.nodes.add",
+            resource_type="cluster",
+            resource_id=cluster.id,
+            resource_name=cluster.name,
+            details={"pool": pool.name, "nodes": [n.name for n in nodes], "provisioned": names},
+        )
+        try:
+            self.session.commit()
+        except IntegrityError as exc:
+            self.session.rollback()
+            raise ConflictError("A selected machine was assigned to another cluster concurrently") from exc
+        plan = ClusterPlanInput(cluster_id=cluster.id, cluster_name=cluster.name, spec=spec, nodes=nodes, anchor=anchor)
+        return self.operations.submit(principal, CLUSTER_ADD_NODES, plan.model_dump(mode="json"))
+
+    def remove_node(
+        self,
+        principal: Principal,
+        cluster_id: uuid.UUID,
+        machine_id: uuid.UUID,
+        *,
+        confirm: str | None,
+        destroy_machine: bool = False,
+        force: bool = False,
+    ) -> Operation:
+        cluster = self._managed(principal, cluster_id, DistributionCapability.REMOVE_NODES)
+        details = {m.machine_id: (m, machine) for m, machine in self.node_details(cluster.id)}
+        if machine_id not in details:
+            raise NotFoundError("That machine is not a node of this cluster")
+        membership, machine = details[machine_id]
+        node_name = membership.node_name or machine.name
+        if confirm != node_name:
+            raise ConfirmationRequiredError(
+                f"Removing {node_name} drains its workloads and resets Kubernetes on it. Repeat its name to confirm.",
+                details={"expected_confirmation": node_name},
+            )
+        if destroy_machine and not machine.provisioned:
+            raise ValidationFailedError("Only machines the platform provisioned can be destroyed")
+        spec = ClusterSpec.model_validate(cluster.spec)
+        control_plane = membership.role is NodeRole.CONTROL_PLANE
+        if control_plane:
+            remaining = [
+                m for m, _ in details.values() if m.role is NodeRole.CONTROL_PLANE and m.machine_id != machine_id
+            ]
+            if not remaining:
+                raise ConflictError("This is the only control plane; delete the cluster instead")
+        anchor = self._anchor(cluster.id, exclude=frozenset({machine_id}))
+        pool = (
+            spec.control_plane
+            if control_plane
+            else next((p for p in spec.worker_pools if machine_id in p.existing_machine_ids), None)
+        )
+        if pool is not None:
+            pool.existing_machine_ids = [m for m in pool.existing_machine_ids if m != machine_id]
+            pool.count = len(pool.existing_machine_ids)
+            if not control_plane and pool.count == 0:
+                spec.worker_pools = [p for p in spec.worker_pools if p is not pool]
+        node = PlannedNode(
+            machine_id=machine_id,
+            name=node_name,
+            role=membership.role.value,
+            pool=pool.name if pool else "-",
+            provisioned=machine.provisioned,
+        )
+        audit.record(
+            self.session,
+            principal=principal,
+            action="cluster.nodes.remove",
+            resource_type="cluster",
+            resource_id=cluster.id,
+            resource_name=cluster.name,
+            details={
+                "node": node_name,
+                "role": membership.role.value,
+                "destroy_machine": destroy_machine,
+                "force": force,
+            },
+        )
+        self.session.commit()
+        plan = ClusterPlanInput(
+            cluster_id=cluster.id,
+            cluster_name=cluster.name,
+            spec=spec,
+            nodes=[node],
+            anchor=anchor,
+            force=force,
+            destroy_machines=destroy_machine,
+        )
+        return self.operations.submit(principal, CLUSTER_REMOVE_NODES, plan.model_dump(mode="json"))
 
     # ------------------------------------------------------------------ queries
 

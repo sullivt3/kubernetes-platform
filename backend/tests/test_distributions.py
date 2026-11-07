@@ -55,17 +55,16 @@ class TestSpecValidation:
         with pytest.raises(ValidationError, match="not a valid network"):
             spec(network={"pod_cidr": "10.244.0.1/16"})
 
-    def test_even_ha_control_plane_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="odd member count"):
-            template = {"cpu_cores": 2, "memory_mb": 4096, "disk_gb": 40}
-            spec(
-                control_plane={
-                    "count": 2,
-                    "load_balancer": "external",
-                    "endpoint": "api.x",
-                    "machine_template": template,
-                }
-            )
+    def test_even_ha_control_plane_rejected_at_creation(self) -> None:
+        # The spec model allows even counts (node add/remove passes through them); creating a
+        # cluster with one is rejected by the distribution.
+        from app.modules.cluster_lifecycle.distributions.kubeadm import Kubeadm
+
+        template = {"cpu_cores": 2, "memory_mb": 4096, "disk_gb": 40}
+        even = spec(
+            control_plane={"count": 2, "load_balancer": "external", "endpoint": "api.x", "machine_template": template}
+        )
+        assert any("odd member count" in p for p in Kubeadm().validate_spec(even))
 
     def test_ha_requires_load_balancer(self) -> None:
         template = {"cpu_cores": 2, "memory_mb": 4096, "disk_gb": 40}

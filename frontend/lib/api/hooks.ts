@@ -210,8 +210,22 @@ export function useCreateCluster() {
 export function useDeleteCluster() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, confirm, force }: { id: string; confirm: string; force: boolean }) =>
-      api.delete<OperationDetail>(`/clusters/${id}`, { confirm, force: force || undefined }),
+    mutationFn: ({
+      id,
+      confirm,
+      force,
+      destroyMachines,
+    }: {
+      id: string;
+      confirm: string;
+      force: boolean;
+      destroyMachines?: boolean;
+    }) =>
+      api.delete<OperationDetail>(`/clusters/${id}`, {
+        confirm,
+        force: force || undefined,
+        destroy_machines: destroyMachines || undefined,
+      }),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: queryKeys.clusters });
       void client.invalidateQueries({ queryKey: queryKeys.operations });

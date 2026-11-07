@@ -1,4 +1,4 @@
-"""Workflow steps for kubeadm cluster creation and deletion.
+"""Workflow steps for kubeadm clusters: create, add nodes, remove nodes, delete.
 
 Every step is idempotent (scripts check state before acting) so the engine can
 resume after a crash or a manual retry. Secrets generated here (bootstrap tokens,
@@ -9,7 +9,9 @@ nodes over stdin and never stored in step outputs.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
+import secrets
 import shlex
 import time
 from collections.abc import Callable
@@ -35,11 +37,13 @@ from app.modules.credentials.service import CredentialService
 from app.modules.infrastructure import facts as facts_mod
 from app.modules.infrastructure.access import connect, run_script, tail
 from app.modules.infrastructure.host_access import HostExecutor
-from app.modules.infrastructure.models import Machine
+from app.modules.infrastructure.models import Machine, MachineLifecycleState
 from app.orchestration.context import StepContext
 from app.orchestration.workflow import RetryableStepError, StepFailedError
 
 MAX_PARALLEL_NODES = 8
+PROVISION_TIMEOUT_SECONDS = 1800
+SMOKE_TEST_TIMEOUT_SECONDS = 300
 
 
 @cache
@@ -58,6 +62,43 @@ def _options(plan: ClusterPlanInput) -> cfg.KubeadmOptions:
 
 def _ip(ctx: StepContext, node: PlannedNode) -> str:
     return ctx.outputs["validate"]["nodes"][str(node.machine_id)]["ip"]
+
+
+def _iface(ctx: StepContext, node: PlannedNode) -> str:
+    return ctx.outputs["validate"]["nodes"][str(node.machine_id)].get("interface") or "eth0"
+
+
+def _interface_for(executor: HostExecutor, ip: str | None) -> tuple[str | None, str | None]:
+    """(interface, address/prefix) carrying ``ip``, from `ip -o -4 addr show`."""
+    from app.modules.infrastructure.host_access import CommandOptions
+
+    result = executor.run("ip -o -4 addr show", CommandOptions(timeout_seconds=30))
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 4 and fields[2] == "inet" and fields[3].split("/")[0] == ip:
+            return fields[1].split("@")[0], fields[3]
+    return None, None
+
+
+def _kube_vip(ctx: StepContext, node: PlannedNode, executor: HostExecutor, vip: str, *, bootstrapping: bool) -> None:
+    manifest = cfg.render_kube_vip_manifest(
+        vip=vip,
+        interface=_iface(ctx, node),
+        kubeconfig=cfg.kube_vip_kubeconfig(_version(ctx), bootstrapping=bootstrapping),
+    )
+    _execute(
+        ctx,
+        node,
+        executor,
+        "kube_vip.sh",
+        {
+            "MANIFEST_B64": base64.b64encode(manifest.encode()).decode(),
+            # Before kubeadm init there is no API server to wait for.
+            "VIP": "" if bootstrapping else vip,
+        },
+        action="kube-vip install",
+        timeout=420,
+    )
 
 
 def _version(ctx: StepContext) -> str:
@@ -170,20 +211,34 @@ def validate(ctx: StepContext) -> dict[str, Any]:
                 f"{node.name}: already belongs to a Kubernetes cluster "
                 "(/etc/kubernetes/kubelet.conf exists); reset it before using it for a new cluster"
             )
+        interface, cidr = _interface_for(executor, facts.get("primary_ip"))
         ctx.info(
             f"[{node.name}] {facts.get('os_pretty_name')}, {facts.get('cpu_cores')} CPU, "
-            f"{facts.get('memory_mb')} MB, address {facts.get('primary_ip')}"
+            f"{facts.get('memory_mb')} MB, address {facts.get('primary_ip')} ({interface or 'interface unknown'})"
         )
         return {
             "ip": facts.get("primary_ip"),
             "os": facts.get("os_pretty_name"),
             "hostname": facts.get("hostname"),
+            "interface": interface,
+            "cidr": cidr,
         }
 
     nodes = _for_nodes(ctx, plan.nodes, check)
     ips = [n["ip"] for n in nodes.values()]
     if len(set(ips)) != len(ips):
         problems.append("two or more machines report the same primary IP address")
+    vip = cfg.vip_of(plan.spec)
+    if vip:
+        for node in plan.control_planes:
+            info = nodes.get(str(node.machine_id), {})
+            if vip == info.get("ip"):
+                problems.append(f"{node.name}: the kube-vip address {vip} is this machine's own address")
+            elif not info.get("cidr") or ipaddress.ip_address(vip) not in ipaddress.ip_interface(info["cidr"]).network:
+                problems.append(
+                    f"{node.name}: the kube-vip address {vip} is not in this machine's network "
+                    f"({info.get('cidr') or 'unknown'}); kube-vip (ARP) needs an unused address on the same subnet"
+                )
     if problems:
         raise StepFailedError("Machines are not ready for Kubernetes:\n- " + "\n- ".join(problems), code="preflight")
     return {"nodes": nodes}
@@ -291,7 +346,12 @@ def init_control_plane(ctx: StepContext) -> dict[str, Any]:
     )
     output: dict[str, str] = {}
 
+    vip = cfg.vip_of(plan.spec)
+
     def run(node: PlannedNode, executor: HostExecutor) -> None:
+        if vip:
+            # kube-vip must hold the address before kubeadm waits for the API at the endpoint.
+            _kube_vip(ctx, node, executor, vip, bootstrapping=True)
         out = _execute(
             ctx,
             node,
@@ -303,6 +363,9 @@ def init_control_plane(ctx: StepContext) -> dict[str, Any]:
         for line in out.splitlines():
             if line.startswith("CA_CERT_HASH="):
                 output["ca_cert_hash"] = line.split("=", 1)[1].strip()
+        if vip:
+            _kube_vip(ctx, node, executor, vip, bootstrapping=False)
+            ctx.info(f"[{node.name}] kube-vip announces {vip}")
 
     _for_nodes(ctx, [first], run, parallel=False)
     if "ca_cert_hash" not in output:
@@ -367,7 +430,8 @@ def _join(ctx: StepContext, nodes: list[PlannedNode], *, control_plane: bool) ->
     options = _options(plan)
     version = _version(ctx)
     init = ctx.outputs["init"]
-    with connect(ctx, plan.control_planes[0].machine_id) as cp:
+    vip = cfg.vip_of(plan.spec) if control_plane else None
+    with connect(ctx, plan.lead.machine_id) as cp:
         token, certificate_key = _join_material(ctx, cp, control_plane=control_plane)
 
     def run(node: PlannedNode, executor: HostExecutor) -> None:
@@ -389,6 +453,9 @@ def _join(ctx: StepContext, nodes: list[PlannedNode], *, control_plane: bool) ->
             {"CONFIG_B64": base64.b64encode(document.encode()).decode()},
             action="kubeadm join",
         )
+        if vip:
+            # After the join: kubeadm's preflight requires an empty manifests directory.
+            _kube_vip(ctx, node, executor, vip, bootstrapping=False)
 
     # Control planes join one at a time (etcd membership changes must be serialized).
     _for_nodes(ctx, nodes, run, parallel=not control_plane)
@@ -411,10 +478,16 @@ def configure_nodes(ctx: StepContext) -> dict[str, Any]:
         **{p.name: p for p in plan.spec.worker_pools},
     }
     allow_cp_workloads = options.control_plane_workloads
-    if allow_cp_workloads is None:
-        allow_cp_workloads = not plan.workers
 
-    with connect(ctx, plan.control_planes[0].machine_id) as executor:
+    with connect(ctx, plan.lead.machine_id) as executor:
+        if allow_cp_workloads is None:
+            if plan.anchor is not None:
+                # Adding nodes: keep the cluster's current policy (mirror the anchor's taint).
+                anchor = json.loads(_kubectl(executor, f"get node {shlex.quote(plan.anchor.name)} -o json"))
+                taints = (anchor.get("spec") or {}).get("taints") or []
+                allow_cp_workloads = not any(t.get("key") == "node-role.kubernetes.io/control-plane" for t in taints)
+            else:
+                allow_cp_workloads = not plan.workers
         for node in plan.nodes:
             pool = pools[node.pool]
             labels = {"kplatform.io/pool": node.pool, **pool.labels}
@@ -445,7 +518,7 @@ def wait_ready(ctx: StepContext) -> dict[str, Any]:
     expected = {n.name for n in plan.nodes}
     deadline = time.monotonic() + options.ready_timeout_seconds
     last_report = ""
-    with connect(ctx, plan.control_planes[0].machine_id) as executor:
+    with connect(ctx, plan.lead.machine_id) as executor:
         while True:
             ctx.check_cancelled()
             nodes = json.loads(_kubectl(executor, "get nodes -o json")).get("items", [])
@@ -536,11 +609,8 @@ def register(ctx: StepContext) -> dict[str, Any]:
         # against the node's own address.
         first_cp = session.get(Machine, plan.control_planes[0].machine_id)
         published = (first_cp.provider_metadata or {}) if first_cp else {}
-        if (
-            not cfg.control_plane_endpoint(plan.spec)
-            and published.get("kube_api_host")
-            and not cluster.api_server_override
-        ):
+        external_lb = cfg.control_plane_endpoint(plan.spec) and not cfg.vip_of(plan.spec)
+        if not external_lb and published.get("kube_api_host") and not cluster.api_server_override:
             cluster.api_server_override = f"https://{published['kube_api_host']}:{published['kube_api_port']}"
             cluster.tls_server_name = _ip(ctx, plan.control_planes[0])
             ctx.info(
@@ -580,7 +650,7 @@ def reset_nodes(ctx: StepContext) -> dict[str, Any]:
     _for_nodes(
         ctx,
         plan.nodes,
-        _script_action(ctx, "reset.sh", {}, action="kubeadm reset", timeout=600),
+        _script_action(ctx, "reset.sh", {"VIP": cfg.vip_of(plan.spec) or ""}, action="kubeadm reset", timeout=600),
         tolerate_unreachable=plan.force,
     )
     return {}
@@ -604,3 +674,291 @@ def release(ctx: StepContext) -> dict[str, Any]:
     ctx.info(f"Cluster {plan.cluster_name} removed; {len(plan.nodes)} machine(s) released back to the inventory")
     ctx.set_result({"cluster": plan.cluster_name, "released_machines": [n.name for n in plan.nodes]})
     return {}
+
+
+# --------------------------------------------------------------------------- shared: provisioning
+
+
+def wait_machines(ctx: StepContext) -> dict[str, Any]:
+    """Wait until machines the platform is provisioning for this plan are ready."""
+    plan = _plan(ctx)
+    pending = [n for n in plan.nodes if n.provisioned]
+    deadline = time.monotonic() + PROVISION_TIMEOUT_SECONDS
+    last = ""
+    while True:
+        ctx.check_cancelled()
+        with ctx.db() as session:
+            states = {}
+            for node in pending:
+                machine = session.get(Machine, node.machine_id)
+                if machine is None:
+                    raise StepFailedError(f"Machine {node.name} was removed during provisioning", code="machine_gone")
+                states[node.name] = (machine.lifecycle_state, machine.last_error)
+        failed = {
+            n: e
+            for n, (st, e) in states.items()
+            if st in (MachineLifecycleState.ERROR, MachineLifecycleState.UNREACHABLE)
+        }
+        if failed:
+            raise StepFailedError(
+                "Machine provisioning failed:\n- "
+                + "\n- ".join(f"{n}: {e or 'see its machine.provision operation'}" for n, e in failed.items())
+                + "\nFix the cause, retry the machine.provision operation(s), then retry this step.",
+                code="provisioning_failed",
+            )
+        ready = sorted(n for n, (st, _) in states.items() if st is MachineLifecycleState.READY)
+        report = f"{len(ready)}/{len(pending)} machine(s) ready"
+        if report != last:
+            ctx.info(report)
+            last = report
+        if len(ready) == len(pending):
+            return {"machines": ready}
+        if time.monotonic() > deadline:
+            raise StepFailedError(
+                f"Machines were not ready within {PROVISION_TIMEOUT_SECONDS}s", code="provision_timeout"
+            )
+        ctx.set_progress(len(ready) / max(1, len(pending)))
+        time.sleep(5)
+
+
+def _destroy(ctx: StepContext, nodes: list[PlannedNode]) -> list[str]:
+    """Delete platform-provisioned machines at their provider and drop them from the inventory."""
+    from app.modules.infrastructure.provider_workflows import PENDING_PREFIX, provider_for
+    from app.modules.providers.types import MachineRef
+
+    destroyed: list[str] = []
+    for node in nodes:
+        with ctx.db() as session:
+            machine = session.get(Machine, node.machine_id)
+            if machine is None:
+                continue  # already gone (resumed step)
+            if not machine.provisioned:
+                ctx.info(f"[{node.name}] registered server, not provisioned by the platform: kept")
+                continue
+            connection_id, external_id = machine.provider_connection_id, machine.external_id
+        with provider_for(ctx, connection_id) as provider:
+            if not external_id.startswith(PENDING_PREFIX):
+                provider.delete(MachineRef(external_id=external_id))
+        with ctx.db() as session:
+            machine = session.get(Machine, node.machine_id)
+            if machine is not None:
+                session.delete(machine)
+        ctx.info(f"[{node.name}] machine destroyed")
+        destroyed.append(node.name)
+    return destroyed
+
+
+def destroy_machines(ctx: StepContext) -> dict[str, Any]:
+    plan = _plan(ctx)
+    destroyed = _destroy(ctx, plan.nodes)
+    ctx.set_result({**(ctx.outputs.get("release") or {}), "destroyed_machines": destroyed})
+    return {"destroyed": destroyed}
+
+
+# --------------------------------------------------------------------------- create: smoke test
+
+
+def smoke_test(ctx: StepContext) -> dict[str, Any]:
+    """Schedule a pod, pull an image and resolve the API service through cluster DNS."""
+    plan = _plan(ctx)
+    name = f"kplatform-smoke-{secrets.token_hex(3)}"
+    domain = plan.spec.network.dns_domain
+    service_ip = str(next(ipaddress.ip_network(plan.spec.network.service_cidr).hosts()))
+    overrides = {"spec": {"tolerations": [{"operator": "Exists"}], "restartPolicy": "Never"}}
+    with connect(ctx, plan.lead.machine_id) as executor:
+        _kubectl(
+            executor,
+            f"-n kube-system run {name} --image={cfg.SMOKE_TEST_IMAGE} --restart=Never "
+            f"--labels=app.kubernetes.io/managed-by=kubernetes-platform "
+            f"--overrides={shlex.quote(json.dumps(overrides))} "
+            f"--command -- nslookup kubernetes.default.svc.{domain}",
+        )
+        try:
+            deadline = time.monotonic() + SMOKE_TEST_TIMEOUT_SECONDS
+            while True:
+                ctx.check_cancelled()
+                pod = json.loads(_kubectl(executor, f"-n kube-system get pod {name} -o json"))
+                phase = (pod.get("status") or {}).get("phase")
+                if phase in ("Succeeded", "Failed"):
+                    break
+                if time.monotonic() > deadline:
+                    waiting = [
+                        (c.get("state") or {}).get("waiting", {}).get("reason")
+                        for c in (pod.get("status") or {}).get("containerStatuses") or []
+                    ]
+                    raise StepFailedError(
+                        f"Smoke-test pod did not finish within {SMOKE_TEST_TIMEOUT_SECONDS}s "
+                        f"(phase {phase}, {', '.join(w for w in waiting if w) or 'no container status'})",
+                        code="smoke_test_timeout",
+                    )
+                time.sleep(3)
+            node = (pod.get("spec") or {}).get("nodeName")
+            logs = _kubectl(executor, f"-n kube-system logs {name}")
+        finally:
+            from app.modules.infrastructure.host_access import CommandOptions
+
+            executor.run(
+                f"kubectl --kubeconfig /etc/kubernetes/admin.conf -n kube-system delete pod {name} --wait=false",
+                CommandOptions(sudo=True, timeout_seconds=60),
+            )
+    if phase != "Succeeded" or service_ip not in logs:
+        raise StepFailedError(
+            f"Cluster DNS check failed on {node}: kubernetes.default.svc.{domain} did not resolve to {service_ip}.\n"
+            + logs[-800:],
+            code="smoke_test_failed",
+        )
+    ctx.info(f"Pod scheduled on {node}, image pulled, kubernetes.default.svc.{domain} resolved to {service_ip}")
+    return {"node": node}
+
+
+# --------------------------------------------------------------------------- add nodes
+
+
+def cluster_version(ctx: StepContext) -> dict[str, Any]:
+    """The version the cluster runs (new nodes must match it)."""
+    plan = _plan(ctx)
+    with ctx.db() as session:
+        cluster = session.get(Cluster, plan.cluster_id)
+        version = (cluster.kubernetes_version or "").lstrip("v") if cluster else ""
+    if not version:
+        raise StepFailedError("The cluster's Kubernetes version is unknown", code="version_unknown")
+    ctx.info(f"New nodes get Kubernetes v{version}, matching the cluster")
+    return {"version": version}
+
+
+def join_info(ctx: StepContext) -> dict[str, Any]:
+    """API endpoint and CA hash of the existing cluster (what `init` reports on creation)."""
+    plan = _plan(ctx)
+    from app.modules.infrastructure.host_access import CommandOptions
+
+    with ctx.db() as session:
+        cluster = session.get(Cluster, plan.cluster_id)
+        endpoint = (cluster.api_endpoint or "").removeprefix("https://") if cluster else ""
+    if not endpoint:
+        raise StepFailedError("The cluster has no recorded API endpoint", code="endpoint_unknown")
+    with connect(ctx, plan.lead.machine_id) as executor:
+        result = executor.run(
+            "openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl pkey -pubin -outform der 2>/dev/null"
+            " | openssl dgst -sha256 -hex | sed 's/^.* //'",
+            CommandOptions(sudo=True, timeout_seconds=60),
+        )
+    digest = result.stdout.strip()
+    if not result.ok or len(digest) != 64:
+        raise StepFailedError(f"Could not read the cluster CA from {plan.lead.name}", code="ca_unreadable")
+    ctx.info(f"Joining through {endpoint}")
+    return {"api_server_endpoint": endpoint, "ca_cert_hash": f"sha256:{digest}"}
+
+
+def finalize_add(ctx: StepContext) -> dict[str, Any]:
+    plan = _plan(ctx)
+    with ctx.db() as session:
+        cluster = session.get(Cluster, plan.cluster_id)
+        if cluster is None:
+            raise StepFailedError("Cluster record was deleted", code="cluster_missing")
+        cluster.spec = plan.spec.model_dump(mode="json")
+        ids = {n.machine_id for n in plan.nodes}
+        for membership in session.scalars(select(ClusterMachine).where(ClusterMachine.cluster_id == plan.cluster_id)):
+            if membership.machine_id in ids:
+                membership.membership_state = MachineMembershipState.JOINED
+    names = [n.name for n in plan.nodes]
+    ctx.info(f"{len(names)} node(s) added: {', '.join(names)}")
+    ctx.set_result({"cluster": plan.cluster_name, "added_nodes": names})
+    return {"added": names}
+
+
+# --------------------------------------------------------------------------- remove nodes
+
+
+def drain_nodes(ctx: StepContext) -> dict[str, Any]:
+    plan = _plan(ctx)
+    from app.modules.infrastructure.host_access import CommandOptions
+
+    with connect(ctx, plan.lead.machine_id) as executor:
+        for node in plan.nodes:
+            ctx.check_cancelled()
+            result = executor.run(
+                f"kubectl --kubeconfig /etc/kubernetes/admin.conf drain {shlex.quote(node.name)} "
+                "--ignore-daemonsets --delete-emptydir-data --force --timeout=300s",
+                CommandOptions(sudo=True, timeout_seconds=360),
+            )
+            output = (result.stdout + result.stderr).strip()
+            if result.ok:
+                ctx.info(f"[{node.name}] drained")
+            elif "not found" in output:
+                ctx.info(f"[{node.name}] not registered in the cluster; nothing to drain")
+            elif plan.force:
+                ctx.warning(f"[{node.name}] drain failed, continuing (force): {output[-300:]}")
+            else:
+                raise StepFailedError(
+                    f"Draining {node.name} failed (a PodDisruptionBudget may block eviction): {output[-500:]}",
+                    code="drain_failed",
+                )
+    return {}
+
+
+def reset_removed(ctx: StepContext) -> dict[str, Any]:
+    """kubeadm reset on the leaving nodes (a control plane also leaves etcd here)."""
+    plan = _plan(ctx)
+    _for_nodes(
+        ctx,
+        plan.nodes,
+        _script_action(ctx, "reset.sh", {"VIP": cfg.vip_of(plan.spec) or ""}, action="kubeadm reset", timeout=600),
+        parallel=False,
+        tolerate_unreachable=plan.force,
+    )
+    return {}
+
+
+ETCDCTL = (
+    "etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt "
+    "--cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key"
+)
+
+
+def remove_etcd_members(ctx: StepContext) -> dict[str, Any]:
+    """Make sure leaving control planes are no longer etcd members (kubeadm reset normally did it;
+    this covers unreachable nodes)."""
+    plan = _plan(ctx)
+    leaving = {n.name for n in plan.control_planes}
+    with connect(ctx, plan.lead.machine_id) as executor:
+        pod = f"etcd-{plan.lead.name}"
+        listed = json.loads(_kubectl(executor, f"-n kube-system exec {pod} -- {ETCDCTL} member list -w json"))
+        removed = []
+        for member in listed.get("members") or []:
+            if member.get("name") in leaving:
+                member_id = format(int(member["ID"]), "x")
+                _kubectl(executor, f"-n kube-system exec {pod} -- {ETCDCTL} member remove {member_id}")
+                removed.append(member["name"])
+                ctx.info(f"[{member['name']}] removed from etcd (member {member_id})")
+        remaining = len(listed.get("members") or []) - len(removed)
+    if not removed:
+        ctx.info("Leaving control planes already left etcd")
+    ctx.info(f"etcd has {remaining} member(s)")
+    return {"removed": removed, "members": remaining}
+
+
+def delete_node_objects(ctx: StepContext) -> dict[str, Any]:
+    plan = _plan(ctx)
+    with connect(ctx, plan.lead.machine_id) as executor:
+        for node in plan.nodes:
+            _kubectl(executor, f"delete node {shlex.quote(node.name)} --ignore-not-found --wait=false")
+            ctx.info(f"[{node.name}] node object deleted")
+    return {}
+
+
+def finalize_remove(ctx: StepContext) -> dict[str, Any]:
+    plan = _plan(ctx)
+    ids = [n.machine_id for n in plan.nodes]
+    with ctx.db() as session:
+        cluster = session.get(Cluster, plan.cluster_id)
+        if cluster is not None:
+            cluster.spec = plan.spec.model_dump(mode="json")
+        session.execute(
+            delete(ClusterMachine).where(
+                ClusterMachine.cluster_id == plan.cluster_id, ClusterMachine.machine_id.in_(ids)
+            )
+        )
+    names = [n.name for n in plan.nodes]
+    ctx.info(f"Removed {', '.join(names)} from {plan.cluster_name}; machine(s) released to the inventory")
+    ctx.set_result({"cluster": plan.cluster_name, "removed_nodes": names})
+    return {"removed": names}

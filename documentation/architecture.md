@@ -148,22 +148,25 @@ runs the normal inspection.
 
 Distributions follow the same pattern: subclass `KubernetesDistribution`, implement `plan_*`, and register.
 
-## Cluster creation (kubeadm on existing Linux machines)
+## Cluster creation (kubeadm on Linux machines)
 
 ```
-Machines (SSH provider)               Cluster wizard / API                   Orchestration worker
------------------------               --------------------                   --------------------
+Machines                              Cluster wizard / API                   Orchestration worker
+--------                              --------------------                   --------------------
 register --> machine.inspect          spec --> POST /clusters/validate       cluster.create plan (kubeadm):
-             - pin SSH host key                - distribution rules          validate -> prepare -> containerd
-             - detect OS/hardware              - inventory checks            -> resolve-version -> packages
-             - prerequisite checks             - plan preview                -> init -> cni -> join-cp:* (serial)
-             -> ready / error         POST /clusters --> Cluster +           -> join-workers (parallel)
-                                      ClusterMachine rows + operation        -> configure-nodes -> wait-ready
-                                                                             -> register (kubeconfig credential)
+provision -> machine.provision                 - distribution rules          [wait-machines] -> validate -> prepare
+             - pin SSH host key                - inventory + provisioning    -> containerd -> resolve-version
+             - detect OS/hardware                checks, plan preview        -> packages -> init (+kube-vip)
+             - prerequisite checks    POST /clusters --> machines provisioned -> cni -> join-cp:* (serial, +kube-vip)
+             -> ready / error         + Cluster/ClusterMachine rows + op     -> join-workers (parallel) -> configure
+                                                                             -> wait-ready -> smoke-test -> register
 ```
 
 **Machines.**
-* Registered by address with an SSH credential.
+* Registered by address with an SSH credential, or provisioned through a provider connection (pools whose `count`
+  exceeds their `existing_machine_ids` get new machines from `provider_connection_id`, with the SSH key
+  `machine_credential_id`). Provisioning runs as separate `machine.provision` operations; the cluster operation
+  starts with `wait-machines`.
 * The first connection records the server's host key (trust on first use). Every later connection requires that
   exact key; accepting a changed key is an explicit, confirmed action.
 * Inspection (`detect.sh`) reads OS, hardware and Kubernetes state without sudo, and evaluates prerequisites:
@@ -177,6 +180,36 @@ register --> machine.inspect          spec --> POST /clusters/validate       clu
 * containerd comes from Docker's repository, configured with the systemd cgroup driver.
 * kubeadm configuration is generated (v1beta3/v1beta4), including the pod/service CIDRs, DNS domain, node IPs,
   an HA `controlPlaneEndpoint`, and kubelet/kube-proxy options.
+* **Smoke test.** After all nodes are Ready, a pod (tolerating every taint) resolves
+  `kubernetes.default.svc.<domain>` and must get the first service IP: it proves scheduling, image pulls, the pod
+  network and cluster DNS before the cluster is registered.
+
+**High availability (kube-vip).**
+* `load_balancer: "kube-vip"` with an unused IPv4 `endpoint` on the control-plane subnet. kube-vip v1.3.1 runs as
+  a static pod on every control plane, elects a leader through a Kubernetes lease and announces the VIP with ARP;
+  `controlPlaneEndpoint` is the VIP, so it is in the API server certificate.
+* On the first control plane the manifest is written before `kubeadm init` and mounts `super-admin.conf` (1.29+:
+  `admin.conf` has no RBAC binding until init finishes); afterwards it is switched to `admin.conf`. kubelet then
+  restarts kube-vip and the VIP disappears for a few seconds, so the step waits for the restart and for a
+  certificate-verified `/readyz` through the VIP before continuing.
+* Joining control planes get the manifest after `kubeadm join` (its preflight requires an empty manifests
+  directory). `kubeadm reset` on a leaving control plane releases the VIP from its interface.
+* The validate step rejects a VIP that is a node address or outside the nodes' subnet. Clusters created with
+  `load_balancer: "none"` have no shared endpoint, so control planes cannot be added to them later.
+* Verified live with three local control planes: stopping the VIP holder moved the VIP to another node, the API
+  kept answering through it and etcd kept quorum; restarting the node restored all three members.
+* The local provider assigns machines `.10`–`.199` of its network, leaving `.200`–`.254` for virtual IPs.
+
+**Adding and removing nodes** (`cluster.nodes.add`, `cluster.nodes.remove`).
+* Add: registered and/or provisioned machines join an existing pool, the control-plane pool (only with a shared
+  endpoint) or a new worker pool. An existing control plane (the *anchor*) issues a fresh bootstrap token and, for
+  control planes, uploads certificates with a new certificate key; the new nodes get the cluster's exact version.
+  Control-plane workload policy is copied from the anchor's taints. The cluster keeps running throughout.
+* Remove: drain (via the anchor) → `kubeadm reset` on the node (a control plane leaves etcd here) → make sure no
+  etcd member with the node's name remains (covers unreachable nodes, `force`) → delete the Node object → release
+  the machine, optionally destroy it. The last control plane cannot be removed.
+* The spec stored on the cluster is updated only when the operation succeeds; a failed node keeps a `failed`
+  membership and can be retried or removed.
 
 **Secrets.**
 * Bootstrap tokens and certificate keys are generated per step, passed on stdin, deleted from disk after use,
@@ -185,15 +218,30 @@ register --> machine.inspect          spec --> POST /clusters/validate       clu
 
 **Failure handling.**
 * A failed step leaves the cluster in `error` with the failure recorded.
-* *Retry* resumes at the failed step; completed steps such as `kubeadm init` never repeat.
+* *Retry* resumes at the failed step; completed steps such as `kubeadm init` never repeat. A failed machine
+  provisioning is retried on its own `machine.provision` operation, then the cluster operation is retried.
 * *Delete* runs `kubeadm reset` on every node (with an optional force mode for unreachable nodes), deletes the
-  kubeconfig and releases the machines.
+  kubeconfig, releases the machines and, with `destroy_machines`, destroys the ones the platform provisioned.
 
 **Scope today.**
-* kubeadm with Calico or Flannel, on existing Linux machines.
-* HA control planes require an existing external load balancer or DNS name; kube-vip is not yet supported.
-* VM provisioning (Proxmox/cloud), K3s/RKE2 and managed services remain catalogued as planned.
-* The installer was verified end to end on real systemd hosts (Local provider container nodes).
+* kubeadm with Calico or Flannel on Linux machines (registered, local containers, Proxmox VMs in preview).
+* Cluster upgrades, K3s/RKE2 and managed services are planned (Phase 5).
+
+## Node management
+
+Works on every connected cluster (imported ones too), through the Kubernetes API:
+* **Cordon / uncordon:** `spec.unschedulable`.
+* **Labels:** set/remove; labels Kubernetes maintains (hostname, os, arch, topology, instance type) are refused.
+* **Taints:** the user-managed taints are replaced as a list; taints managed by Kubernetes (`node.kubernetes.io/*`)
+  are kept. The merge patch carries `resourceVersion`, so concurrent edits are not silently overwritten.
+* **Drain** (`cluster.node.drain`): follows `kubectl drain` — DaemonSet and static pods stay; pods without a
+  controller or with emptyDir data need explicit `force` / `delete_emptydir_data` (checked before anything changes);
+  every other pod is *evicted* through the Eviction API, so PodDisruptionBudgets are respected (429 responses are
+  retried until the timeout).
+* **System logs** (platform-installed clusters): `journalctl -u kubelet|containerd` read over SSH with the pinned
+  host key.
+
+All node changes are audited (`node.cordon`, `node.labels`, `node.taints`, `node.drain`, …).
 
 ## Kubernetes connectivity (live cluster data)
 

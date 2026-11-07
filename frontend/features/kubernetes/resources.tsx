@@ -1,16 +1,18 @@
 "use client";
 
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Plus } from "lucide-react";
 import { useState } from "react";
 
 import { EmptyState, TableSkeleton } from "@/components/common/page";
 import { StatusPill } from "@/components/common/status";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useCluster } from "@/lib/api/hooks";
 import {
   useClusterEvents,
   useClusterNamespaces,
@@ -23,6 +25,7 @@ import {
 } from "@/lib/api/kube";
 import { formatAge, formatBytes, formatCpu } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { AddNodesDialog, NodeActions } from "./node-actions";
 import { LiveError, NodeReadyBadge, PodStatusBadge, UsageBar } from "./shared";
 
 function Frame({ children }: { children: React.ReactNode }) {
@@ -43,6 +46,7 @@ function Pct({ value, total }: { value: number | null; total: number }) {
 
 function NodeDialog({ clusterId, name, onClose }: { clusterId: string; name: string | null; onClose: () => void }) {
   const node = useClusterNode(clusterId, name);
+  const cluster = useCluster(clusterId);
   const n = node.data;
   return (
     <Dialog open={name !== null} onOpenChange={(open) => !open && onClose()}>
@@ -54,12 +58,13 @@ function NodeDialog({ clusterId, name, onClose }: { clusterId: string; name: str
         {node.isLoading && <Skeleton className="h-64" />}
         {node.isError && <LiveError error={node.error} clusterId={clusterId} onRetry={() => node.refetch()} />}
         {n && (
-          <div className="space-y-5 text-sm">
+          <div className="min-w-0 space-y-5 text-sm">
             <div className="flex flex-wrap items-center gap-2">
               <NodeReadyBadge ready={n.ready} status={n.status} />
               {n.roles.map((r) => <Badge key={r} variant="secondary">{r}</Badge>)}
               {n.problems.map((p) => <StatusPill key={p} tone="danger">{p}</StatusPill>)}
             </div>
+            <NodeActions clusterId={clusterId} node={n} cluster={cluster.data} />
             <div className="grid gap-4 md:grid-cols-2">
               <UsageBar label="CPU" kind="cpu" usage={{ allocatable_m: n.cpu.allocatable_m, requested_m: n.cpu.requested_m, used_m: n.cpu.used_m }} />
               <UsageBar label="Memory" kind="memory" usage={{ allocatable_bytes: n.memory.allocatable_bytes, requested_bytes: n.memory.requested_bytes, used_bytes: n.memory.used_bytes }} />
@@ -127,11 +132,24 @@ function NodeDialog({ clusterId, name, onClose }: { clusterId: string; name: str
 
 export function NodesTable({ clusterId }: { clusterId: string }) {
   const nodes = useClusterNodes(clusterId);
+  const cluster = useCluster(clusterId);
   const [open, setOpen] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
   if (nodes.isLoading) return <TableSkeleton rows={3} columns={7} />;
   if (nodes.isError) return <LiveError error={nodes.error} clusterId={clusterId} onRetry={() => nodes.refetch()} />;
+  const c = cluster.data;
+  const canAdd = c?.origin === "provisioned" && (c.lifecycle_state === "active" || c.lifecycle_state === "degraded");
   return (
     <>
+      {c?.origin === "provisioned" && (
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">
+            {c.nodes.filter((m) => m.membership_state !== "joined").map((m) => `${m.node_name ?? m.machine_name}: ${m.membership_state}`).join(" · ") ||
+              "Click a node to cordon, drain, label, taint, read its logs or remove it."}
+          </p>
+          <Button size="sm" onClick={() => setAdding(true)} disabled={!canAdd}><Plus /> Add nodes</Button>
+        </div>
+      )}
       <Frame>
         <Table>
           <TableHeader>
@@ -174,6 +192,7 @@ export function NodesTable({ clusterId }: { clusterId: string }) {
         </Table>
       </Frame>
       <NodeDialog clusterId={clusterId} name={open} onClose={() => setOpen(null)} />
+      {adding && c && <AddNodesDialog cluster={c} open onClose={() => setAdding(false)} />}
     </>
   );
 }

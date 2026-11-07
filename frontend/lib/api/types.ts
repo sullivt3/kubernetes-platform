@@ -234,6 +234,7 @@ export interface ClusterNode {
   os: string | null;
   cpu_cores: number | null;
   memory_mb: number | null;
+  provisioned: boolean;
 }
 
 export interface ClusterDetail extends ClusterSummary {
@@ -250,10 +251,17 @@ export interface Taint {
   effect: "NoSchedule" | "PreferNoSchedule" | "NoExecute";
 }
 
+export interface MachineTemplateInput {
+  cpu_cores: number;
+  memory_mb: number;
+  disk_gb: number;
+}
+
 export interface NodePoolInput {
   name: string;
   count: number;
   existing_machine_ids: string[];
+  machine_template?: MachineTemplateInput | null;
   labels?: Record<string, string>;
   taints?: Taint[];
 }
@@ -262,6 +270,8 @@ export interface ClusterSpecInput {
   name: string;
   distribution: string;
   provider_type: string;
+  provider_connection_id?: string | null;
+  machine_credential_id?: string | null;
   kubernetes_version: string;
   container_runtime?: string;
   network: { pod_cidr: string; service_cidr: string; dns_domain: string; cni: string };

@@ -2,7 +2,9 @@
 
 Supports: discovery, GET item/collection (label selectors), server-side apply
 (including dryRun), merge / strategic-merge / JSON patches, POST, DELETE, the
-scale subresource, pod logs and a validation hook that returns 422.
+scale subresource, pod logs, nodes, the ``spec.nodeName`` field selector, the pod
+eviction subresource (``pdb_blocked`` simulates PodDisruptionBudgets) and a validation
+hook that returns 422.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from app.modules.kubernetes.client import ConnectionTarget
 RESOURCES = {
     "v1": [
         ("namespaces", "Namespace", False),
+        ("nodes", "Node", False),
         ("pods", "Pod", True),
         ("services", "Service", True),
         ("configmaps", "ConfigMap", True),
@@ -52,6 +55,8 @@ class FakeStore:
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
         self.logs: dict[str, str] = {}
         self.uid = 0
+        # "namespace/name" of pods whose eviction a PodDisruptionBudget currently refuses (429).
+        self.pdb_blocked: set[str] = set()
         self.put_namespace("default")
 
     # ------------------------------------------------------------------ helpers
@@ -140,6 +145,15 @@ class FakeStore:
         if path in ("/api/v1", "/apis/apps/v1", "/apis/batch/v1"):
             group = "v1" if path == "/api/v1" else path[len("/apis/") :]
             return self._ok({"resources": [{"name": p, "kind": k, "namespaced": n} for p, k, n in RESOURCES[group]]})
+        if path.endswith("/eviction") and method == "POST":
+            pod_path = path[: -len("/eviction")]
+            if pod_path not in self.objects:
+                return self._err(404, "pod not found")
+            meta = self.objects[pod_path]["metadata"]
+            if f"{meta['namespace']}/{meta['name']}" in self.pdb_blocked:
+                return self._err(429, "Cannot evict pod as it would violate the pod's disruption budget.")
+            del self.objects[pod_path]
+            return self._ok({"status": "Success"}, 201)
         if path.endswith("/log"):
             return 200, self.logs.get(path, "").encode()
         if path.endswith("/scale"):
@@ -171,8 +185,11 @@ class FakeStore:
                 items = [
                     o for o in items if all((o["metadata"].get("labels") or {}).get(k) == v for k, v in wanted.items())
                 ]
-            if str(params.get("fieldSelector", "")).startswith("involvedObject"):
+            field = str(params.get("fieldSelector", ""))
+            if field.startswith("involvedObject"):
                 items = []
+            elif field.startswith("spec.nodeName="):
+                items = [o for o in items if (o.get("spec") or {}).get("nodeName") == field.split("=", 1)[1]]
             return self._ok({"items": items, "metadata": {}})
         if method == "PATCH" and content_type == "application/apply-patch+yaml":
             error = self.validate(payload)

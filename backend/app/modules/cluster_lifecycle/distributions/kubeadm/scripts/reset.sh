@@ -14,4 +14,11 @@ if command -v ip >/dev/null 2>&1; then
   done
 fi
 if systemctl is-enabled --quiet kubelet 2>/dev/null; then systemctl stop kubelet || true; fi
+# A control plane that held the kube-vip address keeps it on its interface after kube-vip
+# stops; release it so the address can move to a remaining control plane.
+if [ -n "${VIP:-}" ] && command -v ip >/dev/null 2>&1; then
+  ip -o -4 addr show | awk -v want="${VIP}/32" '$4 == want {print $2}' | while read -r dev; do
+    ip addr del "${VIP}/32" dev "$dev" 2>/dev/null && log "Released kube-vip address ${VIP} from ${dev}"
+  done
+fi
 log "Node reset. Note: iptables/IPVS rules created by kube-proxy and the CNI were left in place."

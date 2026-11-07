@@ -33,6 +33,7 @@ SCRIPT_MARKERS = {
     "Install the pod network": "cni",
     "Join this node to the cluster": "join",
     "Remove Kubernetes state": "reset",
+    "Install or update the kube-vip static pod": "kube_vip",
 }
 
 
@@ -53,6 +54,8 @@ class FakeHost:
     calls: list[tuple[str, dict[str, str]]] = field(default_factory=list)
     fail_next: dict[str, int] = field(default_factory=dict)  # script -> remaining failures
     secrets_seen: list[str] = field(default_factory=list)
+    kube_vip_manifest: str | None = None
+    control_plane: bool = False
 
 
 class FakeCluster:
@@ -60,6 +63,12 @@ class FakeCluster:
 
     def __init__(self) -> None:
         self.hosts: dict[str, FakeHost] = {}  # "host:port" -> FakeHost
+        self.dns_works = True
+        self.control_plane_workloads = False  # whether control planes carry the NoSchedule taint
+        self.etcd_removed: list[str] = []
+        self.deleted_nodes: list[str] = []
+        self.drained: list[str] = []
+        self.smoke_pods: list[str] = []
 
     def add(self, address: str, host: FakeHost) -> FakeHost:
         self.hosts[address] = host
@@ -123,6 +132,15 @@ class FakeExecutor(HostExecutor):
             return self._result(command, out="[upload-certs] Using certificate key:\n" + command.split()[-1])
         if command.startswith("kubectl"):
             return self._kubectl(command)
+        if command == "ip -o -4 addr show":
+            return self._result(
+                command,
+                out=f"1: lo    inet 127.0.0.1/8 scope host lo\n2: eth0    inet {h.ip}/24 brd x scope global eth0\n",
+            )
+        if command.startswith("openssl x509 -pubkey"):
+            return self._result(command, out="ab" * 32 + "\n") if h.initialized else self._result(command, code=1)
+        if command.startswith("journalctl -u "):
+            return self._result(command, out=f"{h.name} {command.split()[2]}: started\n")
         return self._result(command, err=f"fake: unknown command {command}", code=127)
 
     def _script(self, stdin: str, on_output: Callable[[str], None] | None) -> CommandResult:
@@ -178,12 +196,16 @@ class FakeExecutor(HostExecutor):
                 h.installed_version = env["K8S_VERSION"]
                 out.append(f"Installed Kubernetes components v{h.installed_version}")
         elif script == "init":
-            h.initialized = True
+            h.initialized = h.control_plane = True
             out.append("CA_CERT_HASH=sha256:" + "ab" * 32)
         elif script == "join":
             h.joined = True
+            h.control_plane = '"controlPlane"' in base64.b64decode(env["CONFIG_B64"]).decode()
         elif script == "reset":
-            h.joined = h.initialized = False
+            h.joined = h.initialized = h.control_plane = False
+            h.kube_vip_manifest = None
+        elif script == "kube_vip":
+            h.kube_vip_manifest = base64.b64decode(env["MANIFEST_B64"]).decode()
         for line in out:
             if on_output:
                 on_output(line)
@@ -209,6 +231,46 @@ class FakeExecutor(HostExecutor):
             return self._result(command, out=json.dumps({"items": items}))
         if "get deployment coredns -o json" in command:
             return self._result(command, out=json.dumps({"status": {"replicas": 2, "availableReplicas": 2}}))
+        words = command.split()
+        if " run kplatform-smoke-" in command:
+            self.cluster.smoke_pods.append(words[words.index("run") + 1])
+            return self._result(command, out="pod created")
+        if "get pod kplatform-smoke-" in command:
+            phase = "Succeeded" if self.cluster.dns_works else "Failed"
+            return self._result(
+                command, out=json.dumps({"status": {"phase": phase}, "spec": {"nodeName": self.host.name}})
+            )
+        if " logs kplatform-smoke-" in command:
+            if not self.cluster.dns_works:
+                return self._result(command, out=";; connection timed out; no servers could be reached")
+            return self._result(
+                command,
+                out="Server: 10.96.0.10\nName: kubernetes.default.svc.cluster.local\nAddress: 10.96.0.1\n",
+            )
+        if " drain " in command:
+            self.cluster.drained.append(words[words.index("drain") + 1])
+            return self._result(command, out="node drained")
+        if " get node " in command and "-o json" in command:
+            name = words[words.index("node") + 1]
+            taints = (
+                []
+                if self.cluster.control_plane_workloads
+                else [{"key": "node-role.kubernetes.io/control-plane", "effect": "NoSchedule"}]
+            )
+            return self._result(command, out=json.dumps({"metadata": {"name": name}, "spec": {"taints": taints}}))
+        if "member list -w json" in command:
+            members = [
+                {"ID": 1000 + i, "name": x.name}
+                for i, x in enumerate(self.cluster.hosts.values())
+                if x.control_plane and (x.initialized or x.joined)
+            ]
+            return self._result(command, out=json.dumps({"members": members}))
+        if " member remove " in command:
+            self.cluster.etcd_removed.append(words[-1])
+            return self._result(command, out="Member removed")
+        if " delete node " in command:
+            self.cluster.deleted_nodes.append(words[words.index("node") + 1])
+            return self._result(command, out="node deleted")
         return self._result(command, out="ok")
 
     def put_file(self, content: bytes, remote_path: str, *, mode: int = 0o600, sudo: bool = False) -> None:

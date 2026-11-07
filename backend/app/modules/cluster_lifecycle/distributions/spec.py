@@ -93,9 +93,9 @@ class ControlPlaneSpec(NodePoolSpec):
 
     @model_validator(mode="after")
     def _ha_rules(self) -> ControlPlaneSpec:
+        # (The odd-member rule is enforced when a cluster is created; node add/remove may pass
+        # through even counts, which etcd tolerates.)
         if self.count > 1:
-            if self.count % 2 == 0:
-                raise ValueError("Highly available control planes need an odd member count (3, 5 or 7)")
             if self.load_balancer is LoadBalancerMode.NONE:
                 raise ValueError("Multiple control-plane nodes require a load balancer mode for the API")
             if self.load_balancer in (LoadBalancerMode.KUBE_VIP, LoadBalancerMode.EXTERNAL) and not self.endpoint:
@@ -138,7 +138,11 @@ class ClusterSpec(BaseModel):
     name: str = Field(pattern=DNS_LABEL)
     distribution: DistributionType
     provider_type: ProviderType
+    # Where machines are provisioned when a pool's count exceeds its existing machines.
     provider_connection_id: uuid.UUID | None = None
+    # SSH key installed on provisioned machines (its public half) and the login user created.
+    machine_credential_id: uuid.UUID | None = None
+    machine_username: str = Field(default="platform", pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
     kubernetes_version: str = Field(pattern=K8S_VERSION)
     container_runtime: ContainerRuntime = ContainerRuntime.CONTAINERD
     network: NetworkSpec = Field(default_factory=NetworkSpec)

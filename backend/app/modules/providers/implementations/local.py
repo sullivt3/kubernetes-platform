@@ -49,6 +49,10 @@ LABEL_MANAGED = "io.kplatform.local-node"
 LABEL_NETWORK = "io.kplatform.network"
 SSH_PORT = "22/tcp"
 API_PORT = "6443/tcp"
+# Machines get .10-.199 of the network; .200-.254 stay free for virtual IPs (kube-vip).
+FIRST_HOST, LAST_HOST = 10, 199
+CREATE_ATTEMPTS = 5
+CONFLICT_MARKERS = ("address already in use", "already allocated", "port is already allocated")
 
 
 def node_image_tag() -> str:
@@ -233,7 +237,7 @@ class LocalProvider(InfrastructureProvider):
                     return str(candidate)
         raise ProviderApiError("No free 172.28.0.0/14 subnet found; set 'subnet' in the connection configuration")
 
-    def _free_ip(self, network: Any) -> str:
+    def _free_ip(self, network: Any, exclude: set[str] | None = None) -> str:
         network.reload()
         subnet = self._subnet(network)
         assert subnet is not None
@@ -252,8 +256,9 @@ class LocalProvider(InfrastructureProvider):
             fixed = container.labels.get("io.kplatform.ip")
             if fixed:
                 taken.add(fixed)
+        taken |= exclude or set()
         hosts = list(subnet.hosts())
-        for ip in hosts[9:]:  # leave .1-.9 for the gateway and manual use
+        for ip in hosts[FIRST_HOST - 1 : LAST_HOST]:  # .1-.9: gateway/manual, .200+: virtual IPs
             if str(ip) not in taken:
                 return str(ip)
         raise ProviderApiError(f"No free address left in {subnet}")
@@ -361,17 +366,23 @@ class LocalProvider(InfrastructureProvider):
         name = f"{self.cfg.name_prefix}{request.name}"
         existing = self._container(name)
         if existing is not None:  # idempotent: a retried step finds the container it created
-            if existing.status != "running":
+            if existing.status == "running":
+                return self._describe(existing)
+            try:
                 self._call("Start container", existing.start)
-            return self._describe(existing)
+                return self._describe(existing)
+            except ProviderApiError as exc:
+                if not any(m in exc.message.lower() for m in CONFLICT_MARKERS):
+                    raise
+                # Left over from an attempt that lost an address race: recreate it.
+                self._call("Remove container", existing.remove, force=True)
         if not request.ssh_public_key:
             raise ProviderApiError("A public SSH key is required to provision a local machine")
 
         image = self.ensure_image()
         network = self._ensure_network()
         client = self._docker()
-        ip = self._free_ip(network)
-        kwargs: dict[str, Any] = {
+        base: dict[str, Any] = {
             "name": name,
             "hostname": request.name,
             "detach": True,
@@ -385,24 +396,48 @@ class LocalProvider(InfrastructureProvider):
             },
             "environment": {"AUTHORIZED_KEY": request.ssh_public_key, "NODE_USER": request.ssh_username},
             "network": self.cfg.network,
-            "networking_config": {self.cfg.network: client.api.create_endpoint_config(ipv4_address=ip)},
-            "labels": {
-                LABEL_MANAGED: "true",
-                LABEL_NETWORK: self.cfg.network,
-                "io.kplatform.machine-name": request.name,
-                "io.kplatform.ip": ip,
-                **{f"io.kplatform.label.{k}": v for k, v in request.labels.items()},
-            },
             "restart_policy": {"Name": "unless-stopped"},
         }
-        if self.cfg.access == "published_ports":
-            # Fixed host ports: Docker re-randomizes ephemeral ports on every restart.
-            kwargs["ports"] = {SSH_PORT: ("127.0.0.1", self._free_port()), API_PORT: ("127.0.0.1", self._free_port())}
         if self.cfg.enforce_resources:
-            kwargs["nano_cpus"] = int(request.cpu_cores * 1e9)
-            kwargs["mem_limit"] = f"{request.memory_mb}m"
-        container = self._call("Create container", client.containers.run, image, **kwargs)
-        return self._describe(container)
+            base["nano_cpus"] = int(request.cpu_cores * 1e9)
+            base["mem_limit"] = f"{request.memory_mb}m"
+
+        # Machines provisioned in parallel can pick the same free address or port; Docker rejects
+        # the loser atomically, which then retries with another one.
+        tried: set[str] = set()
+        last_error = ""
+        for _ in range(CREATE_ATTEMPTS):
+            ip = self._free_ip(network, exclude=tried)
+            kwargs = {
+                **base,
+                "networking_config": {self.cfg.network: client.api.create_endpoint_config(ipv4_address=ip)},
+                "labels": {
+                    LABEL_MANAGED: "true",
+                    LABEL_NETWORK: self.cfg.network,
+                    "io.kplatform.machine-name": request.name,
+                    "io.kplatform.ip": ip,
+                    **{f"io.kplatform.label.{k}": v for k, v in request.labels.items()},
+                },
+            }
+            if self.cfg.access == "published_ports":
+                # Fixed host ports: Docker re-randomizes ephemeral ports on every restart.
+                kwargs["ports"] = {
+                    SSH_PORT: ("127.0.0.1", self._free_port()),
+                    API_PORT: ("127.0.0.1", self._free_port()),
+                }
+            try:
+                container = self._call("Create container", client.containers.run, image, **kwargs)
+            except ProviderApiError as exc:
+                if not any(m in exc.message.lower() for m in CONFLICT_MARKERS):
+                    raise
+                last_error = exc.message
+                tried.add(ip)
+                leftover = self._container(name)  # `run` creates before starting: clean up
+                if leftover is not None:
+                    self._call("Remove container", leftover.remove, force=True)
+                continue
+            return self._describe(container)
+        raise ProviderApiError(f"Could not allocate a free address/port after {CREATE_ATTEMPTS} attempts: {last_error}")
 
     def delete(self, machine: MachineRef) -> None:
         import docker

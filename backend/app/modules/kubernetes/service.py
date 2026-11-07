@@ -32,6 +32,8 @@ from app.modules.kubernetes import kubeconfig, reads, views
 from app.orchestration.models import Operation
 from app.orchestration.service import OperationService
 
+NODE_LOG_UNITS = ("kubelet", "containerd")
+
 logger = logging.getLogger(__name__)
 
 NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
@@ -142,6 +144,93 @@ class KubernetesService:
         if cluster.lifecycle_state in (ClusterLifecycleState.DELETING, ClusterLifecycleState.DELETED):
             raise InvalidStateError("The cluster is being deleted")
         return cluster, api_for(self.session, self.secret_store, cluster)
+
+    # ------------------------------------------------------------------ node management
+
+    def cordon(self, principal: Principal, cluster_id: uuid.UUID, name: str, *, cordon: bool) -> dict[str, Any]:
+        from app.modules.kubernetes import nodes as knodes
+
+        cluster, api = self.api(principal, cluster_id)
+        knodes.set_unschedulable(api, name, cordon)
+        knodes.record(self.session, principal, cluster, "cordon" if cordon else "uncordon", name)
+        self.session.commit()
+        return self.node(principal, cluster_id, name)
+
+    def update_labels(
+        self, principal: Principal, cluster_id: uuid.UUID, name: str, *, set_labels: dict[str, str], remove: list[str]
+    ) -> dict[str, str]:
+        from app.modules.kubernetes import nodes as knodes
+
+        cluster, api = self.api(principal, cluster_id)
+        labels = knodes.update_labels(api, name, set_labels=set_labels, remove=remove)
+        knodes.record(self.session, principal, cluster, "labels", name, {"set": set_labels, "removed": remove})
+        self.session.commit()
+        return labels
+
+    def replace_taints(self, principal: Principal, cluster_id: uuid.UUID, name: str, taints: list[Any]) -> list[Any]:
+        from app.modules.kubernetes import nodes as knodes
+
+        cluster, api = self.api(principal, cluster_id)
+        result = knodes.replace_taints(api, name, taints)
+        knodes.record(
+            self.session, principal, cluster, "taints", name, {"taints": [f"{t.key}:{t.effect}" for t in taints]}
+        )
+        self.session.commit()
+        return result
+
+    def drain(self, principal: Principal, cluster_id: uuid.UUID, name: str, options: dict[str, Any]) -> Operation:
+        from app.modules.kubernetes import nodes as knodes
+        from app.modules.kubernetes.workflows import NODE_DRAIN
+
+        cluster = self.cluster(principal, cluster_id)
+        knodes.check_node_name(name)
+        validated = knodes.DrainOptions.model_validate(options)
+        knodes.record(self.session, principal, cluster, "drain", name, validated.model_dump())
+        self.session.commit()
+        return self.operations.submit(
+            principal,
+            NODE_DRAIN,
+            {
+                "cluster_id": str(cluster.id),
+                "cluster_name": cluster.name,
+                "node": name,
+                "options": validated.model_dump(),
+            },
+        )
+
+    def node_logs(self, principal: Principal, cluster_id: uuid.UUID, name: str, *, unit: str, lines: int) -> str:
+        """System logs of a node the platform installed (journald over SSH, host key pinned)."""
+        from app.modules.cluster_lifecycle.models import ClusterMachine, ClusterOrigin
+        from app.modules.infrastructure.access import load_target
+        from app.modules.infrastructure.host_access import CommandOptions, HostAccessError, open_host
+
+        if unit not in NODE_LOG_UNITS:
+            raise ValidationFailedError(f"unit must be one of {', '.join(NODE_LOG_UNITS)}")
+        cluster = self.cluster(principal, cluster_id)
+        if cluster.origin is not ClusterOrigin.PROVISIONED:
+            raise ValidationFailedError(
+                "System logs are available for clusters the platform installed (it has SSH access to their nodes)"
+            )
+        membership = self.session.scalar(
+            select(ClusterMachine).where(ClusterMachine.cluster_id == cluster.id, ClusterMachine.node_name == name)
+        )
+        if membership is None:
+            raise NotFoundError(f"{name} is not a node the platform manages in this cluster")
+        try:
+            target = load_target(self.session, self.secret_store, principal.organization_id, membership.machine_id)
+        except Exception as exc:
+            raise ValidationFailedError(str(exc)) from exc
+        try:
+            with open_host(target.endpoint, target.auth) as executor:
+                result = executor.run(
+                    f"journalctl -u {unit} -n {int(lines)} --no-pager -o short-iso",
+                    CommandOptions(sudo=True, timeout_seconds=30),
+                )
+        except HostAccessError as exc:
+            raise kclient.ClusterUnreachableError(f"Cannot reach {name} over SSH: {exc}") from exc
+        if not result.ok:
+            raise ValidationFailedError(f"journalctl failed on {name}: {result.stderr.strip()[-300:]}")
+        return result.stdout
 
     # ------------------------------------------------------------------ live reads
 

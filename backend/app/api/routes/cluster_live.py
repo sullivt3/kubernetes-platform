@@ -11,12 +11,14 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, SecretStr
 
 from app.api.auth import get_principal
 from app.api.deps import get_kubernetes_service
 from app.api.routes.operations import OperationDetail
 from app.core.principal import Principal
+from app.modules.kubernetes.nodes import DrainOptions, TaintIn
 from app.modules.kubernetes.service import KubernetesService
 
 router = APIRouter(prefix="/clusters", tags=["cluster connectivity"])
@@ -152,6 +154,85 @@ def node(
     service: KubernetesService = Depends(get_kubernetes_service),
 ) -> dict[str, Any]:
     return service.node(principal, cluster_id, node_name)
+
+
+class LabelsUpdate(BaseModel):
+    set: dict[str, str] = Field(default_factory=dict)
+    remove: list[str] = Field(default_factory=list)
+
+
+class TaintsUpdate(BaseModel):
+    taints: list[TaintIn] = Field(max_length=50)
+
+
+@router.post("/{cluster_id}/nodes/{node_name}/cordon")
+def cordon_node(
+    cluster_id: uuid.UUID,
+    node_name: str,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+) -> dict[str, Any]:
+    """Mark the node unschedulable (running pods stay)."""
+    return service.cordon(principal, cluster_id, node_name, cordon=True)
+
+
+@router.post("/{cluster_id}/nodes/{node_name}/uncordon")
+def uncordon_node(
+    cluster_id: uuid.UUID,
+    node_name: str,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+) -> dict[str, Any]:
+    return service.cordon(principal, cluster_id, node_name, cordon=False)
+
+
+@router.patch("/{cluster_id}/nodes/{node_name}/labels")
+def update_node_labels(
+    cluster_id: uuid.UUID,
+    node_name: str,
+    body: LabelsUpdate,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+) -> dict[str, str]:
+    """Set and remove labels. Labels maintained by Kubernetes (hostname, os, arch, topology) are protected."""
+    return service.update_labels(principal, cluster_id, node_name, set_labels=body.set, remove=body.remove)
+
+
+@router.put("/{cluster_id}/nodes/{node_name}/taints")
+def replace_node_taints(
+    cluster_id: uuid.UUID,
+    node_name: str,
+    body: TaintsUpdate,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+) -> list[Any]:
+    """Replace the taints of the node (taints managed by Kubernetes itself are kept)."""
+    return service.replace_taints(principal, cluster_id, node_name, body.taints)
+
+
+@router.post("/{cluster_id}/nodes/{node_name}/drain", response_model=OperationDetail, status_code=202)
+def drain_node(
+    cluster_id: uuid.UUID,
+    node_name: str,
+    body: DrainOptions,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+) -> OperationDetail:
+    """Cordon the node and evict its pods, respecting PodDisruptionBudgets (`cluster.node.drain`)."""
+    return OperationDetail.model_validate(service.drain(principal, cluster_id, node_name, body.model_dump()))
+
+
+@router.get("/{cluster_id}/nodes/{node_name}/logs", response_class=PlainTextResponse)
+def node_logs(
+    cluster_id: uuid.UUID,
+    node_name: str,
+    unit: str = Query(default="kubelet", pattern="^(kubelet|containerd)$"),
+    lines: int = Query(default=300, ge=10, le=5000),
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+) -> PlainTextResponse:
+    """kubelet or containerd logs from the journal of the node (platform-installed clusters)."""
+    return PlainTextResponse(service.node_logs(principal, cluster_id, node_name, unit=unit, lines=lines))
 
 
 @router.get("/{cluster_id}/namespaces")

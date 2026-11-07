@@ -239,3 +239,75 @@ def render_join_config(
             "certificateKey": certificate_key,
         }
     return _documents(join)
+
+
+# --------------------------------------------------------------------------- kube-vip
+
+# kube-vip announces the control-plane virtual IP (ARP) from whichever control plane
+# holds the leader lease. Pinned; the manifest mirrors `kube-vip manifest pod --arp
+# --controlplane --leaderElection` from this release.
+KUBE_VIP_IMAGE = "ghcr.io/kube-vip/kube-vip:v1.3.1"
+# Image used by the post-install smoke test (same registry as the Kubernetes images).
+SMOKE_TEST_IMAGE = "registry.k8s.io/e2e-test-images/busybox:1.38.0-1"
+SUPER_ADMIN_MINOR = 29  # kubeadm >= 1.29 creates super-admin.conf; admin.conf has no rights until init ends
+
+
+def vip_of(spec: ClusterSpec) -> str | None:
+    """The kube-vip address (endpoint host, IPv4) for clusters using kube-vip, else None."""
+    from app.modules.cluster_lifecycle.distributions.spec import LoadBalancerMode
+
+    if spec.control_plane.load_balancer is not LoadBalancerMode.KUBE_VIP or not spec.control_plane.endpoint:
+        return None
+    return spec.control_plane.endpoint.split(":", 1)[0]
+
+
+def kube_vip_kubeconfig(version: str, *, bootstrapping: bool) -> str:
+    """The kubeconfig kube-vip mounts. On the first control plane during `kubeadm init`,
+    admin.conf has no RBAC binding yet (1.29+), so kube-vip uses super-admin.conf until init
+    finishes and is then switched back."""
+    if bootstrapping and parse_version(version)[1] >= SUPER_ADMIN_MINOR:
+        return "/etc/kubernetes/super-admin.conf"
+    return "/etc/kubernetes/admin.conf"
+
+
+def render_kube_vip_manifest(*, vip: str, interface: str, kubeconfig: str) -> str:
+    env = [
+        {"name": "vip_arp", "value": "true"},
+        {"name": "port", "value": "6443"},
+        {"name": "vip_nodename", "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}}},
+        {"name": "vip_interface", "value": interface},
+        {"name": "vip_subnet", "value": "32"},
+        {"name": "cp_enable", "value": "true"},
+        {"name": "cp_namespace", "value": "kube-system"},
+        {"name": "vip_leaderelection", "value": "true"},
+        {"name": "vip_leasename", "value": "plndr-cp-lock"},
+        {"name": "vip_leaseduration", "value": "5"},
+        {"name": "vip_renewdeadline", "value": "3"},
+        {"name": "vip_retryperiod", "value": "1"},
+        {"name": "address", "value": vip},
+        {"name": "prometheus_server", "value": ":2112"},
+    ]
+    pod = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": "kube-vip", "namespace": "kube-system"},
+        "spec": {
+            "containers": [
+                {
+                    "name": "kube-vip",
+                    "image": KUBE_VIP_IMAGE,
+                    "imagePullPolicy": "IfNotPresent",
+                    "args": ["manager"],
+                    "env": env,
+                    "securityContext": {"capabilities": {"add": ["NET_ADMIN", "NET_RAW"], "drop": ["ALL"]}},
+                    "volumeMounts": [{"name": "kubeconfig", "mountPath": "/etc/kubernetes/admin.conf"}],
+                }
+            ],
+            # kube-vip talks to the local API server as "kubernetes:6443" (a name in the
+            # API server certificate) so it works before the VIP exists.
+            "hostAliases": [{"ip": "127.0.0.1", "hostnames": ["kubernetes"]}],
+            "hostNetwork": True,
+            "volumes": [{"name": "kubeconfig", "hostPath": {"path": kubeconfig}}],
+        },
+    }
+    return json.dumps(pod, indent=2) + "\n"

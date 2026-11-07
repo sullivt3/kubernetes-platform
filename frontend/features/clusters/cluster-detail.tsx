@@ -98,6 +98,7 @@ export function ClusterDetailView({ params }: { params: Promise<{ id: string }> 
   const remove = useDeleteCluster();
   const [deleting, setDeleting] = useState(false);
   const [force, setForce] = useState(false);
+  const [destroyMachines, setDestroyMachines] = useState(false);
 
   if (cluster.isLoading) return <div className="space-y-4"><Skeleton className="h-16" /><Skeleton className="h-80" /></div>;
   if (cluster.isError || !cluster.data) {
@@ -179,7 +180,10 @@ export function ClusterDetailView({ params }: { params: Promise<{ id: string }> 
         open={deleting}
         onOpenChange={(open) => {
           setDeleting(open);
-          if (!open) setForce(false);
+          if (!open) {
+            setForce(false);
+            setDestroyMachines(false);
+          }
         }}
         title={`Delete cluster ${c.name}?`}
         description={
@@ -195,6 +199,15 @@ export function ClusterDetailView({ params }: { params: Promise<{ id: string }> 
                 Continue even if some nodes are unreachable (their Kubernetes state will be left behind)
               </Label>
             </div>
+            {c.nodes.some((n) => n.provisioned) && (
+              <div className="flex items-start gap-2">
+                <input id="destroy-machines" type="checkbox" className="mt-0.5" checked={destroyMachines} onChange={(e) => setDestroyMachines(e.target.checked)} />
+                <Label htmlFor="destroy-machines" className="text-sm font-normal leading-snug">
+                  Also destroy the {c.nodes.filter((n) => n.provisioned).length} machine(s) the platform provisioned for it
+                  (registered servers are only released)
+                </Label>
+              </div>
+            )}
           </>
         }
         confirmText={c.name}
@@ -202,7 +215,7 @@ export function ClusterDetailView({ params }: { params: Promise<{ id: string }> 
         pending={remove.isPending}
         onConfirm={() =>
           remove.mutate(
-            { id: c.id, confirm: c.name, force },
+            { id: c.id, confirm: c.name, force, destroyMachines },
             {
               onSuccess: (op) => {
                 setDeleting(false);

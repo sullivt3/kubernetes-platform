@@ -48,10 +48,12 @@ interface RequestOptions {
   body?: unknown;
   headers?: Record<string, string>;
   signal?: AbortSignal;
+  /** "text" returns the raw body (plain-text endpoints such as logs). */
+  responseType?: "json" | "text";
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", query, body, headers, signal } = options;
+  const { method = "GET", query, body, headers, signal, responseType = "json" } = options;
   let response: Response;
   try {
     response = await fetch(buildUrl(path, query), {
@@ -59,7 +61,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
       signal,
       credentials: "same-origin",
       headers: {
-        Accept: "application/json",
+        Accept: responseType === "text" ? "text/plain, application/json" : "application/json",
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         ...headers,
       },
@@ -93,7 +95,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
         : `Request failed with status ${response.status}.`;
     throw new ApiError(response.status, "http_error", message, {}, response.headers.get("x-request-id"));
   }
-  return payload as T;
+  return (responseType === "text" ? text : payload) as T;
 }
 
 export const api = {

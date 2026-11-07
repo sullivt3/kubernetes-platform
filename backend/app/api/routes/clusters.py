@@ -13,8 +13,9 @@ from app.api.auth import get_principal
 from app.api.deps import get_cluster_service, get_operation_service
 from app.api.routes.operations import OperationDetail, OperationSummary
 from app.api.schemas import ApiModel
+from app.core.errors import NotFoundError
 from app.core.principal import Principal
-from app.modules.cluster_lifecycle.distributions.spec import ClusterSpec
+from app.modules.cluster_lifecycle.distributions.spec import ClusterSpec, MachineTemplate, Taint
 from app.modules.cluster_lifecycle.models import Cluster
 from app.modules.cluster_lifecycle.service import ClusterService
 from app.orchestration.service import OperationService
@@ -55,6 +56,7 @@ class ClusterNode(BaseModel):
     os: str | None
     cpu_cores: int | None
     memory_mb: int | None
+    provisioned: bool = False
 
 
 class ClusterDetail(ClusterOut):
@@ -154,6 +156,7 @@ def get_cluster(
             os=machine.os_info.get("pretty_name"),
             cpu_cores=machine.hardware.get("cpu_cores"),
             memory_mb=machine.hardware.get("memory_mb"),
+            provisioned=machine.provisioned,
         )
         for membership, machine in service.node_details(cluster.id)
     ]
@@ -173,8 +176,73 @@ def delete_cluster(
     cluster_id: uuid.UUID,
     confirm: str | None = Query(default=None, description="Must equal the cluster name"),
     force: bool = Query(default=False, description="Continue when some nodes are unreachable"),
+    destroy_machines: bool = Query(default=False, description="Also destroy machines the platform provisioned"),
     principal: Principal = Depends(get_principal),
     service: ClusterService = Depends(get_cluster_service),
 ) -> OperationDetail:
-    """Run `kubeadm reset` on every node, remove the stored kubeconfig and release the machines."""
-    return OperationDetail.model_validate(service.delete(principal, cluster_id, confirm=confirm, force=force))
+    """Run `kubeadm reset` on every node, remove the stored kubeconfig and release (or destroy) the machines."""
+    return OperationDetail.model_validate(
+        service.delete(principal, cluster_id, confirm=confirm, force=force, destroy_machines=destroy_machines)
+    )
+
+
+class NodesAdd(BaseModel):
+    pool: str = Field(description="Existing pool name, the control-plane pool, or a new worker pool")
+    existing_machine_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
+    provision_count: int = Field(default=0, ge=0, le=20)
+    machine_template: MachineTemplate | None = None
+    provider_connection_id: uuid.UUID | None = None
+    machine_credential_id: uuid.UUID | None = None
+    labels: dict[str, str] = Field(default_factory=dict, description="New pools only")
+    taints: list[Taint] = Field(default_factory=list, description="New pools only")
+
+
+@router.post("/{cluster_id}/nodes", response_model=OperationDetail, status_code=202)
+def add_nodes(
+    cluster_id: uuid.UUID,
+    body: NodesAdd,
+    principal: Principal = Depends(get_principal),
+    service: ClusterService = Depends(get_cluster_service),
+) -> OperationDetail:
+    """Join registered machines and/or newly provisioned ones to the cluster (`cluster.nodes.add`)."""
+    return OperationDetail.model_validate(
+        service.add_nodes(
+            principal,
+            cluster_id,
+            pool_name=body.pool,
+            existing_machine_ids=body.existing_machine_ids,
+            provision_count=body.provision_count,
+            machine_template=body.machine_template,
+            connection_id=body.provider_connection_id,
+            credential_id=body.machine_credential_id,
+            labels=body.labels,
+            taints=body.taints,
+        )
+    )
+
+
+@router.delete("/{cluster_id}/nodes/{node_name}", response_model=OperationDetail, status_code=202)
+def remove_node(
+    cluster_id: uuid.UUID,
+    node_name: str,
+    confirm: str | None = Query(default=None, description="Must equal the node name"),
+    destroy_machine: bool = Query(default=False, description="Also destroy the machine if the platform provisioned it"),
+    force: bool = Query(default=False, description="Continue when the node is unreachable or cannot be drained"),
+    principal: Principal = Depends(get_principal),
+    service: ClusterService = Depends(get_cluster_service),
+) -> OperationDetail:
+    """Drain the node, reset Kubernetes on it and release its machine (`cluster.nodes.remove`)."""
+    cluster = service.get(principal, cluster_id)
+    membership = next((m for m in service.memberships(cluster.id) if m.node_name == node_name), None)
+    if membership is None:
+        raise NotFoundError(f"{node_name} is not a node the platform manages in this cluster")
+    return OperationDetail.model_validate(
+        service.remove_node(
+            principal,
+            cluster_id,
+            membership.machine_id,
+            confirm=confirm,
+            destroy_machine=destroy_machine,
+            force=force,
+        )
+    )
