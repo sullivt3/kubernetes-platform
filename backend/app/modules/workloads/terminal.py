@@ -76,7 +76,8 @@ async def bridge(
     from websockets.asyncio.client import connect
     from websockets.exceptions import ConnectionClosed, InvalidStatus
 
-    headers = {"Authorization": f"Bearer {target.kubeconfig.token}"} if target.kubeconfig.token else {}
+    token = target.token_provider() if target.token_provider else target.kubeconfig.token
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     host = urlsplit(target.server).hostname
     try:
         k8s = await connect(

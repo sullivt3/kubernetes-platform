@@ -78,10 +78,10 @@ const SETUP_HINTS: Record<string, string> = {
     "Machines are privileged containers on the Docker host this platform's workers use. The first machine builds the node image (needs internet access). Docker access equals root on that host.",
   proxmox:
     "Create an API token (Datacenter → Permissions → API Tokens) and store its secret as a Proxmox API token credential. Clone source: a VM template with a cloud-init drive and the QEMU guest agent enabled. Self-signed certificates: paste the CA or the SHA-256 fingerprint shown under the node's Certificates.",
-  aws: "Store the secret access key as an AWS access key credential; the access key ID goes in this form. Needs sts:GetCallerIdentity, ec2:DescribeInstances and ec2:DescribeInstanceTypes.",
+  aws: "Store the secret access key as an AWS access key credential; the access key ID goes in this form. Provisioning also needs ec2:RunInstances, ec2:CreateTags and ec2:TerminateInstances. Restrict the role to the intended subnets, images and security groups where possible.",
   azure:
-    "Store the service principal's client secret as an Azure service principal credential. Grant it the Reader role on the subscription.",
-  gcp: "Store a service account key (JSON) as a GCP service account credential. Grant it roles/compute.viewer on the project.",
+    "Store the service principal's client secret as an Azure service principal credential. Inventory needs Reader; VM provisioning also needs VM write/delete and network interface read/join permissions in the target scope.",
+  gcp: "Store a service account key (JSON) as a GCP service account credential. Provisioning needs Compute Engine instance create/get/delete permissions (for example roles/compute.instanceAdmin.v1) on the project.",
 };
 
 function AddConnectionDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -510,8 +510,8 @@ function DiscoveredTable({ connection, machines }: { connection: ProviderConnect
       </Table>
       {readOnly && (
         <p className="text-xs text-muted-foreground">
-          Cloud instances are inventoried read-only. Creating and managing cloud machines is planned for Phase 5; to
-          use an existing instance today, register it as an SSH machine.
+          Discovered cloud instances are read-only. Provision machines through the platform to manage their lifecycle;
+          register existing servers as SSH machines.
         </p>
       )}
       <ImportDialog connection={connection} machine={importing} onClose={() => setImporting(null)} />

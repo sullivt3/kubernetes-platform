@@ -20,6 +20,7 @@ CLUSTER_CREATE = "cluster.create"
 CLUSTER_DELETE = "cluster.delete"
 CLUSTER_ADD_NODES = "cluster.nodes.add"
 CLUSTER_REMOVE_NODES = "cluster.nodes.remove"
+CLUSTER_UPGRADE = "cluster.upgrade"
 
 
 def _target(p: ClusterPlanInput) -> OperationTarget:
@@ -124,6 +125,31 @@ def on_remove_status(session: Session, op: Operation) -> None:
         _set_node_states(session, op, MachineMembershipState.FAILED)
 
 
+def on_upgrade_status(session: Session, op: Operation) -> None:
+    plan = ClusterPlanInput.model_validate(op.params)
+    cluster = session.get(Cluster, plan.cluster_id)
+    if cluster is None:
+        return
+    if op.status is OperationStatus.RUNNING:
+        cluster.lifecycle_state = ClusterLifecycleState.UPGRADING
+        cluster.status_detail = {**(cluster.status_detail or {}), "operation_id": str(op.id)}
+    elif op.status is OperationStatus.SUCCEEDED:
+        target = plan.target_version
+        if target:
+            version = target if target.startswith("v") else f"v{target}"
+            cluster.kubernetes_version = version
+            spec = dict(cluster.spec or {})
+            spec["kubernetes_version"] = version
+            cluster.spec = spec
+        cluster.lifecycle_state = ClusterLifecycleState.ACTIVE
+        cluster.status_detail = {**(cluster.status_detail or {}), "last_upgrade_operation_id": str(op.id)}
+    elif op.status in (OperationStatus.FAILED, OperationStatus.CANCELLED):
+        # A failed upgrade can leave nodes on mixed versions. Keep the cluster visible and
+        # allow an operator to retry or repair it, while marking health as degraded.
+        cluster.lifecycle_state = ClusterLifecycleState.DEGRADED
+        cluster.status_detail = {**(cluster.status_detail or {}), **_failure_detail(op, "Cluster upgrade")}
+
+
 add_nodes_workflow = workflow_registry.register(
     WorkflowDefinition(
         type=CLUSTER_ADD_NODES,
@@ -147,5 +173,18 @@ remove_nodes_workflow = workflow_registry.register(
         target=_target,
         title_for=lambda p: f"Remove {', '.join(n.name for n in p.nodes)} from {p.cluster_name}",
         on_status=on_remove_status,
+    )
+)
+
+upgrade_workflow = workflow_registry.register(
+    WorkflowDefinition(
+        type=CLUSTER_UPGRADE,
+        title="Upgrade cluster",
+        description="Upgrade kubeadm control planes and nodes one at a time, respecting workload disruption budgets.",
+        params_model=ClusterPlanInput,
+        plan=lambda p: distribution_registry.get(p.spec.distribution).plan_upgrade(p, p.target_version or ""),
+        target=_target,
+        title_for=lambda p: f"Upgrade {p.cluster_name} to {p.target_version}",
+        on_status=on_upgrade_status,
     )
 )

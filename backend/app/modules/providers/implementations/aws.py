@@ -1,12 +1,10 @@
-"""Amazon Web Services provider — foundations: credential validation and read-only
-EC2 inventory. Creating and managing instances is planned for Phase 5.
+"""Amazon Web Services provider: EC2, EKS and Network Load Balancer operations.
 
 Requests are signed with Signature Version 4 (``aws_sigv4``) and sent through the
 shared provider HTTP client; no AWS SDK is required.
 
-Required IAM permissions: ``sts:GetCallerIdentity`` (always allowed),
-``ec2:DescribeInstances``, ``ec2:DescribeInstanceTypes`` and, when a role is
-configured, ``sts:AssumeRole`` on it.
+Provisioning requires EC2 run/describe/terminate permissions in addition to read
+access, and explicit AMI, subnet and security groups on each request.
 
 Status: PREVIEW — tested against AWS's published SigV4 test vectors and recorded
 API responses, not yet verified against a live account.
@@ -14,9 +12,13 @@ API responses, not yet verified against a live account.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import json
+import time
 from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import quote, urlsplit
 from xml.etree import ElementTree
 
@@ -30,7 +32,14 @@ from app.modules.providers.types import (
     DiscoveredMachine,
     HardwareSpec,
     ImplementationStatus,
+    LoadBalancerRequest,
+    LoadBalancerResult,
     MachineAddress,
+    MachineRef,
+    MachineSpecRequest,
+    MachineStatus,
+    ManagedClusterRequest,
+    ManagedClusterResult,
     OSInfo,
     ProviderCapability,
     ProviderCategory,
@@ -151,18 +160,20 @@ class AwsConfig(BaseModel):
 class AwsProvider(InfrastructureProvider):
     provider_type = ProviderType.AWS
     display_name = "Amazon Web Services"
-    description = "EC2 inventory and account validation today; instance provisioning and EKS are planned."
+    description = "EC2 and EKS provisioning, inventory, lifecycle management, and Network Load Balancers."
     category = ProviderCategory.CLOUD
-    capabilities = frozenset({ProviderCapability.VALIDATE_CONNECTION, ProviderCapability.DISCOVER})
-    planned_capabilities = frozenset(
+    capabilities = frozenset(
         {
+            ProviderCapability.VALIDATE_CONNECTION,
+            ProviderCapability.DISCOVER,
             ProviderCapability.PROVISION,
             ProviderCapability.DELETE,
             ProviderCapability.STATUS,
-            ProviderCapability.POWER,
-            ProviderCapability.NETWORK,
+            ProviderCapability.LOAD_BALANCER,
+            ProviderCapability.MANAGED_KUBERNETES,
         }
     )
+    planned_capabilities = frozenset({ProviderCapability.POWER, ProviderCapability.NETWORK})
     planned_capabilities_phase = 5
     implementation_status = ImplementationStatus.PREVIEW
     config_model = AwsConfig
@@ -316,3 +327,564 @@ class AwsProvider(InfrastructureProvider):
                     )
                 )
         return machines
+
+    @staticmethod
+    def _shell_quote(value: str) -> str:
+        return "'" + value.replace("'", "'\\''") + "'"
+
+    def _instance(self, region: str, instance_id: str) -> ElementTree.Element | None:
+        root = self._query(
+            "ec2",
+            region,
+            {
+                "Action": "DescribeInstances",
+                "Version": EC2_VERSION,
+                "InstanceId.1": instance_id,
+            },
+            what="DescribeInstances",
+        )
+        return next(root.iterfind(".//reservationSet/item/instancesSet/item"), None)
+
+    def _describe_machine(self, region: str, instance_id: str) -> DiscoveredMachine | None:
+        item = self._instance(region, instance_id)
+        if item is None:
+            return None
+        state = _text(item, "instanceState/name", "unknown")
+        addresses = [MachineAddress(type="internal", address=_text(item, "privateIpAddress"))]
+        public_ip = _text(item, "ipAddress")
+        if public_ip:
+            addresses.append(MachineAddress(type="external", address=public_ip))
+        tags = {_text(t, "key"): _text(t, "value") for t in item.iterfind("tagSet/item")}
+        return DiscoveredMachine(
+            external_id=f"{region}/{instance_id}",
+            name=tags.get("Name", instance_id),
+            addresses=[a for a in addresses if a.address],
+            power_state={"running": "running", "stopped": "stopped"}.get(state, state),
+            provider_metadata={
+                "region": region,
+                "instance_type": _text(item, "instanceType"),
+                "image": _text(item, "imageId"),
+            },
+            importable=False,
+        )
+
+    def provision(self, request: MachineSpecRequest) -> DiscoveredMachine:
+        options = request.provider_options
+        image = request.image or options.get("image_id")
+        instance_type = options.get("instance_type")
+        subnet_id = options.get("subnet_id") or request.network
+        security_groups = options.get("security_group_ids")
+        if not image or not str(image).startswith("ami-"):
+            raise http.ProviderApiError("AWS provisioning requires an AMI ID in image")
+        if not instance_type or not subnet_id or not isinstance(security_groups, list) or not security_groups:
+            raise http.ProviderApiError("AWS provisioning requires instance_type, subnet_id and security_group_ids")
+        if not request.ssh_public_key:
+            raise http.ProviderApiError("AWS provisioning requires an SSH public key")
+        region = str(options.get("region") or self.cfg.region)
+        user_data = "#!/bin/bash\nset -eu\n"
+        username = self._shell_quote(request.ssh_username)
+        home = f"/home/{request.ssh_username}"
+        user_data += f"id -u {username} >/dev/null 2>&1 || useradd --create-home --shell /bin/bash {username}\n"
+        user_data += f"install -d -m 700 -o {username} -g {username} {home}/.ssh\n"
+        user_data += f"printf '%s\\n' {self._shell_quote(request.ssh_public_key)} > {home}/.ssh/authorized_keys\n"
+        user_data += f"chmod 600 {home}/.ssh/authorized_keys\n"
+        user_data += f"chown {username}:{username} {home}/.ssh/authorized_keys\n"
+        sudo_rule = self._shell_quote(request.ssh_username + " ALL=(ALL) NOPASSWD:ALL")
+        user_data += f"printf '%s\\n' {sudo_rule} >/etc/sudoers.d/90-platform\nchmod 440 /etc/sudoers.d/90-platform\n"
+        form = {
+            "Action": "RunInstances",
+            "Version": EC2_VERSION,
+            "ImageId": str(image),
+            "InstanceType": str(instance_type),
+            "MinCount": "1",
+            "MaxCount": "1",
+            "UserData": base64.b64encode(user_data.encode()).decode(),
+            "ClientToken": hashlib.sha256(request.name.encode()).hexdigest()[:64],
+            "BlockDeviceMapping.1.DeviceName": str(options.get("device_name", "/dev/sda1")),
+            "BlockDeviceMapping.1.Ebs.VolumeSize": str(request.disk_gb),
+            "BlockDeviceMapping.1.Ebs.VolumeType": str(options.get("volume_type", "gp3")),
+            "BlockDeviceMapping.1.Ebs.DeleteOnTermination": "true",
+            "TagSpecification.1.ResourceType": "instance",
+            "TagSpecification.1.Tag.1.Key": "Name",
+            "TagSpecification.1.Tag.1.Value": request.name,
+            "TagSpecification.1.Tag.2.Key": "kubernetes-platform:managed",
+            "TagSpecification.1.Tag.2.Value": "true",
+        }
+        form["NetworkInterface.1.SubnetId"] = str(subnet_id)
+        for index, group in enumerate(security_groups, 1):
+            form[f"NetworkInterface.1.SecurityGroupId.{index}"] = str(group)
+        if options.get("key_name"):
+            form["KeyName"] = str(options["key_name"])
+        form["NetworkInterface.1.DeviceIndex"] = "0"
+        if options.get("associate_public_ip", True):
+            form["NetworkInterface.1.AssociatePublicIpAddress"] = "true"
+        root = self._query("ec2", region, form, what="RunInstances")
+        instance_id = _text(root, ".//instancesSet/item/instanceId")
+        if not instance_id:
+            raise http.ProviderApiError("AWS RunInstances returned no instance ID")
+        found = self._describe_machine(region, instance_id)
+        if found is None:
+            return DiscoveredMachine(
+                external_id=f"{region}/{instance_id}",
+                name=request.name,
+                power_state="pending",
+                provider_metadata={"region": region},
+            )
+        return found
+
+    def get_status(self, machine: MachineRef) -> MachineStatus:
+        region, _, instance_id = machine.external_id.partition("/")
+        if not region or not instance_id:
+            raise http.ProviderApiError("AWS machine ID must contain region/instance-id")
+        found = self._describe_machine(region, instance_id)
+        return MachineStatus(
+            external_id=machine.external_id,
+            exists=found is not None,
+            power_state=found.power_state if found else "deleted",
+            addresses=found.addresses if found else [],
+        )
+
+    def delete(self, machine: MachineRef) -> None:
+        region, _, instance_id = machine.external_id.partition("/")
+        if not region or not instance_id:
+            raise http.ProviderApiError("AWS machine ID must contain region/instance-id")
+        current = self._instance(region, instance_id)
+        if current is None or _text(current, "instanceState/name") in {"shutting-down", "terminated"}:
+            return
+        tags = {_text(tag, "key"): _text(tag, "value") for tag in current.iterfind("tagSet/item")}
+        if tags.get("kubernetes-platform:managed") != "true":
+            raise http.ProviderApiError("Refusing to terminate an EC2 instance not tagged as platform-managed")
+        self._query(
+            "ec2",
+            region,
+            {"Action": "TerminateInstances", "Version": EC2_VERSION, "InstanceId.1": instance_id},
+            what="TerminateInstances",
+        )
+
+    def _elb(self, form: dict[str, str], what: str) -> ElementTree.Element:
+        form = {"Version": "2015-12-01", **form}
+        return self._query("elasticloadbalancing", self.cfg.region, form, what=what)
+
+    @staticmethod
+    def _eks_error(response: http.HttpResponse) -> str:
+        try:
+            body = response.json() or {}
+        except ValueError:
+            return response.text[:300]
+        error = body.get("message") or body.get("Message") or response.text[:300]
+        kind = response.headers.get("x-amzn-errortype", "")
+        return f"{kind}: {error}".strip(": ")
+
+    def _eks(self, action: str, payload: dict[str, object], *, what: str) -> dict[str, Any]:
+        url = f"https://eks.{self.cfg.region}.amazonaws.com/clusters"
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        access, secret, token = self._keys()
+        headers = aws_sigv4(
+            method="POST",
+            url=url,
+            headers={
+                "Content-Type": "application/x-amz-json-1.1",
+                "X-Amz-Target": f"AmazonEKS.{action}",
+            },
+            body=body,
+            region=self.cfg.region,
+            service="eks",
+            access_key=access,
+            secret_key=secret,
+            session_token=token,
+        )
+        response = http.send("POST", url, headers=headers, body=body)
+        http.expect_ok(response, f"AWS {what}", message_of=self._eks_error)
+        return response.json() if response.body else {}
+
+    def _eks_cluster(self, name: str) -> dict[str, Any] | None:
+        try:
+            return self._eks("DescribeCluster", {"name": name}, what="DescribeCluster").get("cluster")
+        except http.ProviderApiError as exc:
+            if "ResourceNotFoundException" in exc.message:
+                return None
+            raise
+
+    def managed_cluster_id(self, name: str, options: dict[str, object]) -> str:
+        return f"{self.cfg.region}|{name}"
+
+    def _wait_eks_cluster(self, name: str, statuses: set[str], *, gone: bool = False) -> dict[str, Any] | None:
+        deadline = time.monotonic() + 3600
+        while time.monotonic() < deadline:
+            cluster = self._eks_cluster(name)
+            if gone and cluster is None:
+                return None
+            if cluster and cluster.get("status") in statuses:
+                return cluster
+            if cluster and cluster.get("status") in {"FAILED", "DELETING"} and not gone:
+                raise http.ProviderApiError(f"EKS cluster entered {cluster.get('status')} state")
+            time.sleep(15)
+        raise http.ProviderApiError(f"Timed out waiting for EKS cluster {name}")
+
+    def create_managed_cluster(self, request: ManagedClusterRequest) -> ManagedClusterResult:
+        options = request.options
+        role_arn = options.get("managed_cluster_role_arn")
+        node_role_arn = options.get("managed_node_role_arn")
+        subnet_ids = options.get("managed_subnet_ids")
+        if not isinstance(role_arn, str) or not role_arn.startswith("arn:aws:iam::"):
+            raise http.ProviderApiError("EKS requires options.managed_cluster_role_arn")
+        if not isinstance(node_role_arn, str) or not node_role_arn.startswith("arn:aws:iam::"):
+            raise http.ProviderApiError("EKS node groups require options.managed_node_role_arn")
+        if (
+            not isinstance(subnet_ids, list)
+            or len(subnet_ids) < 2
+            or any(not isinstance(item, str) for item in subnet_ids)
+        ):
+            raise http.ProviderApiError("EKS needs at least two subnet IDs in different Availability Zones")
+        cluster = self._eks_cluster(request.name)
+        if cluster is None:
+            payload: dict[str, object] = {
+                "name": request.name,
+                "version": request.version.removeprefix("v"),
+                "roleArn": role_arn,
+                "resourcesVpcConfig": {
+                    "subnetIds": subnet_ids,
+                    "endpointPublicAccess": bool(options.get("managed_endpoint_public_access", True)),
+                    "endpointPrivateAccess": bool(options.get("managed_endpoint_private_access", False)),
+                },
+                "accessConfig": {
+                    "authenticationMode": "API",
+                    "bootstrapClusterCreatorAdminPermissions": True,
+                },
+                "tags": {"kubernetes-platform:managed": "true"},
+            }
+            security_groups = options.get("managed_security_group_ids")
+            if security_groups:
+                payload["resourcesVpcConfig"]["securityGroupIds"] = security_groups  # type: ignore[index]
+            try:
+                self._eks("CreateCluster", payload, what="CreateCluster")
+            except http.ProviderApiError as exc:
+                if "ResourceInUseException" not in exc.message:
+                    raise
+            cluster = self._wait_eks_cluster(request.name, {"ACTIVE"})
+        if not cluster or (cluster.get("tags") or {}).get("kubernetes-platform:managed") != "true":
+            raise http.ProviderApiError("Refusing to use an EKS cluster without the platform ownership tag")
+        if cluster.get("status") != "ACTIVE":
+            cluster = self._wait_eks_cluster(request.name, {"ACTIVE"})
+
+        for pool in request.node_pools:
+            pool_name = str(pool.get("name") or "")[:63]
+            count = int(pool.get("count") or 0)
+            if not pool_name or count < 1:
+                continue
+            existing_group = None
+            try:
+                existing_group = self._eks(
+                    "DescribeNodegroup",
+                    {"clusterName": request.name, "nodegroupName": pool_name},
+                    what="DescribeNodegroup",
+                ).get("nodegroup")
+            except http.ProviderApiError as exc:
+                if "ResourceNotFoundException" not in exc.message:
+                    raise
+                instance_types = options.get("managed_node_instance_types") or ["t3.medium"]
+                disk_size = int(options.get("managed_node_disk_size_gb") or 20)
+                self._eks(
+                    "CreateNodegroup",
+                    {
+                        "clusterName": request.name,
+                        "nodegroupName": pool_name,
+                        "nodeRole": node_role_arn,
+                        "subnets": subnet_ids,
+                        "scalingConfig": {
+                            "minSize": int(pool.get("minimum", 1)),
+                            "maxSize": int(pool.get("maximum", max(3, count))),
+                            "desiredSize": count,
+                        },
+                        "instanceTypes": instance_types,
+                        "diskSize": disk_size,
+                        "labels": pool.get("labels") or {},
+                        "taints": [
+                            {
+                                "key": item["key"],
+                                "value": item.get("value"),
+                                "effect": str(item["effect"])
+                                .upper()
+                                .replace("NOSCHEDULE", "NO_SCHEDULE")
+                                .replace("PREFER_NO_SCHEDULE", "PREFER_NO_SCHEDULE")
+                                .replace("NOEXECUTE", "NO_EXECUTE"),
+                            }
+                            for item in (pool.get("taints") or [])
+                        ],
+                        "tags": {"kubernetes-platform:managed": "true"},
+                    },
+                    what="CreateNodegroup",
+                )
+            if existing_group and (existing_group.get("tags") or {}).get("kubernetes-platform:managed") != "true":
+                raise http.ProviderApiError(
+                    f"Refusing to use EKS node group {pool_name} without the platform ownership tag"
+                )
+            deadline = time.monotonic() + 3600
+            while time.monotonic() < deadline:
+                nodegroup = (
+                    self._eks(
+                        "DescribeNodegroup",
+                        {"clusterName": request.name, "nodegroupName": pool_name},
+                        what="DescribeNodegroup",
+                    ).get("nodegroup")
+                    or {}
+                )
+                if nodegroup.get("status") == "ACTIVE":
+                    break
+                if nodegroup.get("status") == "CREATE_FAILED":
+                    raise http.ProviderApiError(f"EKS node group {pool_name} failed to create")
+                time.sleep(15)
+            else:
+                raise http.ProviderApiError(f"Timed out waiting for EKS node group {pool_name}")
+
+        cluster = self._eks_cluster(request.name) or cluster
+        endpoint = (cluster.get("endpoint") or "").strip()
+        ca_data = ((cluster.get("certificateAuthority") or {}).get("data") or "").strip()
+        if not endpoint or not ca_data:
+            raise http.ProviderApiError("EKS returned an incomplete API endpoint or certificate authority")
+        return ManagedClusterResult(
+            external_id=f"{self.cfg.region}|{request.name}", endpoint=endpoint, certificate_authority_data=ca_data
+        )
+
+    def delete_managed_cluster(self, external_id: str) -> None:
+        region, separator, name = external_id.partition("|")
+        if not separator or region != self.cfg.region or not name:
+            raise http.ProviderApiError("EKS cluster ID must contain region|name matching the AWS connection")
+        cluster = self._eks_cluster(name)
+        if cluster is None:
+            return
+        if (cluster.get("tags") or {}).get("kubernetes-platform:managed") != "true":
+            raise http.ProviderApiError("Refusing to delete an EKS cluster without the platform ownership tag")
+        groups = self._eks("ListNodegroups", {"clusterName": name}, what="ListNodegroups").get("nodegroups") or []
+        for group in groups:
+            described = (
+                self._eks(
+                    "DescribeNodegroup", {"clusterName": name, "nodegroupName": group}, what="DescribeNodegroup"
+                ).get("nodegroup")
+                or {}
+            )
+            if (described.get("tags") or {}).get("kubernetes-platform:managed") != "true":
+                raise http.ProviderApiError(f"Refusing to delete unmanaged EKS node group {group}")
+            self._eks("DeleteNodegroup", {"clusterName": name, "nodegroupName": group}, what="DeleteNodegroup")
+            deadline = time.monotonic() + 3600
+            while time.monotonic() < deadline:
+                try:
+                    self._eks(
+                        "DescribeNodegroup", {"clusterName": name, "nodegroupName": group}, what="DescribeNodegroup"
+                    )
+                except http.ProviderApiError as exc:
+                    if "ResourceNotFoundException" in exc.message:
+                        break
+                    raise
+                time.sleep(15)
+            else:
+                raise http.ProviderApiError(f"Timed out deleting EKS node group {group}")
+        self._eks("DeleteCluster", {"name": name}, what="DeleteCluster")
+        self._wait_eks_cluster(name, set(), gone=True)
+
+    def eks_bearer_token(self, cluster_name: str) -> str:
+        """Build the short-lived EKS IAM authenticator token without invoking an exec plugin."""
+        access, secret, session = self._keys()
+        moment = datetime.now(UTC)
+        amz_date = moment.strftime("%Y%m%dT%H%M%SZ")
+        date = moment.strftime("%Y%m%d")
+        host = f"sts.{self.cfg.region}.amazonaws.com"
+        scope = f"{date}/{self.cfg.region}/sts/aws4_request"
+        params = {
+            "Action": "GetCallerIdentity",
+            "Version": STS_VERSION,
+            "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+            "X-Amz-Credential": f"{access}/{scope}",
+            "X-Amz-Date": amz_date,
+            "X-Amz-Expires": "60",
+            "X-Amz-SignedHeaders": "host;x-k8s-aws-id",
+        }
+        if session:
+            params["X-Amz-Security-Token"] = session
+        canonical_query = "&".join(
+            f"{quote(key, safe='-_.~')}={quote(value, safe='-_.~')}" for key, value in sorted(params.items())
+        )
+        canonical_request = "\n".join(
+            [
+                "GET",
+                "/",
+                canonical_query,
+                f"host:{host}\nx-k8s-aws-id:{cluster_name}",
+                "host;x-k8s-aws-id",
+                "UNSIGNED-PAYLOAD",
+            ]
+        )
+        string_to_sign = "\n".join(
+            ["AWS4-HMAC-SHA256", amz_date, scope, hashlib.sha256(canonical_request.encode()).hexdigest()]
+        )
+        signing_key = _hmac(_hmac(_hmac(_hmac(f"AWS4{secret}".encode(), date), self.cfg.region), "sts"), "aws4_request")
+        signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
+        url = f"https://{host}/?{canonical_query}&X-Amz-Signature={signature}"
+        return "k8s-aws-v1." + base64.urlsafe_b64encode(url.encode()).rstrip(b"=").decode()
+
+    def _describe_lb(self, name: str | None = None, arn: str | None = None) -> ElementTree.Element | None:
+        form = {"Action": "DescribeLoadBalancers"}
+        if name:
+            form["Names.member.1"] = name
+        if arn:
+            form["LoadBalancerArns.member.1"] = arn
+        try:
+            root = self._elb(form, "DescribeLoadBalancers")
+        except http.ProviderApiError as exc:
+            if "LoadBalancerNotFound" in exc.message:
+                return None
+            raise
+        return next(root.iterfind(".//LoadBalancers/member"), None)
+
+    @staticmethod
+    def _field(element: ElementTree.Element | None, path: str) -> str:
+        return _text(element, path)
+
+    def create_load_balancer(self, request: LoadBalancerRequest) -> LoadBalancerResult:
+        if request.scheme not in {"internal", "internet-facing"}:
+            raise http.ProviderApiError("AWS load balancer scheme must be internal or internet-facing")
+        existing = self._describe_lb(name=request.name)
+        if existing is None:
+            form = {
+                "Action": "CreateLoadBalancer",
+                "Name": request.name,
+                "Type": "network",
+                "Scheme": request.scheme,
+                "IpAddressType": "ipv4",
+            }
+            for index, subnet in enumerate(request.subnet_ids, 1):
+                form[f"Subnets.member.{index}"] = subnet
+            for index, (key, value) in enumerate(
+                (("kubernetes-platform:managed", "true"), ("kubernetes-platform:cluster", request.name)), 1
+            ):
+                form[f"Tags.member.{index}.Key"] = key
+                form[f"Tags.member.{index}.Value"] = value
+            try:
+                created = self._elb(form, "CreateLoadBalancer")
+                existing = next(created.iterfind(".//LoadBalancers/member"), None)
+            except http.ProviderApiError as exc:
+                if "DuplicateLoadBalancerName" not in exc.message:
+                    raise
+                existing = self._describe_lb(name=request.name)
+        if existing is None:
+            existing = self._describe_lb(name=request.name)
+        if existing is None:
+            raise http.ProviderApiError("AWS did not return the created Network Load Balancer")
+        lb_arn = _text(existing, "LoadBalancerArn")
+        dns_name = _text(existing, "DNSName")
+        vpc_id = _text(existing, "VpcId")
+        if not lb_arn or not dns_name:
+            raise http.ProviderApiError("AWS returned an incomplete Network Load Balancer description")
+        if not self._has_managed_tag(lb_arn):
+            raise http.ProviderApiError("Refusing to use an AWS load balancer without the platform ownership tag")
+        if vpc_id != request.vpc_id:
+            raise http.ProviderApiError("The existing Network Load Balancer is in a different VPC")
+
+        target_name = f"{request.name[:24]}-tg-{hashlib.sha256(request.name.encode()).hexdigest()[:4]}"
+        target_group = None
+        created_target_group = False
+        try:
+            root = self._elb({"Action": "DescribeTargetGroups", "Names.member.1": target_name}, "DescribeTargetGroups")
+            target_group = next(root.iterfind(".//TargetGroups/member"), None)
+        except http.ProviderApiError as exc:
+            if "TargetGroupNotFound" not in exc.message:
+                raise
+        if target_group is None:
+            root = self._elb(
+                {
+                    "Action": "CreateTargetGroup",
+                    "Name": target_name,
+                    "Protocol": "TCP",
+                    "Port": "6443",
+                    "VpcId": request.vpc_id,
+                    "TargetType": "instance",
+                    "HealthCheckProtocol": "TCP",
+                    "HealthCheckPort": "traffic-port",
+                },
+                "CreateTargetGroup",
+            )
+            target_group = next(root.iterfind(".//TargetGroups/member"), None)
+            created_target_group = target_group is not None
+        tg_arn = _text(target_group, "TargetGroupArn")
+        if not tg_arn:
+            raise http.ProviderApiError("AWS did not return the target group ARN")
+        if created_target_group:
+            self._elb(
+                {
+                    "Action": "AddTags",
+                    "ResourceArns.member.1": tg_arn,
+                    "Tags.member.1.Key": "kubernetes-platform:managed",
+                    "Tags.member.1.Value": "true",
+                },
+                "Tag target group",
+            )
+        elif not self._has_managed_tag(tg_arn):
+            raise http.ProviderApiError("Refusing to use an AWS target group without the platform ownership tag")
+
+        listeners = self._elb({"Action": "DescribeListeners", "LoadBalancerArn": lb_arn}, "DescribeListeners")
+        listener = next(
+            (item for item in listeners.iterfind(".//Listeners/member") if _text(item, "Port") == "6443"), None
+        )
+        if listener is None:
+            self._elb(
+                {
+                    "Action": "CreateListener",
+                    "LoadBalancerArn": lb_arn,
+                    "Protocol": "TCP",
+                    "Port": "6443",
+                    "DefaultActions.member.1.Type": "forward",
+                    "DefaultActions.member.1.TargetGroupArn": tg_arn,
+                },
+                "CreateListener",
+            )
+        current = self._elb({"Action": "DescribeTargetHealth", "TargetGroupArn": tg_arn}, "DescribeTargetHealth")
+        current_ids = {_text(item, "Target/Id") for item in current.iterfind(".//TargetHealthDescriptions/member")}
+        wanted = set(request.targets)
+        stale = sorted(current_ids - wanted)
+        missing = sorted(wanted - current_ids)
+        for action, target_ids in (("DeregisterTargets", stale), ("RegisterTargets", missing)):
+            if not target_ids:
+                continue
+            form = {"Action": action, "TargetGroupArn": tg_arn}
+            for index, target in enumerate(target_ids, 1):
+                form[f"Targets.member.{index}.Id"] = target
+                form[f"Targets.member.{index}.Port"] = "6443"
+            self._elb(form, action)
+        return LoadBalancerResult(external_id=f"{self.cfg.region}|{lb_arn}|{tg_arn}", endpoint=dns_name)
+
+    def delete_load_balancer(self, external_id: str) -> None:
+        region, separator, identifiers = external_id.partition("|")
+        lb_arn, separator2, tg_arn = identifiers.partition("|")
+        if not separator or not separator2 or not lb_arn or not tg_arn:
+            raise http.ProviderApiError("AWS load balancer ID must contain region|load-balancer-arn|target-group-arn")
+        if region != self.cfg.region:
+            raise http.ProviderApiError("The load balancer region does not match this AWS connection")
+        lb = self._describe_lb(arn=lb_arn)
+        if lb is not None:
+            if not self._has_managed_tag(lb_arn):
+                raise http.ProviderApiError(
+                    "Refusing to delete an AWS load balancer without the platform ownership tag"
+                )
+            self._elb({"Action": "DeleteLoadBalancer", "LoadBalancerArn": lb_arn}, "DeleteLoadBalancer")
+            deadline = time.monotonic() + 120
+            while self._describe_lb(arn=lb_arn) is not None:
+                if time.monotonic() >= deadline:
+                    raise http.ProviderApiError("AWS load balancer is still deleting; retry cluster deletion")
+                time.sleep(2)
+        if not self._has_managed_tag(tg_arn):
+            raise http.ProviderApiError("Refusing to delete an AWS target group without the platform ownership tag")
+        try:
+            self._elb({"Action": "DeleteTargetGroup", "TargetGroupArn": tg_arn}, "DeleteTargetGroup")
+        except http.ProviderApiError as exc:
+            if "TargetGroupNotFound" in exc.message:
+                return
+            if "ResourceInUse" in exc.message:
+                raise http.ProviderApiError("AWS target group is still in use; retry cluster deletion") from exc
+            raise
+
+    def _has_managed_tag(self, arn: str) -> bool:
+        tags = self._elb({"Action": "DescribeTags", "ResourceArns.member.1": arn}, "DescribeTags")
+        return any(
+            _text(tag, "Key") == "kubernetes-platform:managed" and _text(tag, "Value") == "true"
+            for tag in tags.iterfind(".//TagDescriptions/member/Tags/member")
+        )

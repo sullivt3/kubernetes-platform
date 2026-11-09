@@ -34,13 +34,23 @@ class Kubeadm(KubernetesDistribution):
             DistributionCapability.HIGH_AVAILABILITY,
             DistributionCapability.ADD_NODES,
             DistributionCapability.REMOVE_NODES,
+            DistributionCapability.UPGRADE,
         }
     )
     implementation_status = ImplementationStatus.AVAILABLE
     planned_phase = None
     # Any Linux machine reachable over SSH: registered servers, or machines provisioned
-    # through a provider that can create them (local containers, Proxmox VMs).
-    supported_providers = frozenset({ProviderType.SSH, ProviderType.LOCAL, ProviderType.PROXMOX})
+    # through a provider that can create them (local containers, Proxmox VMs and public clouds).
+    supported_providers = frozenset(
+        {
+            ProviderType.SSH,
+            ProviderType.LOCAL,
+            ProviderType.PROXMOX,
+            ProviderType.AWS,
+            ProviderType.AZURE,
+            ProviderType.GCP,
+        }
+    )
     supported_runtimes = frozenset({ContainerRuntime.CONTAINERD})
     supported_cnis = frozenset({CniPlugin.CALICO, CniPlugin.FLANNEL})
     default_cni = CniPlugin.CALICO
@@ -57,7 +67,21 @@ class Kubeadm(KubernetesDistribution):
             problems.append(str(exc))
         mode = spec.control_plane.load_balancer
         if mode is LoadBalancerMode.PROVIDER:
-            problems.append("Cloud load balancers are planned for Phase 5; use kube-vip or an external load balancer")
+            if spec.provider_type is not ProviderType.AWS:
+                problems.append("Provider-managed API load balancing is currently supported for AWS only")
+            if not spec.provider_connection_id:
+                problems.append("Provider-managed API load balancing needs a provider connection")
+            options = spec.options
+            for key in ("provider_lb_vpc_id",):
+                if not isinstance(options.get(key), str) or not options[key].strip():
+                    problems.append(f"options.{key} is required for provider-managed API load balancing")
+            subnets = options.get("provider_lb_subnet_ids")
+            if (
+                not isinstance(subnets, list)
+                or not subnets
+                or any(not isinstance(item, str) or not item for item in subnets)
+            ):
+                problems.append("options.provider_lb_subnet_ids must contain one or more subnet IDs")
         if mode is LoadBalancerMode.KUBE_VIP:
             host = (spec.control_plane.endpoint or "").split(":", 1)[0]
             try:
@@ -74,7 +98,7 @@ class Kubeadm(KubernetesDistribution):
         if spec.control_plane.count > 1:
             if spec.control_plane.count % 2 == 0:
                 problems.append("Highly available control planes need an odd member count (3, 5 or 7)")
-            if not spec.control_plane.endpoint:
+            if not spec.control_plane.endpoint and mode is not LoadBalancerMode.PROVIDER:
                 problems.append("Highly available control planes need a stable API endpoint (load balancer address)")
         return problems
 
@@ -83,6 +107,7 @@ class Kubeadm(KubernetesDistribution):
         first = plan.control_planes[0]
         result: list[StepDefinition] = [
             *self._wait_machines(plan),
+            *self._provider_lb(plan, create=True),
             StepDefinition(
                 "validate",
                 "Validate machines and connectivity",
@@ -182,6 +207,15 @@ class Kubeadm(KubernetesDistribution):
             ),
             StepDefinition("release", "Release machines and remove the cluster", steps.release),
         ]
+        if plan.spec.options.get("provider_lb_external_id"):
+            result.insert(
+                -1,
+                StepDefinition(
+                    "provider-load-balancer-delete",
+                    "Delete provider load balancer",
+                    steps.delete_provider_load_balancer,
+                ),
+            )
         if plan.destroy_machines:
             result.append(
                 StepDefinition(
@@ -192,6 +226,49 @@ class Kubeadm(KubernetesDistribution):
                     retry_backoff_seconds=10,
                 )
             )
+        return result
+
+    def plan_upgrade(self, plan: ClusterPlanInput, target_version: str) -> list[StepDefinition]:
+        if not plan.control_planes or not plan.nodes:
+            raise ValueError("A kubeadm upgrade needs registered control-plane and worker nodes")
+        result: list[StepDefinition] = []
+        for index, node in enumerate(plan.control_planes):
+            result.append(
+                StepDefinition(
+                    f"upgrade-kubeadm:{node.machine_id}",
+                    f"Upgrade kubeadm on control plane {node.name}",
+                    steps.upgrade_kubeadm(node, target_version, apply=index == 0),
+                    max_attempts=2,
+                    retry_backoff_seconds=15,
+                )
+            )
+        for node in plan.workers:
+            result.append(
+                StepDefinition(
+                    f"upgrade-kubeadm:{node.machine_id}",
+                    f"Upgrade kubeadm on worker {node.name}",
+                    steps.upgrade_kubeadm(node, target_version, apply=False),
+                    max_attempts=2,
+                    retry_backoff_seconds=15,
+                )
+            )
+        for node in plan.nodes:
+            result.append(
+                StepDefinition(
+                    f"upgrade-kubelet:{node.machine_id}",
+                    f"Drain, upgrade and uncordon {node.name}",
+                    steps.upgrade_node(node, target_version),
+                    max_attempts=2,
+                    retry_backoff_seconds=20,
+                )
+            )
+        result.append(
+            StepDefinition(
+                "verify-upgrade",
+                "Verify all nodes are Ready at the target version",
+                steps.verify_upgrade,
+            )
+        )
         return result
 
     # ---- node add / remove -----------------------------------------------------------
@@ -206,6 +283,21 @@ class Kubeadm(KubernetesDistribution):
                 "wait-machines",
                 f"Wait for {len(provisioned)} machine(s) to be provisioned",
                 steps.wait_machines,
+            )
+        ]
+
+    @staticmethod
+    def _provider_lb(plan: ClusterPlanInput, *, create: bool) -> list[StepDefinition]:
+        if plan.spec.control_plane.load_balancer is not LoadBalancerMode.PROVIDER:
+            return []
+        function = steps.create_provider_load_balancer if create else steps.sync_provider_load_balancer
+        return [
+            StepDefinition(
+                "provider-load-balancer",
+                "Reconcile provider API load balancer",
+                function,
+                max_attempts=3,
+                retry_backoff_seconds=15,
             )
         ]
 
@@ -241,6 +333,7 @@ class Kubeadm(KubernetesDistribution):
                 retry_backoff_seconds=10,
             ),
         ]
+        result += self._provider_lb(plan, create=True)
         for node in plan.control_planes:
             result.append(
                 StepDefinition(
@@ -276,6 +369,7 @@ class Kubeadm(KubernetesDistribution):
 
     def plan_remove_nodes(self, plan: ClusterPlanInput) -> list[StepDefinition]:
         result = [
+            *self._provider_lb(plan, create=False),
             StepDefinition(
                 "drain", "Drain workloads off the node(s)", steps.drain_nodes, max_attempts=2, retry_backoff_seconds=15
             ),

@@ -233,6 +233,21 @@ export function useDeleteCluster() {
   });
 }
 
+export function useUpgradeCluster() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, targetVersion, allowEmptydirData }: { id: string; targetVersion: string; allowEmptydirData: boolean }) =>
+      api.post<OperationDetail>(`/clusters/${id}/upgrade`, {
+        target_version: targetVersion,
+        allow_emptydir_data: allowEmptydirData,
+      }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.clusters });
+      void client.invalidateQueries({ queryKey: queryKeys.operations });
+    },
+  });
+}
+
 // ---- Machines -----------------------------------------------------------------
 
 export function useMachines() {

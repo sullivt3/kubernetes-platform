@@ -33,9 +33,13 @@ from app.modules.providers.types import (
     DiscoveredMachine,
     HardwareSpec,
     ImplementationStatus,
+    LoadBalancerRequest,
+    LoadBalancerResult,
     MachineRef,
     MachineSpecRequest,
     MachineStatus,
+    ManagedClusterRequest,
+    ManagedClusterResult,
     NetworkConfigRequest,
     PowerAction,
     ProviderCapability,
@@ -53,6 +57,8 @@ CAPABILITY_METHODS: dict[ProviderCapability, str] = {
     ProviderCapability.SPECIFICATIONS: "get_specifications",
     ProviderCapability.POWER: "set_power_state",
     ProviderCapability.NETWORK: "configure_network",
+    ProviderCapability.LOAD_BALANCER: "create_load_balancer",
+    ProviderCapability.MANAGED_KUBERNETES: "create_managed_cluster",
     ProviderCapability.REGISTER_EXISTING: "connection_endpoint",
 }
 
@@ -114,6 +120,21 @@ class InfrastructureProvider(ABC):
 
     def configure_network(self, machine: MachineRef, request: NetworkConfigRequest) -> None:
         raise self._unsupported(ProviderCapability.NETWORK)
+
+    def create_load_balancer(self, request: LoadBalancerRequest) -> LoadBalancerResult:
+        raise self._unsupported(ProviderCapability.LOAD_BALANCER)
+
+    def delete_load_balancer(self, external_id: str) -> None:
+        raise self._unsupported(ProviderCapability.LOAD_BALANCER)
+
+    def create_managed_cluster(self, request: ManagedClusterRequest) -> ManagedClusterResult:
+        raise self._unsupported(ProviderCapability.MANAGED_KUBERNETES)
+
+    def managed_cluster_id(self, name: str, options: dict[str, object]) -> str:
+        raise self._unsupported(ProviderCapability.MANAGED_KUBERNETES)
+
+    def delete_managed_cluster(self, external_id: str) -> None:
+        raise self._unsupported(ProviderCapability.MANAGED_KUBERNETES)
 
     def connection_endpoint(self, host: str, port: int | None, username: str | None) -> HostEndpoint:
         """How to reach an existing machine registered by address (defaults applied)."""

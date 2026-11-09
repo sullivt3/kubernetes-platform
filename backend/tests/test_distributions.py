@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.errors import NotImplementedYetError
-from app.modules.cluster_lifecycle.distributions.base import ClusterPlanInput
+from app.modules.cluster_lifecycle.distributions.base import ClusterPlanInput, PlannedNode
 from app.modules.cluster_lifecycle.distributions.registry import distribution_registry
 from app.modules.cluster_lifecycle.distributions.spec import ClusterSpec
 from app.modules.cluster_lifecycle.distributions.types import DistributionKind, DistributionType
@@ -44,6 +44,30 @@ def test_valid_kubeadm_spec_has_no_problems() -> None:
 
 def test_containerd_is_default_runtime() -> None:
     assert spec().container_runtime.value == "containerd"
+
+
+def test_kubeadm_upgrade_plan_serializes_control_plane_then_upgrades_nodes() -> None:
+    from app.modules.cluster_lifecycle.distributions.kubeadm import Kubeadm
+
+    cp = PlannedNode(machine_id=uuid.uuid4(), name="cp-1", role="control_plane", pool="control-plane")
+    worker = PlannedNode(machine_id=uuid.uuid4(), name="worker-1", role="worker", pool="general")
+    plan = ClusterPlanInput(
+        cluster_id=uuid.uuid4(),
+        cluster_name="prod-1",
+        spec=spec(),
+        nodes=[cp, worker],
+        target_version="1.32.1",
+    )
+
+    steps = Kubeadm().plan_upgrade(plan, "1.32.1")
+
+    assert [step.key for step in steps] == [
+        f"upgrade-kubeadm:{cp.machine_id}",
+        f"upgrade-kubeadm:{worker.machine_id}",
+        f"upgrade-kubelet:{cp.machine_id}",
+        f"upgrade-kubelet:{worker.machine_id}",
+        "verify-upgrade",
+    ]
 
 
 class TestSpecValidation:

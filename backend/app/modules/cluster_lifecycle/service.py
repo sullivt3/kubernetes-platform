@@ -13,9 +13,10 @@ from app.core.errors import ConfirmationRequiredError, ConflictError, NotFoundEr
 from app.core.principal import Principal
 from app.modules.auditing import service as audit
 from app.modules.cluster_lifecycle.distributions.base import ClusterPlanInput, PlannedNode
+from app.modules.cluster_lifecycle.distributions.kubeadm import config as kubeadm_config
 from app.modules.cluster_lifecycle.distributions.registry import distribution_registry
 from app.modules.cluster_lifecycle.distributions.spec import ClusterSpec, MachineTemplate, NodePoolSpec, Taint
-from app.modules.cluster_lifecycle.distributions.types import DistributionCapability
+from app.modules.cluster_lifecycle.distributions.types import DistributionCapability, DistributionKind
 from app.modules.cluster_lifecycle.models import (
     Cluster,
     ClusterLifecycleState,
@@ -29,6 +30,7 @@ from app.modules.cluster_lifecycle.workflows import (
     CLUSTER_CREATE,
     CLUSTER_DELETE,
     CLUSTER_REMOVE_NODES,
+    CLUSTER_UPGRADE,
 )
 from app.modules.credentials.models import Credential, CredentialKind
 from app.modules.infrastructure.models import ConnectionStatus, Machine, MachineLifecycleState, ProviderConnection
@@ -71,11 +73,42 @@ class ClusterService:
         provider_cls = provider_registry.get_class(spec.provider_type)
         if provider_cls.implementation_status is ImplementationStatus.PLANNED:
             result.problems.append(f"The {provider_cls.display_name} provider is not implemented yet")
-        new_machines = self._new_machine_names(spec)
+        managed = distribution.kind is DistributionKind.MANAGED
+        new_machines = [] if managed else self._new_machine_names(spec)
+        if managed:
+            connection = (
+                self.session.get(ProviderConnection, spec.provider_connection_id)
+                if spec.provider_connection_id
+                else None
+            )
+            if connection is None or connection.organization_id != principal.organization_id:
+                result.problems.append("Managed Kubernetes needs a provider connection in this organization")
+            elif connection.provider_type is not spec.provider_type:
+                result.problems.append("The provider connection does not match the selected managed distribution")
+            elif (
+                ProviderCapability.MANAGED_KUBERNETES
+                not in provider_registry.get_class(connection.provider_type).capabilities
+            ):
+                result.problems.append("The selected provider does not implement managed Kubernetes provisioning")
         if new_machines:
             result.problems.extend(self._provisioning_problems(principal, spec, [n for _, n in new_machines]))
         result.notes.extend(self._container_defaults(principal, spec))
         result.problems.extend(distribution.validate_spec(spec))
+        if spec.control_plane.load_balancer.value == "provider":
+            connection = (
+                self.session.get(ProviderConnection, spec.provider_connection_id)
+                if spec.provider_connection_id
+                else None
+            )
+            if connection is None or connection.organization_id != principal.organization_id:
+                result.problems.append("Choose an AWS provider connection for the provider-managed API load balancer")
+            elif connection.provider_type.value != "aws":
+                result.problems.append("The provider-managed API load balancer requires an AWS connection")
+            elif (
+                ProviderCapability.LOAD_BALANCER
+                not in provider_registry.get_class(connection.provider_type).capabilities
+            ):
+                result.problems.append("The selected provider does not implement load balancers")
 
         if self.session.scalar(
             select(Cluster.id).where(Cluster.organization_id == principal.organization_id, Cluster.name == spec.name)
@@ -120,7 +153,9 @@ class ClusterService:
             else []
         )
         containers = sorted(name for name, ptype in rows if provider_registry.get_class(ptype).container_machines)
-        new_machines = self._new_machine_names(spec)
+        distribution = distribution_registry.get(spec.distribution)
+        managed = distribution.kind is DistributionKind.MANAGED
+        new_machines = [] if managed else self._new_machine_names(spec)
         if new_machines and spec.provider_connection_id:
             connection = self.session.get(ProviderConnection, spec.provider_connection_id)
             if connection is not None and provider_registry.get_class(connection.provider_type).container_machines:
@@ -293,8 +328,10 @@ class ClusterService:
             raise ValidationFailedError(
                 "The cluster specification is not valid", details={"problems": validation.problems}
             )
+        distribution = distribution_registry.get(spec.distribution)
+        managed = distribution.kind is DistributionKind.MANAGED
         nodes = [n for n in validation.nodes if not n.provisioned]
-        new_machines = self._new_machine_names(spec)
+        new_machines = [] if managed else self._new_machine_names(spec)
         if new_machines:
             assert spec.provider_connection_id and spec.machine_credential_id  # checked by validate()
             for pool in (spec.control_plane, *spec.worker_pools):
@@ -317,7 +354,12 @@ class ClusterService:
                     PlannedNode(machine_id=m.id, name=m.name, role=role, pool=pool.name, provisioned=True)
                     for m in created
                 ]
-        connection = MachineService(self.session, self.operations).ensure_ssh_connection(principal)
+        if managed:
+            if spec.provider_connection_id is None:
+                raise ValidationFailedError("Managed cluster creation needs a provider connection")
+            connection_id = spec.provider_connection_id
+        else:
+            connection_id = MachineService(self.session, self.operations).ensure_ssh_connection(principal).id
         cluster = Cluster(
             organization_id=principal.organization_id,
             name=spec.name,
@@ -325,8 +367,8 @@ class ClusterService:
             distribution=spec.distribution,
             origin=ClusterOrigin.PROVISIONED,
             lifecycle_state=ClusterLifecycleState.PENDING,
-            kubernetes_version=None,
-            provider_connection_id=connection.id,
+            kubernetes_version=spec.kubernetes_version if managed else None,
+            provider_connection_id=connection_id,
             spec=spec.model_dump(mode="json"),
         )
         self.session.add(cluster)
@@ -533,6 +575,7 @@ class ClusterService:
         pool.count = len(pool.existing_machine_ids)
         if new_pool:
             spec.worker_pools.append(pool)
+        cluster.spec = spec.model_dump(mode="json")
         for node in nodes:
             self.session.add(
                 ClusterMachine(
@@ -602,6 +645,7 @@ class ClusterService:
             pool.count = len(pool.existing_machine_ids)
             if not control_plane and pool.count == 0:
                 spec.worker_pools = [p for p in spec.worker_pools if p is not pool]
+        cluster.spec = spec.model_dump(mode="json")
         node = PlannedNode(
             machine_id=machine_id,
             name=node_name,
@@ -634,6 +678,79 @@ class ClusterService:
             destroy_machines=destroy_machine,
         )
         return self.operations.submit(principal, CLUSTER_REMOVE_NODES, plan.model_dump(mode="json"))
+
+    def upgrade(
+        self,
+        principal: Principal,
+        cluster_id: uuid.UUID,
+        target_version: str,
+        *,
+        allow_emptydir_data: bool = False,
+    ) -> Operation:
+        cluster = self._managed(principal, cluster_id, DistributionCapability.UPGRADE)
+        if cluster.distribution.value != "kubeadm":
+            raise ValidationFailedError("Automated upgrades are currently implemented only for kubeadm clusters")
+        current_text = (cluster.kubernetes_version or "").removeprefix("v")
+        target_text = target_version.strip().removeprefix("v")
+        try:
+            current = kubeadm_config.parse_version(current_text)
+            target = kubeadm_config.parse_version(target_text)
+        except ValueError as exc:
+            raise ValidationFailedError(str(exc)) from exc
+        if target[2] is None:
+            raise ValidationFailedError("Choose an exact Kubernetes patch version, for example 1.34.2")
+        if current[2] is None:
+            raise ValidationFailedError("The cluster's current Kubernetes patch version is unknown")
+        if target[1] not in (current[1], current[1] + 1):
+            raise ValidationFailedError("Upgrade one Kubernetes minor version at a time")
+        if target <= current:
+            raise ValidationFailedError("The target version must be newer than the cluster's current version")
+        if target[1] < kubeadm_config.MIN_MINOR:
+            raise ValidationFailedError(f"Kubernetes 1.{target[1]} is not supported by this platform")
+
+        rows = self.node_details(cluster.id)
+        if not rows:
+            raise ConflictError("No managed nodes are registered for this cluster")
+        if any(m.membership_state is not MachineMembershipState.JOINED for m, _ in rows):
+            raise ConflictError("Every managed node must be joined before upgrading the cluster")
+        spec = ClusterSpec.model_validate(cluster.spec)
+        nodes = [
+            PlannedNode(
+                machine_id=membership.machine_id,
+                name=membership.node_name or machine.name,
+                role=membership.role.value,
+                pool="-",
+                provisioned=machine.provisioned,
+            )
+            for membership, machine in rows
+        ]
+        if not any(node.role == "control_plane" for node in nodes):
+            raise ConflictError("No managed control-plane node is registered for this cluster")
+
+        plan = ClusterPlanInput(
+            cluster_id=cluster.id,
+            cluster_name=cluster.name,
+            spec=spec,
+            nodes=nodes,
+            target_version=target_text,
+            allow_emptydir_data=allow_emptydir_data,
+        )
+        operation = self.operations.submit(principal, CLUSTER_UPGRADE, plan.model_dump(mode="json"))
+        audit.record(
+            self.session,
+            principal=principal,
+            action="cluster.upgrade",
+            resource_type="cluster",
+            resource_id=cluster.id,
+            resource_name=cluster.name,
+            details={
+                "from_version": cluster.kubernetes_version,
+                "target_version": f"v{target_text}",
+                "allow_emptydir_data": allow_emptydir_data,
+            },
+        )
+        self.session.commit()
+        return operation
 
     # ------------------------------------------------------------------ queries
 

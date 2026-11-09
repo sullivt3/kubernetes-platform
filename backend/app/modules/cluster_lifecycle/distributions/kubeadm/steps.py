@@ -53,7 +53,124 @@ def _script(name: str) -> str:
 
 
 def _plan(ctx: StepContext) -> ClusterPlanInput:
-    return ctx.params  # type: ignore[return-value]
+    plan: ClusterPlanInput = ctx.params  # type: ignore[assignment]
+    endpoint = (ctx.outputs.get("provider-load-balancer") or {}).get("endpoint")
+    if endpoint and not plan.spec.control_plane.endpoint:
+        spec = plan.spec.model_copy(deep=True)
+        spec.control_plane.endpoint = endpoint
+        return plan.model_copy(update={"spec": spec})
+    return plan
+
+
+def create_provider_load_balancer(ctx: StepContext) -> dict[str, Any]:
+    """Create/reconcile the cloud API endpoint before kubeadm writes its config."""
+    plan = _plan(ctx)
+    connection_id = plan.spec.provider_connection_id
+    if connection_id is None:
+        raise StepFailedError("Provider load balancing needs a provider connection", code="provider_connection_missing")
+    from app.modules.infrastructure.provider_workflows import provider_for
+    from app.modules.providers.types import LoadBalancerRequest
+
+    options = plan.spec.options
+    targets = _provider_lb_targets(ctx, plan)
+    request = LoadBalancerRequest(
+        name=f"kplatform-{plan.cluster_id.hex[:20]}",
+        vpc_id=str(options["provider_lb_vpc_id"]),
+        subnet_ids=list(options["provider_lb_subnet_ids"]),
+        targets=targets,
+        scheme=str(options.get("provider_lb_scheme", "internal")),
+    )
+    with provider_for(ctx, connection_id) as provider:
+        result = provider.create_load_balancer(request)
+    with ctx.db() as session:
+        cluster = session.get(Cluster, plan.cluster_id)
+        if cluster is None:
+            raise StepFailedError("Cluster was deleted while its load balancer was being created")
+        persisted = dict(cluster.spec or {})
+        persisted_options = dict(persisted.get("options") or {})
+        persisted_options["provider_lb_external_id"] = result.external_id
+        persisted["options"] = persisted_options
+        control_plane = dict(persisted.get("control_plane") or {})
+        control_plane["endpoint"] = result.endpoint
+        persisted["control_plane"] = control_plane
+        cluster.spec = persisted
+    ctx.info(f"Provider API endpoint is {result.endpoint}")
+    return {"external_id": result.external_id, "endpoint": result.endpoint}
+
+
+def _provider_lb_targets(ctx: StepContext, plan: ClusterPlanInput) -> list[str]:
+    targets: list[str] = []
+    planned_ids = {node.machine_id for node in plan.control_planes}
+    with ctx.db() as session:
+        memberships = session.scalars(
+            select(ClusterMachine).where(
+                ClusterMachine.cluster_id == plan.cluster_id,
+                ClusterMachine.role == "control_plane",
+            )
+        )
+        for membership in memberships:
+            # A removal plan contains currently joined nodes to exclude. Add/create plans contain
+            # planned memberships that should enter the target set when they finish joining.
+            if membership.machine_id in planned_ids and membership.membership_state is MachineMembershipState.JOINED:
+                continue
+            if membership.membership_state not in (
+                MachineMembershipState.JOINED,
+                MachineMembershipState.PLANNED,
+                MachineMembershipState.INSTALLING,
+            ):
+                continue
+            if (
+                membership.membership_state is not MachineMembershipState.JOINED
+                and membership.machine_id not in planned_ids
+            ):
+                continue
+            machine = session.get(Machine, membership.machine_id)
+            if machine is None or not machine.external_id:
+                raise RetryableStepError(
+                    f"Control-plane machine {membership.node_name or membership.machine_id} has no provider ID yet"
+                )
+            # AWS target groups expect the EC2 instance ID, not the platform's region/id composite.
+            targets.append(machine.external_id.rsplit("/", 1)[-1])
+    return targets
+
+
+def sync_provider_load_balancer(ctx: StepContext) -> dict[str, Any]:
+    plan = _plan(ctx)
+    external_id = plan.spec.options.get("provider_lb_external_id")
+    connection_id = plan.spec.provider_connection_id
+    if not external_id or connection_id is None:
+        raise StepFailedError("The provider load balancer is missing its persisted identifier")
+    from app.modules.infrastructure.provider_workflows import provider_for
+    from app.modules.providers.types import LoadBalancerRequest
+
+    options = plan.spec.options
+    request = LoadBalancerRequest(
+        name=f"kplatform-{plan.cluster_id.hex[:20]}",
+        vpc_id=str(options["provider_lb_vpc_id"]),
+        subnet_ids=list(options["provider_lb_subnet_ids"]),
+        targets=_provider_lb_targets(ctx, plan),
+        scheme=str(options.get("provider_lb_scheme", "internal")),
+    )
+    with provider_for(ctx, connection_id) as provider:
+        result = provider.create_load_balancer(request)
+    if result.external_id != external_id:
+        raise StepFailedError("Provider returned a different load balancer for the persisted cluster endpoint")
+    return {"external_id": result.external_id, "endpoint": result.endpoint}
+
+
+def delete_provider_load_balancer(ctx: StepContext) -> dict[str, Any]:
+    plan = _plan(ctx)
+    external_id = plan.spec.options.get("provider_lb_external_id")
+    connection_id = plan.spec.provider_connection_id
+    if not external_id:
+        return {"deleted": False, "reason": "not provisioned"}
+    if connection_id is None:
+        raise StepFailedError("Cannot delete the provider load balancer without its provider connection")
+    from app.modules.infrastructure.provider_workflows import provider_for
+
+    with provider_for(ctx, connection_id) as provider:
+        provider.delete_load_balancer(str(external_id))
+    return {"deleted": True}
 
 
 def _options(plan: ClusterPlanInput) -> cfg.KubeadmOptions:
@@ -324,6 +441,149 @@ def install_packages(ctx: StepContext) -> dict[str, Any]:
         _script_action(ctx, "packages.sh", env, action="Kubernetes package install"),
     )
     return {}
+
+
+def upgrade_kubeadm(node: PlannedNode, target_version: str, *, apply: bool) -> Callable[[StepContext], dict[str, Any]]:
+    """Upgrade one node's kubeadm binary and run the role-appropriate kubeadm upgrade command."""
+
+    def run(ctx: StepContext) -> dict[str, Any]:
+        ctx.check_cancelled()
+        with connect(ctx, node.machine_id) as executor:
+            _execute(
+                ctx,
+                node,
+                executor,
+                "packages.sh",
+                {
+                    "K8S_MINOR": cfg.minor_of(target_version),
+                    "K8S_VERSION": target_version,
+                    "MODE": "upgrade-kubeadm",
+                },
+                action="kubeadm package upgrade",
+                timeout=1200,
+            )
+            _execute(
+                ctx,
+                node,
+                executor,
+                "upgrade.sh",
+                {"TARGET_VERSION": target_version, "APPLY_UPGRADE": "1" if apply else "0"},
+                action="kubeadm upgrade",
+                timeout=1800,
+            )
+        return {"node": node.name, "version": target_version, "control_plane_apply": apply}
+
+    return run
+
+
+def upgrade_node(node: PlannedNode, target_version: str) -> Callable[[StepContext], dict[str, Any]]:
+    """Drain a node, upgrade/restart kubelet, wait for Ready, then uncordon it."""
+
+    def run(ctx: StepContext) -> dict[str, Any]:
+        plan = _plan(ctx)
+        coordinator = next(
+            (n for n in plan.control_planes if n.machine_id != node.machine_id),
+            node,
+        )
+        from app.modules.infrastructure.host_access import CommandOptions
+
+        emptydir_flag = " --delete-emptydir-data" if plan.allow_emptydir_data else ""
+        if plan.allow_emptydir_data:
+            ctx.warning(f"[{node.name}] drain may delete ephemeral emptyDir data, as explicitly requested")
+        with connect(ctx, coordinator.machine_id) as api_host:
+            _kubectl(
+                api_host,
+                f"drain {shlex.quote(node.name)} --ignore-daemonsets{emptydir_flag} --timeout=15m",
+                timeout=960,
+            )
+            ctx.info(f"[{node.name}] drained; PodDisruptionBudgets were respected")
+            with connect(ctx, node.machine_id) as executor:
+                _execute(
+                    ctx,
+                    node,
+                    executor,
+                    "packages.sh",
+                    {
+                        "K8S_MINOR": cfg.minor_of(target_version),
+                        "K8S_VERSION": target_version,
+                        "MODE": "upgrade-kubelet",
+                    },
+                    action="kubelet and kubectl package upgrade",
+                    timeout=1200,
+                )
+                restart = executor.run("systemctl restart kubelet", CommandOptions(sudo=True, timeout_seconds=120))
+                if not restart.ok:
+                    raise StepFailedError(f"Could not restart kubelet on {node.name}", code="kubelet_restart_failed")
+            deadline = time.monotonic() + 900
+            last_problem = "node has not reported the target kubelet version"
+            while time.monotonic() < deadline:
+                ctx.check_cancelled()
+                try:
+                    observed = json.loads(_kubectl(api_host, f"get node {shlex.quote(node.name)} -o json"))
+                    status = observed.get("status", {})
+                    version = (status.get("nodeInfo") or {}).get("kubeletVersion")
+                    ready = any(
+                        condition.get("type") == "Ready" and condition.get("status") == "True"
+                        for condition in status.get("conditions", [])
+                    )
+                    if version == f"v{target_version}" and ready:
+                        break
+                    last_problem = f"kubelet={version or 'unknown'}, Ready={ready}"
+                except StepFailedError as exc:
+                    last_problem = str(exc)
+                time.sleep(5)
+            else:
+                raise StepFailedError(
+                    f"{node.name} did not become Ready at kubelet v{target_version} within 15 minutes: {last_problem}",
+                    code="kubelet_not_ready",
+                )
+            _kubectl(api_host, f"uncordon {shlex.quote(node.name)}")
+        ctx.info(f"[{node.name}] running kubelet {target_version}; node is Ready and schedulable")
+        return {"node": node.name, "kubelet_version": target_version, "ready": True}
+
+    return run
+
+
+def verify_upgrade(ctx: StepContext) -> dict[str, Any]:
+    plan = _plan(ctx)
+    target = plan.target_version
+    if not target:
+        raise StepFailedError("Upgrade target version is missing", code="version_unknown")
+    with connect(ctx, plan.control_planes[0].machine_id) as executor:
+        raw = _kubectl(executor, "get nodes -o json")
+        server_version = json.loads(_kubectl(executor, "version -o json")).get("serverVersion", {}).get("gitVersion")
+    nodes = json.loads(raw).get("items", [])
+    expected = f"v{target}"
+    observed = {
+        item.get("metadata", {}).get("name"): item.get("status", {}).get("nodeInfo", {}).get("kubeletVersion")
+        for item in nodes
+    }
+    problems = [
+        f"{name}: expected {expected}, found {version or 'unknown'}"
+        for name, version in observed.items()
+        if version != expected
+    ]
+    not_ready = [
+        item.get("metadata", {}).get("name")
+        for item in nodes
+        if not any(
+            condition.get("type") == "Ready" and condition.get("status") == "True"
+            for condition in item.get("status", {}).get("conditions", [])
+        )
+    ]
+    if problems or not_ready or len(observed) < len(plan.nodes):
+        details = problems + ([f"Not Ready: {', '.join(not_ready)}"] if not_ready else [])
+        if len(observed) < len(plan.nodes):
+            details.append(f"Expected {len(plan.nodes)} nodes, found {len(observed)}")
+        raise StepFailedError("Upgrade verification failed: " + "; ".join(details), code="upgrade_verification_failed")
+    if server_version != expected:
+        raise StepFailedError(
+            f"Upgrade verification failed: API server reports {server_version or 'unknown'}, expected {expected}",
+            code="upgrade_verification_failed",
+        )
+    ctx.info(f"Verified {len(observed)} Ready node(s) at Kubernetes {expected}")
+    ctx.set_result({"cluster": plan.cluster_name, "kubernetes_version": expected, "nodes": len(observed)})
+    return {"kubernetes_version": expected, "nodes": len(observed)}
 
 
 def init_control_plane(ctx: StepContext) -> dict[str, Any]:

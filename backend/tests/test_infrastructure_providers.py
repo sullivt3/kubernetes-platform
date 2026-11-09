@@ -23,7 +23,7 @@ from app.modules.providers.http import HttpRequest, HttpResponse, ProviderApiErr
 from app.modules.providers.implementations import local as local_mod
 from app.modules.providers.implementations.aws import aws_sigv4
 from app.modules.providers.registry import provider_registry
-from app.modules.providers.types import MachineRef, MachineSpecRequest, PowerAction, ProviderType
+from app.modules.providers.types import MachineRef, MachineSpecRequest, ManagedClusterRequest, PowerAction, ProviderType
 from tests.fake_docker import FakeDocker
 from tests.fake_proxmox import TOKEN_ID, TOKEN_SECRET, FakeProxmox
 
@@ -98,6 +98,72 @@ def test_sigv4_matches_aws_documentation_iam_example() -> None:
     )
 
 
+def test_eks_bearer_token_is_a_short_lived_signed_sts_url() -> None:
+    token = _aws().eks_bearer_token("prod")
+    assert token.startswith("k8s-aws-v1.")
+    encoded = token.removeprefix("k8s-aws-v1.")
+    url = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query))
+    assert parts.hostname == "sts.eu-west-1.amazonaws.com"
+    assert query["Action"] == "GetCallerIdentity" and query["X-Amz-Expires"] == "60"
+    assert query["X-Amz-SignedHeaders"] == "host;x-k8s-aws-id"
+    assert "X-Amz-Signature" in query
+
+
+def test_eks_cluster_create_reuses_tagged_cluster_and_creates_managed_node_group(transport: list[Any]) -> None:
+    actions: list[str] = []
+
+    def eks_api(request: HttpRequest) -> HttpResponse | None:
+        if urlsplit(request.url).hostname != "eks.eu-west-1.amazonaws.com":
+            return None
+        action = request.headers.get("X-Amz-Target", "").split(".")[-1]
+        actions.append(action)
+        if action == "DescribeCluster":
+            return _json(
+                200,
+                {
+                    "cluster": {
+                        "name": "prod",
+                        "status": "ACTIVE",
+                        "tags": {"kubernetes-platform:managed": "true"},
+                        "endpoint": "https://ABC.gr7.eu-west-1.eks.amazonaws.com",
+                        "certificateAuthority": {"data": "Y2E="},
+                    }
+                },
+            )
+        if action == "DescribeNodegroup":
+            if actions.count(action) == 1:
+                return _json(404, {"message": "ResourceNotFoundException: not found"})
+            return _json(
+                200,
+                {"nodegroup": {"status": "ACTIVE", "tags": {"kubernetes-platform:managed": "true"}}},
+            )
+        if action == "CreateNodegroup":
+            payload = json.loads(request.body or b"{}")
+            assert payload["nodegroupName"] == "workers" and payload["scalingConfig"]["desiredSize"] == 2
+            return _json(200, {})
+        return None
+
+    transport.append(eks_api)
+    provider = _aws()
+    result = provider.create_managed_cluster(
+        ManagedClusterRequest(
+            name="prod",
+            version="1.34",
+            options={
+                "managed_cluster_role_arn": "arn:aws:iam::123456789012:role/EKSClusterRole",
+                "managed_node_role_arn": "arn:aws:iam::123456789012:role/EKSNodeRole",
+                "managed_subnet_ids": ["subnet-a", "subnet-b"],
+            },
+            node_pools=[{"name": "workers", "count": 2, "minimum": 1, "maximum": 4}],
+        )
+    )
+    assert result.external_id == "eu-west-1|prod"
+    assert result.endpoint.startswith("https://") and result.certificate_authority_data == "Y2E="
+    assert "CreateCluster" not in actions and "CreateNodegroup" in actions
+
+
 # ---- AWS provider --------------------------------------------------------------------
 
 EC2_NS = 'xmlns="http://ec2.amazonaws.com/doc/2016-11-15/"'
@@ -111,13 +177,16 @@ def _instances_xml(items: str, next_token: str = "") -> bytes:
 </DescribeInstancesResponse>""".encode()
 
 
-def _instance(instance_id: str, name: str, state: str, private_ip: str, public_ip: str = "") -> str:
+def _instance(
+    instance_id: str, name: str, state: str, private_ip: str, public_ip: str = "", managed: bool = False
+) -> str:
     public = f"<ipAddress>{public_ip}</ipAddress>" if public_ip else ""
+    managed_tag = "<item><key>kubernetes-platform:managed</key><value>true</value></item>" if managed else ""
     return f"""<item><instanceId>{instance_id}</instanceId><imageId>ami-1</imageId>
 <instanceState><code>16</code><name>{state}</name></instanceState><instanceType>t3.medium</instanceType>
 <placement><availabilityZone>eu-west-1a</availabilityZone></placement><privateIpAddress>{private_ip}</privateIpAddress>
 {public}<vpcId>vpc-1</vpcId><architecture>x86_64</architecture><platformDetails>Linux/UNIX</platformDetails>
-<tagSet><item><key>Name</key><value>{name}</value></item></tagSet></item>"""
+<tagSet><item><key>Name</key><value>{name}</value></item>{managed_tag}</tagSet></item>"""
 
 
 def aws_api(request: HttpRequest) -> HttpResponse | None:
@@ -180,6 +249,68 @@ def test_aws_errors_are_explained(transport: list[Any]) -> None:
     )
     with pytest.raises(ProviderAuthError, match="InvalidClientTokenId"):
         _aws().validate_connection()
+
+
+def test_aws_provision_status_and_delete_are_idempotent(transport: list[Any]) -> None:
+    state = {"exists": False, "run_count": 0, "terminate_count": 0}
+
+    def api(request: HttpRequest) -> HttpResponse | None:
+        if urlsplit(request.url).netloc != "ec2.eu-west-1.amazonaws.com":
+            return None
+        form = dict(parse_qsl((request.body or b"").decode()))
+        assert request.headers["Authorization"].startswith("AWS4-HMAC-SHA256")
+        if form["Action"] == "RunInstances":
+            state["run_count"] += 1
+            assert form["ImageId"] == "ami-example"
+            assert form["NetworkInterface.1.SubnetId"] == "subnet-example"
+            assert form["NetworkInterface.1.SecurityGroupId.1"] == "sg-example"
+            user_data = base64.b64decode(form["UserData"]).decode()
+            assert PUBLIC_KEY in user_data and "NOPASSWD:ALL" in user_data
+            assert form["TagSpecification.1.Tag.2.Value"] == "true"
+            state["exists"] = True
+            return HttpResponse(
+                200,
+                {},
+                (
+                    f"<RunInstancesResponse {EC2_NS}><instancesSet><item><instanceId>i-owned</instanceId>"
+                    "</item></instancesSet></RunInstancesResponse>"
+                ).encode(),
+            )
+        if form["Action"] == "DescribeInstances":
+            items = (
+                _instance("i-owned", "node-1", "running", "10.0.0.8", "198.51.100.8", managed=True)
+                if state["exists"]
+                else ""
+            )
+            return HttpResponse(200, {}, _instances_xml(items))
+        if form["Action"] == "TerminateInstances":
+            state["terminate_count"] += 1
+            state["exists"] = False
+            return HttpResponse(200, {}, f"<TerminateInstancesResponse {EC2_NS}/>".encode())
+        return None
+
+    transport.append(api)
+    provider = _aws()
+    request = MachineSpecRequest(
+        name="node-1",
+        cpu_cores=2,
+        memory_mb=4096,
+        disk_gb=40,
+        image="ami-example",
+        provider_options={
+            "instance_type": "t3.medium",
+            "subnet_id": "subnet-example",
+            "security_group_ids": ["sg-example"],
+        },
+        ssh_username="platform",
+        ssh_public_key=PUBLIC_KEY,
+    )
+    machine = provider.provision(request)
+    assert machine.external_id == "eu-west-1/i-owned" and machine.power_state == "running"
+    assert provider.get_status(MachineRef(external_id=machine.external_id)).exists
+    provider.delete(MachineRef(external_id=machine.external_id))
+    provider.delete(MachineRef(external_id=machine.external_id))
+    assert state == {"exists": False, "run_count": 1, "terminate_count": 1}
 
 
 # ---- Azure ---------------------------------------------------------------------------
@@ -255,6 +386,79 @@ def test_azure_bad_secret(transport: list[Any]) -> None:
     assert "Trace" not in exc_info.value.message
 
 
+def test_azure_provision_status_and_delete_are_idempotent(transport: list[Any]) -> None:
+    state = {"exists": False, "puts": 0, "deletes": 0}
+    vm_url = (
+        f"https://management.azure.com/subscriptions/{SUB}/resourceGroups/rg1/"
+        f"providers/Microsoft.Compute/virtualMachines/node-1?api-version=2024-07-01"
+    )
+    resource_id = vm_url.split("?", 1)[0]
+
+    def api(request: HttpRequest) -> HttpResponse | None:
+        if request.url == f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token":
+            return azure_api(request)
+        if request.url.startswith(vm_url):
+            if request.method == "PUT":
+                body = json.loads(request.body or b"{}")
+                state["puts"] += 1
+                assert body["tags"]["kubernetes-platform-managed"] == "true"
+                assert (
+                    body["properties"]["osProfile"]["linuxConfiguration"]["ssh"]["publicKeys"][0]["keyData"]
+                    == PUBLIC_KEY
+                )
+                state["exists"] = True
+                return _json(200, {"id": resource_id})
+            if request.method == "DELETE":
+                state["deletes"] += 1
+                state["exists"] = False
+                return HttpResponse(202, {}, b"")
+            if not state["exists"]:
+                return _json(404, {"error": {"code": "NotFound"}})
+            return _json(
+                200,
+                {
+                    "id": resource_id,
+                    "name": "node-1",
+                    "location": "eastus",
+                    "tags": {"kubernetes-platform-managed": "true"},
+                    "properties": {
+                        "hardwareProfile": {"vmSize": "Standard_B2s"},
+                        "instanceView": {"statuses": [{"code": "PowerState/running"}]},
+                        "networkProfile": {"networkInterfaces": [{"id": "/x/nic1"}]},
+                    },
+                },
+            )
+        if request.url == "/x/nic1?api-version=2024-05-01":
+            return _json(200, {"properties": {"ipConfigurations": [{"properties": {"privateIPAddress": "10.0.0.7"}}]}})
+        return None
+
+    transport.extend([api, azure_api])
+    provider = _azure()
+    machine = provider.provision(
+        MachineSpecRequest(
+            name="node-1",
+            cpu_cores=2,
+            memory_mb=4096,
+            disk_gb=30,
+            ssh_username="platform",
+            ssh_public_key=PUBLIC_KEY,
+            provider_options={
+                "resource_group": "rg1",
+                "location": "eastus",
+                "vm_size": "Standard_B2s",
+                "network_interface_id": "/x/nic1",
+                "image": "Canonical:UbuntuServer:22_04-lts:latest",
+            },
+        )
+    )
+    assert machine.external_id == resource_id and machine.power_state == "running"
+    assert machine.addresses[0].address == "10.0.0.7"
+    assert provider.get_status(MachineRef(external_id=resource_id)).exists
+    provider.delete(MachineRef(external_id=resource_id))
+    provider.delete(MachineRef(external_id=resource_id))
+    assert state == {"exists": False, "puts": 1, "deletes": 1}
+
+
 # ---- GCP -----------------------------------------------------------------------------
 
 
@@ -285,7 +489,7 @@ def test_gcp_validate_and_discover(transport: list[Any], gcp_key: tuple[dict[str
             pad = lambda s: base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))  # noqa: E731
             public_key.verify(pad(signature), f"{header}.{claims}".encode(), padding.PKCS1v15(), hashes.SHA256())
             body = json.loads(pad(claims))
-            assert body["iss"] == key["client_email"] and body["scope"].endswith("compute.readonly")
+            assert body["iss"] == key["client_email"] and body["scope"].endswith("/compute")
             return _json(200, {"access_token": "gtok", "expires_in": 3600})
         assert request.headers["Authorization"] == "Bearer gtok"
         base = "https://compute.googleapis.com/compute/v1/projects/lab-project"
@@ -322,9 +526,81 @@ def test_gcp_validate_and_discover(transport: list[Any], gcp_key: tuple[dict[str
     provider = provider_registry.create(ProviderType.GCP, {}, json.dumps(key).encode())
     assert provider.validate_connection().details["service_account"] == key["client_email"]
     [vm] = provider.discover()
-    assert vm.external_id == "europe-west1-b/123"
+    assert vm.external_id == "europe-west1-b/gce-1"
     assert [a.address for a in vm.addresses] == ["10.3.0.2", "34.1.1.1"]
     assert vm.hardware and vm.hardware.cpu_cores == 2
+
+
+def test_gcp_provision_status_and_delete_are_idempotent(
+    transport: list[Any], gcp_key: tuple[dict[str, Any], Any]
+) -> None:
+    key, _public_key = gcp_key
+    state: dict[str, Any] = {"exists": False, "creates": 0, "deletes": 0}
+    base = "https://compute.googleapis.com/compute/v1/projects/lab-project"
+    instance_url = f"{base}/zones/us-central1-a/instances/node-1"
+
+    def api(request: HttpRequest) -> HttpResponse | None:
+        if request.url == "https://oauth2.googleapis.com/token":
+            form = dict(parse_qsl((request.body or b"").decode()))
+            payload = form["assertion"].split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            state["scope"] = json.loads(base64.urlsafe_b64decode(payload))["scope"]
+            return _json(200, {"access_token": "gtok", "expires_in": 3600})
+        assert request.headers["Authorization"] == "Bearer gtok"
+        if request.url.startswith(f"{base}/zones/us-central1-a/instances?"):
+            body = json.loads(request.body or b"{}")
+            assert body["labels"]["kplatform_managed"] == "true"
+            assert (
+                body["disks"][0]["initializeParams"]["sourceImage"] == "projects/debian-cloud/global/images/debian-12"
+            )
+            assert PUBLIC_KEY in body["metadata"]["items"][0]["value"]
+            assert "requestId=" in request.url
+            state["creates"] += 1
+            state["exists"] = True
+            return _json(200, {"name": "operation-1", "status": "DONE"})
+        if request.url == instance_url and request.method == "GET":
+            if not state["exists"]:
+                return _json(404, {"error": {"message": "not found"}})
+            return _json(
+                200,
+                {
+                    "name": "node-1",
+                    "status": "RUNNING",
+                    "machineType": "zones/us-central1-a/machineTypes/e2-medium",
+                    "labels": {"kplatform_managed": "true"},
+                    "networkInterfaces": [{"networkIP": "10.0.0.5", "accessConfigs": [{"natIP": "34.0.0.5"}]}],
+                },
+            )
+        if request.url == instance_url and request.method == "DELETE":
+            state["deletes"] += 1
+            state["exists"] = False
+            return _json(200, {"name": "delete-1", "status": "DONE"})
+        return None
+
+    transport.append(api)
+    provider = provider_registry.create(ProviderType.GCP, {}, json.dumps(key).encode())
+    request = MachineSpecRequest(
+        name="node-1",
+        cpu_cores=2,
+        memory_mb=4096,
+        disk_gb=30,
+        provider_options={
+            "zone": "us-central1-a",
+            "image": "projects/debian-cloud/global/images/debian-12",
+            "machine_type": "e2-medium",
+            "network": "global/networks/default",
+        },
+        ssh_username="platform",
+        ssh_public_key=PUBLIC_KEY,
+    )
+    machine = provider.provision(request)
+    assert machine.external_id == "us-central1-a/node-1"
+    assert [address.address for address in machine.addresses] == ["10.0.0.5", "34.0.0.5"]
+    assert provider.get_status(MachineRef(external_id=machine.external_id)).exists
+    provider.delete(MachineRef(external_id=machine.external_id))
+    provider.delete(MachineRef(external_id=machine.external_id))
+    assert state["scope"] == "https://www.googleapis.com/auth/compute"
+    assert (state["creates"], state["deletes"]) == (1, 1)
 
 
 # ---- Proxmox -------------------------------------------------------------------------

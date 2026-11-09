@@ -197,6 +197,32 @@ class NodesAdd(BaseModel):
     taints: list[Taint] = Field(default_factory=list, description="New pools only")
 
 
+class ClusterUpgrade(BaseModel):
+    target_version: str = Field(min_length=5, max_length=16, description="Exact target patch, e.g. 1.34.2")
+    allow_emptydir_data: bool = Field(
+        default=False,
+        description="Allow draining to remove pods with emptyDir data; those ephemeral files will be lost.",
+    )
+
+
+@router.post("/{cluster_id}/upgrade", response_model=OperationDetail, status_code=202)
+def upgrade_cluster(
+    cluster_id: uuid.UUID,
+    body: ClusterUpgrade,
+    principal: Principal = Depends(get_principal),
+    service: ClusterService = Depends(get_cluster_service),
+) -> OperationDetail:
+    """Upgrade a platform-installed kubeadm cluster by one minor release at a time."""
+    return OperationDetail.model_validate(
+        service.upgrade(
+            principal,
+            cluster_id,
+            body.target_version,
+            allow_emptydir_data=body.allow_emptydir_data,
+        )
+    )
+
+
 @router.post("/{cluster_id}/nodes", response_model=OperationDetail, status_code=202)
 def add_nodes(
     cluster_id: uuid.UUID,

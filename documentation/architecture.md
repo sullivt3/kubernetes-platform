@@ -94,7 +94,9 @@ Three independent abstractions:
 | SSH | Available | Registers existing servers by address. No lifecycle control. |
 | Local (Docker) | Available | Machines are privileged systemd containers (Ubuntu 24.04, OpenSSH, sudo user) on the Docker host the workers use, like Kind nodes. Provision, start/stop/reboot, destroy, discover. |
 | Proxmox VE | Preview | Clones a cloud-init template (full clone), configures CPU/memory/user/SSH key/network, grows the boot disk, starts the VM and reads its IP through the QEMU guest agent. Power, delete, discover, network. |
-| AWS, Azure, GCP | Preview (foundations) | Validate credentials and inventory instances read-only. Provisioning and managed Kubernetes are declared as `planned_capabilities` for Phase 5. |
+| AWS | Preview | Validate and inventory EC2; create and delete platform-owned EC2 instances, EKS clusters/node groups, and tagged Network Load Balancers for kubeadm APIs. |
+| GCP | Preview | Validate and inventory Compute Engine; create/delete platform-owned instances and GKE clusters with managed node pools. |
+| Azure | Preview | Validate and inventory VMs; create/delete platform-owned VMs and AKS clusters with managed node pools. |
 | vSphere | Planned | Catalogued only. |
 
 * **Provisioning workflow** (`machine.provision`): create (idempotent) → wait for an address → wait for SSH →
@@ -225,7 +227,8 @@ provision -> machine.provision                 - distribution rules          [wa
 
 **Scope today.**
 * kubeadm with Calico or Flannel on Linux machines (registered, local containers, Proxmox VMs in preview).
-* Cluster upgrades, K3s/RKE2 and managed services are planned (Phase 5).
+* kubeadm upgrades are implemented as a tracked operation: one minor version at a time, control planes serially, then each node drained through Kubernetes eviction, upgraded, checked at the target kubelet version, and uncordoned. Cluster version metadata advances only after every node verifies successfully.
+* EKS, AKS and GKE create/delete use provider APIs with ownership tags/labels and managed node pools. AWS EKS IAM tokens and GKE OAuth tokens are refreshed in memory; AKS admin client certificates are stored only in the encrypted kubeconfig. Provider-managed clusters do not create `ClusterMachine` rows. Existing IAM roles, resource groups, networks and subnets are prerequisites; these operations do not create those foundations.
 
 ## Node management
 
@@ -295,6 +298,8 @@ All node changes are audited (`node.cordon`, `node.labels`, `node.taints`, `node
   * Scale uses the `scale` subresource; restart patches `kubectl.kubernetes.io/restartedAt` on the pod template
     (as `kubectl rollout restart` does); rollback copies the pod template of the chosen revision's ReplicaSet back
     onto the Deployment with a JSON patch; CronJob trigger creates a Job from `jobTemplate` with an owner reference.
+  * Deployment scaling policies create an `autoscaling/v2` HPA for CPU or memory utilization, with explicit replica
+    bounds and scale-down stabilization. The Deployment detail view reads and edits the associated HPA.
   * Delete requires `confirm=<name>` (428 otherwise), as everywhere else.
 * **YAML apply is plan-then-apply.**
   * `POST /apply` with `dry_run: true` parses every document, resolves each kind by discovery (so CRDs work), and

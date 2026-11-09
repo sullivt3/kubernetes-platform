@@ -9,6 +9,7 @@ import { StatusPill } from "@/components/common/status";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -16,12 +17,14 @@ import { LiveError, PodStatusBadge } from "@/features/kubernetes/shared";
 import {
   useCronJobSuspend,
   useCronJobTrigger,
+  useDeleteScalingPolicy,
   useDeleteResource,
   useResource,
   useRestart,
   useRevealSecret,
   useRollback,
   useScale,
+  useSetScalingPolicy,
   type ResourceDetail,
   type ResourceKind,
 } from "@/lib/api/workloads";
@@ -191,6 +194,38 @@ function ScaleDialog({ open, onOpenChange, clusterId, kind, detail }: { open: bo
   );
 }
 
+function ScalingPolicyDialog({ open, onOpenChange, clusterId, detail }: { open: boolean; onOpenChange: (o: boolean) => void; clusterId: string; detail: ResourceDetail }) {
+  const policy = detail.scaling_policy as { spec?: { minReplicas?: number; maxReplicas?: number; metrics?: { resource?: { name?: string; target?: { averageUtilization?: number } } }[]; behavior?: { scaleDown?: { stabilizationWindowSeconds?: number } } } } | null | undefined;
+  const [minimum, setMinimum] = useState(String(policy?.spec?.minReplicas ?? 1));
+  const [maximum, setMaximum] = useState(String(policy?.spec?.maxReplicas ?? 5));
+  const [target, setTarget] = useState(String(policy?.spec?.metrics?.[0]?.resource?.target?.averageUtilization ?? 70));
+  const [metric, setMetric] = useState<"cpu" | "memory">(policy?.spec?.metrics?.[0]?.resource?.name === "memory" ? "memory" : "cpu");
+  const [stabilization, setStabilization] = useState(String(policy?.spec?.behavior?.scaleDown?.stabilizationWindowSeconds ?? 300));
+  const set = useSetScalingPolicy(clusterId);
+  const remove = useDeleteScalingPolicy(clusterId);
+  const nMin = Number(minimum), nMax = Number(maximum), nTarget = Number(target), nStabilization = Number(stabilization);
+  const valid = Number.isInteger(nMin) && Number.isInteger(nMax) && Number.isInteger(nTarget) && Number.isInteger(nStabilization) && nMin >= 1 && nMax >= nMin && nMax <= 1000 && nTarget >= 1 && nTarget <= 100 && nStabilization >= 0 && nStabilization <= 3600;
+  const identity = { namespace: detail.summary.namespace, name: detail.summary.name };
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader><DialogTitle>{policy ? "Update scaling policy" : "Add scaling policy"}</DialogTitle><DialogDescription>Automatically scale this Deployment from CPU or memory utilization. Resource requests must be set on its containers.</DialogDescription></DialogHeader>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="space-y-1 text-sm">Minimum replicas<Input type="number" min={1} max={1000} value={minimum} onChange={(e) => setMinimum(e.target.value)} /></label>
+          <label className="space-y-1 text-sm">Maximum replicas<Input type="number" min={1} max={1000} value={maximum} onChange={(e) => setMaximum(e.target.value)} /></label>
+          <label className="space-y-1 text-sm">Metric<Select value={metric} onValueChange={(v) => setMetric(v as "cpu" | "memory")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cpu">CPU</SelectItem><SelectItem value="memory">Memory</SelectItem></SelectContent></Select></label>
+          <label className="space-y-1 text-sm">Target utilization (%)<Input type="number" min={1} max={100} value={target} onChange={(e) => setTarget(e.target.value)} /></label>
+          <label className="col-span-2 space-y-1 text-sm">Scale-down stabilization (seconds)<Input type="number" min={0} max={3600} value={stabilization} onChange={(e) => setStabilization(e.target.value)} /></label>
+        </div>
+        <DialogFooter className="sm:justify-between">
+          {policy ? <Button variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate(identity, { onSuccess: () => { toast.success("Scaling policy removed"); onOpenChange(false); }, onError: (e) => toast.error("Could not remove policy", { description: e.message }) })}>Remove policy</Button> : <span />}
+          <div className="flex gap-2"><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={!valid || set.isPending} onClick={() => set.mutate({ ...identity, minimum: nMin, maximum: nMax, metric, target_utilization: nTarget, scale_down_stabilization_seconds: nStabilization }, { onSuccess: () => { toast.success("Scaling policy saved"); onOpenChange(false); }, onError: (e) => toast.error("Could not save policy", { description: e.message }) })}>Save policy</Button></div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function ResourceDetailDialog({
   clusterId,
   kind,
@@ -209,6 +244,7 @@ export function ResourceDetailDialog({
   const trigger = useCronJobTrigger(clusterId);
   const suspend = useCronJobSuspend(clusterId);
   const [scaling, setScaling] = useState(false);
+  const [policyDialog, setPolicyDialog] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const d = detail.data;
@@ -228,6 +264,7 @@ export function ResourceDetailDialog({
           <>
             <div className="flex flex-wrap gap-2">
               {d.capabilities.scale && <Button size="sm" variant="outline" onClick={() => setScaling(true)}><Scaling /> Scale</Button>}
+              {kind === "deployments" && <Button size="sm" variant="outline" onClick={() => setPolicyDialog(true)}><Scaling /> {d.scaling_policy ? "Scaling policy" : "Autoscale"}</Button>}
               {d.capabilities.restart && <Button size="sm" variant="outline" onClick={() => setRestarting(true)}><RotateCw /> Restart</Button>}
               {kind === "cronjobs" && (
                 <>
@@ -271,6 +308,7 @@ export function ResourceDetailDialog({
               <TabsContent value="events" className="pt-4"><Events detail={d} /></TabsContent>
             </Tabs>
             {d.capabilities.scale && scaling && <ScaleDialog open={scaling} onOpenChange={setScaling} clusterId={clusterId} kind={kind} detail={d} />}
+            {kind === "deployments" && policyDialog && <ScalingPolicyDialog open={policyDialog} onOpenChange={setPolicyDialog} clusterId={clusterId} detail={d} />}
             <ConfirmDialog
               open={restarting}
               onOpenChange={setRestarting}

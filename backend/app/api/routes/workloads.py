@@ -36,6 +36,14 @@ class ScaleBody(BaseModel):
     replicas: int = Field(ge=0, le=1000)
 
 
+class ScalingPolicyBody(BaseModel):
+    minimum: int = Field(ge=1, le=1000)
+    maximum: int = Field(ge=1, le=1000)
+    metric: str = Field(pattern=r"^(cpu|memory)$")
+    target_utilization: int = Field(ge=1, le=100)
+    scale_down_stabilization_seconds: int = Field(default=300, ge=0, le=3600)
+
+
 class RollbackBody(BaseModel):
     revision: int = Field(ge=1)
 
@@ -99,6 +107,39 @@ def scale(
     service: WorkloadService = Depends(get_workload_service),
 ) -> dict[str, Any]:
     return service.scale(principal, cluster_id, kind, namespace, name, body.replicas)
+
+
+@router.put("/deployments/{namespace}/{name}/scaling-policy")
+def set_scaling_policy(
+    cluster_id: uuid.UUID,
+    namespace: str,
+    name: str,
+    body: ScalingPolicyBody,
+    principal: Principal = Depends(get_principal),
+    service: WorkloadService = Depends(get_workload_service),
+) -> dict[str, Any]:
+    return service.set_scaling_policy(
+        principal,
+        cluster_id,
+        namespace,
+        name,
+        minimum=body.minimum,
+        maximum=body.maximum,
+        metric=body.metric,
+        target=body.target_utilization,
+        scale_down_stabilization=body.scale_down_stabilization_seconds,
+    )
+
+
+@router.delete("/deployments/{namespace}/{name}/scaling-policy")
+def delete_scaling_policy(
+    cluster_id: uuid.UUID,
+    namespace: str,
+    name: str,
+    principal: Principal = Depends(get_principal),
+    service: WorkloadService = Depends(get_workload_service),
+) -> dict[str, Any]:
+    return service.delete_scaling_policy(principal, cluster_id, namespace, name)
 
 
 @router.post("/resources/{kind}/{namespace}/{name}/restart")

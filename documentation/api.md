@@ -100,7 +100,7 @@ Machines include `provider_type`, `connection_name`, `external_id`, `power_state
 | POST | `/provider-connections/{id}/validate` | Re-validate (202). |
 | POST | `/provider-connections/{id}/discover` | `provider.discover` (202). `result.machines`: discovered machines with `inventory_machine`, `importable`, `ssh_endpoint`, `kube_api_endpoint`. Read-only. |
 | POST | `/provider-connections/{id}/machines` | `{names[1..20], cpu_cores, memory_mb, disk_gb, credential_id, ssh_username?, network?, labels?, provider_options?}` (202) → one `machine.provision` operation per machine. `credential_id` must be an SSH private key; its public key is installed. Proxmox: `provider_options.ipconfig` (cloud-init `ipconfig0`). |
-| POST | `/provider-connections/{id}/import` | `{external_id, name, host, port, username?, credential_id, kube_api_host?, kube_api_port?}` (201): add a discovered machine to the inventory and inspect it. Not for cloud instances (read-only until Phase 5). |
+| POST | `/provider-connections/{id}/import` | `{external_id, name, host, port, username?, credential_id, kube_api_host?, kube_api_port?}` (201): add an importable discovered machine to the inventory and inspect it. Discovered cloud instances are not importable; provisioned AWS machines are managed through the normal provisioning flow. |
 
 ### Network discovery
 
@@ -109,6 +109,8 @@ Machines include `provider_type`, `connection_name`, `external_id`, `power_state
 | POST | `/network-discovery` | `{ranges[], ports=[22], timeout_seconds=1.5}` (202) → `network.discover`. `result.hosts`: `{address, port, banner, os_hint, hostname, registered_as}`. Public ranges are rejected unless allowed by configuration. |
 
 ### Clusters
+
+`POST /clusters/{id}/upgrade` accepts `{target_version: "1.34.2", allow_emptydir_data?: false}` and returns a tracked operation. It currently supports platform-installed kubeadm clusters and allows at most one minor-version step. EmptyDir data loss must be explicitly enabled.
 
 | Method | Path | Description |
 |---|---|---|
@@ -123,9 +125,12 @@ Machines include `provider_type`, `connection_name`, `external_id`, `power_state
 `ClusterSpec` (abridged):
 `{name, distribution: "kubeadm", provider_type: "ssh"|"local"|"proxmox", provider_connection_id?, machine_credential_id?,
 machine_username?, kubernetes_version: "1.37" | "1.37.2", network: {cni, pod_cidr, service_cidr, dns_domain},
-control_plane: {count, existing_machine_ids, machine_template?, endpoint?, load_balancer: "none"|"kube-vip"|"external"},
+control_plane: {count, existing_machine_ids, machine_template?, endpoint?, load_balancer: "none"|"kube-vip"|"external"|"provider"},
 worker_pools: [{name, count, existing_machine_ids, machine_template?, labels, taints}], options: {allow_swap, control_plane_workloads,
-kube_proxy_conntrack_max_per_core, ignore_preflight_errors, api_server_extra_sans, ready_timeout_seconds}}`
+kube_proxy_conntrack_max_per_core, ignore_preflight_errors, api_server_extra_sans, ready_timeout_seconds,
+provider_lb_vpc_id, provider_lb_subnet_ids, provider_lb_scheme}}`. Provider-managed API load balancing currently creates an AWS Network Load Balancer and needs an AWS connection, VPC ID and subnet IDs.
+
+For `eks`, `aks` and `gke`, set `control_plane.count` to `0`, provide a matching cloud `provider_connection_id`, and put desired node counts in `worker_pools` (with a `machine_template` for each nonzero pool). EKS options include `managed_cluster_role_arn`, `managed_node_role_arn` and `managed_subnet_ids`; AKS uses `managed_resource_group`, `managed_location` and `managed_subnet_id`; GKE uses `managed_location`, `managed_network` and `managed_subnetwork`. IAM roles, resource groups, VNets and VPC networks must already exist.
 
 ### Cluster connectivity and live data
 
@@ -165,6 +170,8 @@ used. `GET /clusters` and `GET /clusters/{id}` include the last observed `health
 | GET | `/resources/{kind}/{namespace}/{name}` | `{kind, summary, object, yaml, events, capabilities}`, plus `rollout`/`history` for deployments, owned `pods` for controllers and `containers` for pods. Secret values are `<redacted>`. |
 | DELETE | `/resources/{kind}/{namespace}/{name}?confirm=<name>` | Delete (204). |
 | POST | `/resources/{kind}/{namespace}/{name}/scale` | `{replicas}` (deployments, statefulsets, replicasets). |
+| PUT | `/deployments/{namespace}/{name}/scaling-policy` | `{minimum, maximum, metric: "cpu"|"memory", target_utilization, scale_down_stabilization_seconds?}` creates or updates an `autoscaling/v2` HPA; requests must exist on workload containers. |
+| DELETE | `/deployments/{namespace}/{name}/scaling-policy` | Removes the platform-managed HPA for that Deployment. |
 | POST | `/resources/{kind}/{namespace}/{name}/restart` | Rolling restart (deployments, statefulsets, daemonsets). |
 | POST | `/deployments/{namespace}/{name}/rollback` | `{revision}` → restore that revision's pod template. |
 | POST | `/cronjobs/{namespace}/{name}/trigger` | Create a Job from the CronJob now; returns the Job name. |

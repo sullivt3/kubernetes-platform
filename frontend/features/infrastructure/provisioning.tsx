@@ -62,6 +62,20 @@ function ProvisionForm() {
   const [username, setUsername] = useState("platform");
   const [bridge, setBridge] = useState("");
   const [ipconfig, setIpconfig] = useState("");
+  const [ami, setAmi] = useState("");
+  const [instanceType, setInstanceType] = useState("");
+  const [subnetId, setSubnetId] = useState("");
+  const [securityGroups, setSecurityGroups] = useState("");
+  const [gcpZone, setGcpZone] = useState("");
+  const [gcpImage, setGcpImage] = useState("");
+  const [gcpMachineType, setGcpMachineType] = useState("");
+  const [gcpNetwork, setGcpNetwork] = useState("");
+  const [gcpSubnetwork, setGcpSubnetwork] = useState("");
+  const [azureGroup, setAzureGroup] = useState("");
+  const [azureLocation, setAzureLocation] = useState("");
+  const [azureSize, setAzureSize] = useState("");
+  const [azureNic, setAzureNic] = useState("");
+  const [azureImage, setAzureImage] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [started, setStarted] = useState<{ machine: Machine; operation: OperationDetail }[]>([]);
 
@@ -79,6 +93,19 @@ function ProvisionForm() {
     !(Number(disk) >= 10) && "Disk: at least 10 GB",
     !credentialId && "Choose the SSH key to install",
     !USER_PATTERN.test(username) && "Username: lowercase Linux user name",
+    connection?.provider_type === "aws" && !/^ami-[a-zA-Z0-9]+$/.test(ami.trim()) && "AWS: enter an AMI ID",
+    connection?.provider_type === "aws" && !instanceType.trim() && "AWS: enter an EC2 instance type",
+    connection?.provider_type === "aws" && !subnetId.trim() && "AWS: enter a subnet ID",
+    connection?.provider_type === "aws" && !securityGroups.trim() && "AWS: enter at least one security group ID",
+    connection?.provider_type === "gcp" && !gcpZone.trim() && "Google Cloud: enter a zone",
+    connection?.provider_type === "gcp" && !gcpImage.trim() && "Google Cloud: enter an image URL",
+    connection?.provider_type === "gcp" && !gcpMachineType.trim() && "Google Cloud: enter a machine type",
+    connection?.provider_type === "gcp" && !gcpNetwork.trim() && "Google Cloud: enter a VPC network",
+    connection?.provider_type === "azure" && !azureGroup.trim() && "Azure: enter a resource group",
+    connection?.provider_type === "azure" && !azureLocation.trim() && "Azure: enter a location",
+    connection?.provider_type === "azure" && !azureSize.trim() && "Azure: enter a VM size",
+    connection?.provider_type === "azure" && !azureNic.trim() && "Azure: enter an existing network interface resource ID",
+    connection?.provider_type === "azure" && azureImage.split(":").length !== 4 && "Azure: image format is publisher:offer:sku:version",
   ].filter(Boolean) as string[];
 
   const submit = () => {
@@ -86,6 +113,26 @@ function ProvisionForm() {
     setError(null);
     const providerOptions: Record<string, unknown> = {};
     if (ipconfig.trim()) providerOptions.ipconfig = ipconfig.trim();
+    if (connection.provider_type === "aws") {
+      providerOptions.image_id = ami.trim();
+      providerOptions.instance_type = instanceType.trim();
+      providerOptions.subnet_id = subnetId.trim();
+      providerOptions.security_group_ids = securityGroups.split(",").map((v) => v.trim()).filter(Boolean);
+    }
+    if (connection.provider_type === "gcp") {
+      providerOptions.image = gcpImage.trim();
+      providerOptions.zone = gcpZone.trim();
+      providerOptions.machine_type = gcpMachineType.trim();
+      providerOptions.network = gcpNetwork.trim();
+      if (gcpSubnetwork.trim()) providerOptions.subnetwork = gcpSubnetwork.trim();
+    }
+    if (connection.provider_type === "azure") {
+      providerOptions.resource_group = azureGroup.trim();
+      providerOptions.location = azureLocation.trim();
+      providerOptions.vm_size = azureSize.trim();
+      providerOptions.network_interface_id = azureNic.trim();
+      providerOptions.image = azureImage.trim();
+    }
     provision.mutate(
       {
         connectionId: connection.id,
@@ -112,7 +159,7 @@ function ProvisionForm() {
       <EmptyState
         icon={Rocket}
         title="No provider that can provision machines"
-        description="Add a Local (Docker) or Proxmox VE connection first. Existing servers can be registered directly under Machines."
+        description="Add a Local, Proxmox, AWS, Azure or Google Cloud connection with machine provisioning enabled. Existing servers can be registered directly under Machines."
         action={<Button asChild size="sm" variant="outline"><Link href="/infrastructure/providers">Add a connection</Link></Button>}
       />
     );
@@ -205,6 +252,32 @@ function ProvisionForm() {
                 <Input id="p-ip" value={ipconfig} onChange={(e) => setIpconfig(e.target.value)} placeholder="ip=dhcp" className="font-mono text-xs" />
                 <p className="text-xs text-muted-foreground">cloud-init ipconfig0, e.g. ip=10.0.0.21/24,gw=10.0.0.1 (one machine).</p>
               </div>
+            </div>
+          )}
+          {connection?.provider_type === "aws" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-1.5"><Label htmlFor="p-ami">AMI ID</Label><Input id="p-ami" value={ami} onChange={(e) => setAmi(e.target.value)} placeholder="ami-..." /></div>
+              <div className="space-y-1.5"><Label htmlFor="p-instance-type">EC2 instance type</Label><Input id="p-instance-type" value={instanceType} onChange={(e) => setInstanceType(e.target.value)} placeholder="t3.medium" /></div>
+              <div className="space-y-1.5"><Label htmlFor="p-subnet">Subnet ID</Label><Input id="p-subnet" value={subnetId} onChange={(e) => setSubnetId(e.target.value)} placeholder="subnet-..." /></div>
+              <div className="space-y-1.5"><Label htmlFor="p-security-groups">Security group IDs</Label><Input id="p-security-groups" value={securityGroups} onChange={(e) => setSecurityGroups(e.target.value)} placeholder="sg-..." /><p className="text-xs text-muted-foreground">Comma separated. Allow SSH from the platform and Kubernetes traffic between nodes.</p></div>
+            </div>
+          )}
+          {connection?.provider_type === "gcp" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-1.5"><Label htmlFor="p-gcp-zone">Zone</Label><Input id="p-gcp-zone" value={gcpZone} onChange={(e) => setGcpZone(e.target.value)} placeholder="us-central1-a" /></div>
+              <div className="space-y-1.5"><Label htmlFor="p-gcp-image">Boot image URL</Label><Input id="p-gcp-image" value={gcpImage} onChange={(e) => setGcpImage(e.target.value)} placeholder="projects/debian-cloud/global/images/family/debian-12" /></div>
+              <div className="space-y-1.5"><Label htmlFor="p-gcp-type">Machine type</Label><Input id="p-gcp-type" value={gcpMachineType} onChange={(e) => setGcpMachineType(e.target.value)} placeholder="e2-medium" /></div>
+              <div className="space-y-1.5"><Label htmlFor="p-gcp-network">VPC network</Label><Input id="p-gcp-network" value={gcpNetwork} onChange={(e) => setGcpNetwork(e.target.value)} placeholder="global/networks/default" /></div>
+              <div className="space-y-1.5"><Label htmlFor="p-gcp-subnet">Subnetwork (optional)</Label><Input id="p-gcp-subnet" value={gcpSubnetwork} onChange={(e) => setGcpSubnetwork(e.target.value)} placeholder="regions/us-central1/subnetworks/default" /></div>
+            </div>
+          )}
+          {connection?.provider_type === "azure" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-1.5"><Label htmlFor="p-azure-group">Resource group</Label><Input id="p-azure-group" value={azureGroup} onChange={(e) => setAzureGroup(e.target.value)} /></div>
+              <div className="space-y-1.5"><Label htmlFor="p-azure-location">Location</Label><Input id="p-azure-location" value={azureLocation} onChange={(e) => setAzureLocation(e.target.value)} placeholder="eastus" /></div>
+              <div className="space-y-1.5"><Label htmlFor="p-azure-size">VM size</Label><Input id="p-azure-size" value={azureSize} onChange={(e) => setAzureSize(e.target.value)} placeholder="Standard_B2s" /></div>
+              <div className="space-y-1.5"><Label htmlFor="p-azure-image">Marketplace image</Label><Input id="p-azure-image" value={azureImage} onChange={(e) => setAzureImage(e.target.value)} placeholder="Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest" /></div>
+              <div className="space-y-1.5 md:col-span-2"><Label htmlFor="p-azure-nic">Existing NIC resource ID</Label><Input id="p-azure-nic" value={azureNic} onChange={(e) => setAzureNic(e.target.value)} placeholder="/subscriptions/.../networkInterfaces/..." /><p className="text-xs text-muted-foreground">The NIC must connect to a subnet and security group that permits SSH from the platform and Kubernetes traffic between nodes.</p></div>
             </div>
           )}
           {problems.length > 0 && (

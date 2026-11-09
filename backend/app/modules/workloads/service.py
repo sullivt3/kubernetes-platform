@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import re
 import uuid
 from collections.abc import Iterator
@@ -106,6 +107,17 @@ class WorkloadService:
             "capabilities": {"scale": kind.scalable, "restart": kind.restartable},
         }
         if key == "deployments":
+            hpas, _ = kclient.list_items(api, f"/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers")
+            policy = next(
+                (
+                    hpa
+                    for hpa in hpas
+                    if ((hpa.get("spec") or {}).get("scaleTargetRef") or {}).get("kind") == "Deployment"
+                    and ((hpa.get("spec") or {}).get("scaleTargetRef") or {}).get("name") == name
+                ),
+                None,
+            )
+            result["scaling_policy"] = summaries.clean_for_view(policy) if policy else None
             result["rollout"] = summaries.deployment_rollout(obj)
             result["history"] = self._deployment_history(api, obj)
         if key in ("deployments", "statefulsets", "daemonsets", "replicasets", "jobs"):
@@ -215,6 +227,114 @@ class WorkloadService:
             replicas={"from": before, "to": replicas},
         )
         return {"replicas": replicas, "previous": before}
+
+    def set_scaling_policy(
+        self,
+        principal: Principal,
+        cluster_id: uuid.UUID,
+        namespace: str,
+        name: str,
+        *,
+        minimum: int,
+        maximum: int,
+        metric: str,
+        target: int,
+        scale_down_stabilization: int,
+    ) -> Obj:
+        """Create/update a native autoscaling/v2 policy for a Deployment."""
+        _check_name(namespace, "namespace")
+        _check_name(name, "name")
+        if not (1 <= minimum <= maximum <= 1000):
+            raise ValidationFailedError("Scaling bounds must satisfy 1 <= minimum <= maximum <= 1000")
+        if metric not in {"cpu", "memory"} or not 1 <= target <= 100:
+            raise ValidationFailedError("Choose CPU or memory utilization with a target from 1% to 100%")
+        if not 0 <= scale_down_stabilization <= 3600:
+            raise ValidationFailedError("Scale-down stabilization must be from 0 to 3600 seconds")
+        cluster, api = self._api(principal, cluster_id)
+        # Ensure the target exists and reject policies that would silently point at a typo.
+        kclient.get_json(api, KINDS["deployments"].item(namespace, name))
+        suffix = hashlib.sha256(f"{namespace}/{name}".encode()).hexdigest()[:8]
+        hpa_name = f"kplatform-{name[:50].rstrip('-')}-{suffix}"
+        resource = "cpu" if metric == "cpu" else "memory"
+        body = {
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {
+                "name": hpa_name,
+                "namespace": namespace,
+                "labels": {"app.kubernetes.io/managed-by": "kubernetes-platform"},
+            },
+            "spec": {
+                "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": name},
+                "minReplicas": minimum,
+                "maxReplicas": maximum,
+                "metrics": [
+                    {
+                        "type": "Resource",
+                        "resource": {"name": resource, "target": {"type": "Utilization", "averageUtilization": target}},
+                    }
+                ],
+                "behavior": {
+                    "scaleDown": {
+                        "stabilizationWindowSeconds": scale_down_stabilization,
+                        "selectPolicy": "Max",
+                        "policies": [{"type": "Pods", "value": max(1, maximum - minimum), "periodSeconds": 60}],
+                    },
+                    "scaleUp": {
+                        "stabilizationWindowSeconds": 0,
+                        "selectPolicy": "Max",
+                        "policies": [{"type": "Pods", "value": max(1, maximum - minimum), "periodSeconds": 60}],
+                    },
+                },
+            },
+        }
+        path = f"/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers/{hpa_name}"
+        try:
+            kclient.get_json(api, path)
+            result = kclient.send_json(api, "PUT", path, body)
+            action = "deployment.scaling-policy.update"
+        except kclient.NotFoundInClusterError:
+            result = kclient.send_json(
+                api, "POST", f"/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers", body
+            )
+            action = "deployment.scaling-policy.create"
+        self._audit(
+            principal,
+            cluster,
+            action,
+            "HorizontalPodAutoscaler",
+            namespace,
+            hpa_name,
+            target=name,
+            metric=metric,
+            target_utilization=target,
+            minimum=minimum,
+            maximum=maximum,
+        )
+        return summaries.clean_for_view(result)
+
+    def delete_scaling_policy(self, principal: Principal, cluster_id: uuid.UUID, namespace: str, name: str) -> Obj:
+        _check_name(namespace, "namespace")
+        _check_name(name, "name")
+        cluster, api = self._api(principal, cluster_id)
+        suffix = hashlib.sha256(f"{namespace}/{name}".encode()).hexdigest()[:8]
+        hpa_name = f"kplatform-{name[:50].rstrip('-')}-{suffix}"
+        kclient.send_json(
+            api,
+            "DELETE",
+            f"/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers/{hpa_name}",
+            {"propagationPolicy": "Background"},
+        )
+        self._audit(
+            principal,
+            cluster,
+            "deployment.scaling-policy.delete",
+            "HorizontalPodAutoscaler",
+            namespace,
+            hpa_name,
+            target=name,
+        )
+        return {"deleted": True}
 
     def restart(self, principal: Principal, cluster_id: uuid.UUID, key: str, namespace: str, name: str) -> Obj:
         kind = get_kind(key)

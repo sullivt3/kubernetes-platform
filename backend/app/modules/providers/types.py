@@ -34,6 +34,8 @@ class ProviderCapability(StrEnum):
     POWER = "power"  # start/stop/reboot
     NETWORK = "network"  # configure networks/addresses
     REGISTER_EXISTING = "register_existing"  # add machines that already exist (by address)
+    LOAD_BALANCER = "load_balancer"  # manage a Kubernetes API load balancer
+    MANAGED_KUBERNETES = "managed_kubernetes"  # create/delete provider-managed Kubernetes clusters
 
 
 class ImplementationStatus(StrEnum):
@@ -133,6 +135,34 @@ class NetworkConfigRequest(BaseModel):
     network: str
     addresses: list[str] = Field(default_factory=list)
     options: dict[str, object] = Field(default_factory=dict)
+
+
+class LoadBalancerRequest(BaseModel):
+    name: str = Field(pattern=r"^[a-zA-Z0-9-]{1,32}$")
+    vpc_id: str
+    subnet_ids: list[str] = Field(min_length=1, max_length=16)
+    targets: list[str] = Field(min_length=1)
+    scheme: str = "internal"
+
+
+class LoadBalancerResult(BaseModel):
+    external_id: str
+    endpoint: str
+
+
+class ManagedClusterRequest(BaseModel):
+    name: str
+    version: str
+    options: dict[str, object] = Field(default_factory=dict)
+    node_pools: list[dict[str, object]] = Field(default_factory=list)
+
+
+class ManagedClusterResult(BaseModel):
+    external_id: str
+    endpoint: str
+    certificate_authority_data: str
+    client_certificate_data: str | None = None
+    client_key_data: str | None = None
 
 
 class ConnectionCheckResult(BaseModel):

@@ -35,23 +35,41 @@ pkg_version="$(pkg_version_for "${K8S_VERSION:-}")"
 [ -n "$pkg_version" ] || fail "Kubernetes ${K8S_VERSION:-$K8S_MINOR} is not available from ${repo}"
 upstream="${pkg_version%%-*}"
 
-if [ "${MODE:-install}" = "resolve" ]; then
+mode="${MODE:-install}"
+if [ "$mode" = "resolve" ]; then
   echo "RESOLVED_VERSION=${upstream}"
   exit 0
 fi
 
-log "Installing kubeadm, kubelet and kubectl ${upstream}"
+case "$mode" in
+  install) components=(kubeadm kubelet kubectl) ;;
+  upgrade-kubeadm) components=(kubeadm) ;;
+  upgrade-kubelet) components=(kubelet kubectl) ;;
+  *) fail "unknown package mode '$mode'" ;;
+esac
+
+log "Installing ${components[*]} ${upstream}"
 if [ "$OS_FAMILY" = debian ]; then
-  apt-mark unhold kubelet kubeadm kubectl >/dev/null 2>&1 || true
-  apt_install --allow-downgrades --allow-change-held-packages \
-    "kubelet=${pkg_version}" "kubeadm=${pkg_version}" "kubectl=${pkg_version}" cri-tools
-  apt-mark hold kubelet kubeadm kubectl >/dev/null
+  apt-mark unhold "${components[@]}" >/dev/null 2>&1 || true
+  packages=()
+  for component in "${components[@]}"; do packages+=("${component}=${pkg_version}"); done
+  if [ "$mode" = "install" ]; then packages+=(cri-tools); fi
+  apt_install --allow-downgrades --allow-change-held-packages "${packages[@]}"
+  apt-mark hold "${components[@]}" >/dev/null
 else
-  dnf_install --disableexcludes=kubernetes \
-    "kubelet-${pkg_version}" "kubeadm-${pkg_version}" "kubectl-${pkg_version}" cri-tools
+  packages=()
+  for component in "${components[@]}"; do packages+=("${component}-${pkg_version}"); done
+  if [ "$mode" = "install" ]; then packages+=(cri-tools); fi
+  dnf install -y -q --disableexcludes=kubernetes "${packages[@]}"
 fi
 systemctl enable kubelet >/dev/null 2>&1
 
-installed="$(kubeadm version -o short)"
-[ "$installed" = "v${upstream}" ] || fail "expected kubeadm v${upstream}, found ${installed}"
-log "Installed Kubernetes components ${installed}"
+if [[ " ${components[*]} " == *" kubeadm "* ]]; then
+  installed="$(kubeadm version -o short)"
+  [ "$installed" = "v${upstream}" ] || fail "expected kubeadm v${upstream}, found ${installed}"
+fi
+if [[ " ${components[*]} " == *" kubelet "* ]]; then
+  installed="$(kubelet --version | awk '{print $2}')"
+  [ "$installed" = "v${upstream}" ] || fail "expected kubelet v${upstream}, found ${installed}"
+fi
+log "Installed Kubernetes components ${upstream}"

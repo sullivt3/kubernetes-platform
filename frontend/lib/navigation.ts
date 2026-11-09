@@ -79,7 +79,7 @@ export const NAVIGATION: NavSection[] = [
       { title: "Apply YAML", href: "/kubernetes/apply", description: "Validate, diff and apply manifests (server-side dry run).", keywords: ["yaml", "manifest", "kubectl apply", "editor"] },
       { title: "Distributions", href: "/kubernetes/distributions", description: "Supported Kubernetes distributions and infrastructure compatibility.", keywords: ["kubeadm", "k3s", "rke2", "kind", "eks", "aks", "gke"] },
       { title: "Cluster settings", href: "/kubernetes/settings", description: "Connection settings and lifecycle actions for the selected cluster.", keywords: ["connection", "unregister"] },
-      { title: "Upgrades", href: "/kubernetes/upgrades", description: "Plan and execute Kubernetes version upgrades.", phase: 5 },
+      { title: "Upgrades", href: "/kubernetes/upgrades", description: "Upgrade platform-installed kubeadm clusters one version at a time." },
       { title: "Nodes", href: "/kubernetes/nodes", description: "Live node status, capacity, utilization, conditions and events." },
       { title: "Namespaces", href: "/kubernetes/namespaces", description: "Namespaces and the health of their pods." },
       { title: "Topology", href: "/kubernetes/topology", description: "Where pods run, by node." },

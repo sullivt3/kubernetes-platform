@@ -34,6 +34,7 @@ RESOURCES = {
         ("daemonsets", "DaemonSet", True),
     ],
     "batch/v1": [("jobs", "Job", True), ("cronjobs", "CronJob", True)],
+    "autoscaling/v2": [("horizontalpodautoscalers", "HorizontalPodAutoscaler", True)],
 }
 
 

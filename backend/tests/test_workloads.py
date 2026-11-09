@@ -190,6 +190,35 @@ def audit_actions(client: TestClient) -> list[str]:
 
 
 class TestWorkloadApi:
+    def test_deployment_scaling_policy(self, client: TestClient, store: FakeStore, cluster_id: str) -> None:
+        apply(client, cluster_id, json.dumps(DEPLOYMENT))
+        response = client.put(
+            f"{API}/clusters/{cluster_id}/deployments/default/web/scaling-policy",
+            json={
+                "minimum": 2,
+                "maximum": 8,
+                "metric": "cpu",
+                "target_utilization": 65,
+                "scale_down_stabilization_seconds": 420,
+            },
+        )
+        assert response.status_code == 200, response.text
+        hpa = next(value for key, value in store.objects.items() if "/horizontalpodautoscalers/" in key)
+        assert hpa["apiVersion"] == "autoscaling/v2"
+        assert hpa["spec"]["minReplicas"] == 2 and hpa["spec"]["maxReplicas"] == 8
+        assert hpa["spec"]["metrics"][0]["resource"]["target"]["averageUtilization"] == 65
+        assert hpa["spec"]["behavior"]["scaleDown"]["stabilizationWindowSeconds"] == 420
+        assert "deployment.scaling-policy.create" in audit_actions(client)
+
+        detail = client.get(f"{API}/clusters/{cluster_id}/resources/deployments/default/web")
+        assert (
+            detail.status_code == 200 and detail.json()["scaling_policy"]["metadata"]["name"] == hpa["metadata"]["name"]
+        )
+
+        removed = client.delete(f"{API}/clusters/{cluster_id}/deployments/default/web/scaling-policy")
+        assert removed.status_code == 200 and removed.json()["deleted"]
+        assert "deployment.scaling-policy.delete" in audit_actions(client)
+
     def test_apply_dry_run_then_apply(self, client: TestClient, store: FakeStore, cluster_id: str) -> None:
         manifest = json.dumps(DEPLOYMENT)
         plan = apply(client, cluster_id, manifest, dry_run=True)

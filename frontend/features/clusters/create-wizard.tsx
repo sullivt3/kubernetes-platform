@@ -45,7 +45,7 @@ interface Size {
   disk: number;
 }
 const DEFAULT_SIZE: Size = { cpu: 2, memory: 2048, disk: 20 };
-type LbMode = "none" | "kube-vip" | "external";
+type LbMode = "none" | "kube-vip" | "external" | "provider";
 
 interface KeyValue {
   key: string;
@@ -74,6 +74,20 @@ export interface WizardState {
   cpSize: Size;
   lbMode: LbMode;
   cpEndpoint: string;
+  providerLbVpc: string;
+  providerLbSubnets: string;
+  eksClusterRoleArn: string;
+  eksNodeRoleArn: string;
+  eksSubnets: string;
+  eksInstanceTypes: string;
+  aksResourceGroup: string;
+  aksLocation: string;
+  aksSubnet: string;
+  aksVmSize: string;
+  gkeLocation: string;
+  gkeNetwork: string;
+  gkeSubnetwork: string;
+  gkeMachineType: string;
   connectionId: string;
   credentialId: string;
   pools: PoolState[];
@@ -99,6 +113,20 @@ export const INITIAL: WizardState = {
   cpSize: DEFAULT_SIZE,
   lbMode: "none",
   cpEndpoint: "",
+  providerLbVpc: "",
+  providerLbSubnets: "",
+  eksClusterRoleArn: "",
+  eksNodeRoleArn: "",
+  eksSubnets: "",
+  eksInstanceTypes: "t3.medium",
+  aksResourceGroup: "",
+  aksLocation: "",
+  aksSubnet: "",
+  aksVmSize: "Standard_D2s_v5",
+  gkeLocation: "",
+  gkeNetwork: "",
+  gkeSubnetwork: "",
+  gkeMachineType: "e2-standard-2",
   connectionId: "",
   credentialId: "",
   pools: [{ name: "workers", machines: [], newCount: 0, size: DEFAULT_SIZE, labels: [], taints: [] }],
@@ -116,38 +144,61 @@ function newMachines(s: WizardState): number {
 }
 
 export function buildSpec(s: WizardState): ClusterSpecInput {
-  const provisioning = newMachines(s) > 0;
+  const managed = ["eks", "aks", "gke"].includes(s.distribution);
+  const provisioning = !managed && newMachines(s) > 0;
   // Only explicit choices are sent: the backend fills in defaults (e.g. for container-based machines).
   const options: Record<string, unknown> = {};
   if (s.allowSwap) options.allow_swap = true;
   if (s.cpWorkloads !== "auto") options.control_plane_workloads = s.cpWorkloads === "yes";
   if (s.conntrackZero) options.kube_proxy_conntrack_max_per_core = 0;
   if (s.resolvConf.trim()) options.kubelet_resolv_conf = s.resolvConf.trim();
+  if (s.lbMode === "provider") {
+    options.provider_lb_vpc_id = s.providerLbVpc.trim();
+    options.provider_lb_subnet_ids = s.providerLbSubnets.split(",").map((v) => v.trim()).filter(Boolean);
+  }
+  if (s.distribution === "eks") {
+    options.managed_cluster_role_arn = s.eksClusterRoleArn.trim();
+    options.managed_node_role_arn = s.eksNodeRoleArn.trim();
+    options.managed_subnet_ids = s.eksSubnets.split(",").map((v) => v.trim()).filter(Boolean);
+    options.managed_node_instance_types = s.eksInstanceTypes.split(",").map((v) => v.trim()).filter(Boolean);
+  }
+  if (s.distribution === "aks") {
+    options.managed_resource_group = s.aksResourceGroup.trim();
+    options.managed_location = s.aksLocation.trim();
+    options.managed_subnet_id = s.aksSubnet.trim();
+    options.managed_node_vm_size = s.aksVmSize.trim();
+  }
+  if (s.distribution === "gke") {
+    options.managed_location = s.gkeLocation.trim();
+    options.managed_network = s.gkeNetwork.trim();
+    options.managed_subnetwork = s.gkeSubnetwork.trim();
+    options.managed_node_machine_type = s.gkeMachineType.trim();
+  }
   const preflight = s.ignorePreflight.split(",").map((v) => v.trim()).filter(Boolean);
   if (preflight.length) options.ignore_preflight_errors = preflight;
   return {
     name: s.name,
     distribution: s.distribution,
     provider_type: s.provider,
-    provider_connection_id: provisioning ? s.connectionId || null : null,
+    provider_connection_id: (provisioning || s.lbMode === "provider" || managed) ? s.connectionId || null : null,
     machine_credential_id: provisioning ? s.credentialId || null : null,
     kubernetes_version: s.version,
     container_runtime: "containerd",
     network: { pod_cidr: s.podCidr, service_cidr: s.serviceCidr, dns_domain: s.dnsDomain, cni: s.cni },
     control_plane: {
       name: "control-plane",
-      count: s.cpMachines.length + s.cpNew,
+      count: managed ? 0 : s.cpMachines.length + s.cpNew,
       existing_machine_ids: s.cpMachines,
       machine_template: s.cpNew > 0 ? template(s.cpSize) : null,
-      endpoint: s.lbMode === "none" ? null : s.cpEndpoint.trim(),
-      load_balancer: s.lbMode,
+      endpoint: managed || s.lbMode === "none" ? null : s.cpEndpoint.trim(),
+      load_balancer: managed ? "none" : s.lbMode,
     },
     worker_pools: s.pools
       .filter((p) => p.machines.length + p.newCount > 0)
       .map((p) => ({
         name: p.name,
-        count: p.machines.length + p.newCount,
-        existing_machine_ids: p.machines,
+        count: managed ? p.newCount : p.machines.length + p.newCount,
+        existing_machine_ids: managed ? [] : p.machines,
         machine_template: p.newCount > 0 ? template(p.size) : null,
         labels: Object.fromEntries(p.labels.filter((l) => l.key).map((l) => [l.key, l.value])),
         taints: p.taints.filter((t) => t.key),
@@ -335,8 +386,9 @@ const STEPS = [
 
 function stepErrors(step: number, s: WizardState, distribution?: DistributionDescriptor): string[] {
   const errors: string[] = [];
+  const managed = distribution?.kind === "managed";
   if (step === 0 && !s.provider) errors.push("Choose an infrastructure provider");
-  if ((step === 3 || step === 4) && newMachines(s) > 0 && (!s.connectionId || !s.credentialId)) {
+  if ((step === 3 || step === 4) && !managed && newMachines(s) > 0 && (!s.connectionId || !s.credentialId)) {
     errors.push("New machines need a provider connection and an SSH key (step 1, Infrastructure)");
   }
   if (step === 1 && !s.distribution) errors.push("Choose a Kubernetes distribution");
@@ -348,15 +400,23 @@ function stepErrors(step: number, s: WizardState, distribution?: DistributionDes
     if (!s.cni || (distribution && !distribution.supported_cnis.includes(s.cni))) errors.push("Choose a pod network");
   }
   if (step === 3) {
+    if (managed) {
+      if (!s.connectionId) errors.push("Choose a cloud provider connection in step 1");
+      return errors;
+    }
     const n = s.cpMachines.length + s.cpNew;
     if (n === 0) errors.push("Select or provision at least one control-plane machine");
     if (n > 1 && n % 2 === 0) errors.push("Highly available control planes need an odd number of machines (3 or 5)");
     if (n > 1 && s.lbMode === "none") errors.push("Several control planes need a shared API endpoint: kube-vip or a load balancer");
     if (s.lbMode === "kube-vip" && !IPV4.test(s.cpEndpoint.trim())) errors.push("kube-vip needs a free IPv4 address on the machines' network");
     if (s.lbMode === "external" && !s.cpEndpoint.trim()) errors.push("Provide the load balancer address for the API server");
+    if (s.lbMode === "provider" && (!s.connectionId || !s.providerLbVpc.trim() || !s.providerLbSubnets.trim())) {
+      errors.push("AWS provider load balancing needs a connection, VPC ID and subnet IDs");
+    }
     if (s.cpNew > 0 && s.cpSize.cpu < 2) errors.push("Control-plane machines need at least 2 CPUs");
   }
   if (step === 4) {
+    if (managed && s.pools.every((pool) => pool.newCount < 1)) errors.push("Configure at least one managed worker node");
     const names = s.pools.map((p) => p.name);
     if (new Set(names).size !== names.length) errors.push("Node pool names must be unique");
     for (const p of s.pools) {
@@ -364,6 +424,18 @@ function stepErrors(step: number, s: WizardState, distribution?: DistributionDes
       for (const l of p.labels) if (l.key && !LABEL_KEY.test(l.key)) errors.push(`Invalid label key "${l.key}"`);
       for (const t of p.taints) if (t.key && !LABEL_KEY.test(t.key)) errors.push(`Invalid taint key "${t.key}"`);
     }
+  }
+  if (step === 5 && s.distribution === "eks") {
+    if (!s.eksClusterRoleArn.trim()) errors.push("EKS needs a cluster IAM role ARN");
+    if (!s.eksNodeRoleArn.trim()) errors.push("EKS needs a node IAM role ARN");
+    if (s.eksSubnets.split(",").filter((v) => v.trim()).length < 2) errors.push("EKS needs at least two subnet IDs");
+    if (!s.eksInstanceTypes.trim()) errors.push("EKS needs at least one EC2 instance type");
+  }
+  if (step === 5 && s.distribution === "aks" && (!s.aksResourceGroup.trim() || !s.aksLocation.trim() || !s.aksSubnet.trim())) {
+    errors.push("AKS needs a resource group, Azure location and node subnet resource ID");
+  }
+  if (step === 5 && s.distribution === "gke" && (!s.gkeLocation.trim() || !s.gkeNetwork.trim() || !s.gkeSubnetwork.trim())) {
+    errors.push("GKE needs a location, VPC network and subnetwork");
   }
   return errors;
 }
@@ -525,16 +597,18 @@ export function CreateClusterWizard() {
                       badge={<ImplementationBadge status={p.implementation_status} phase={p.planned_phase} />}
                       selected={state.provider === p.type}
                       disabled={p.implementation_status === "planned"}
-                      onSelect={() => update({ provider: p.type, distribution: "", connectionId: "" })}
+                      onSelect={() => update({ provider: p.type, distribution: "", connectionId: "", lbMode: "none" })}
                     />
                   ))}
                 </div>
                 {providers.data?.find((p) => p.type === state.provider)?.capabilities.includes("provision") && (
                   <div className="space-y-3 rounded-lg border border-border p-4">
                     <div>
-                      <p className="text-sm font-medium">New machines (optional)</p>
+                      <p className="text-sm font-medium">{distribution?.kind === "managed" ? "Cloud account connection" : "New machines (optional)"}</p>
                       <p className="text-xs text-muted-foreground">
-                        Lets the platform create machines for the cluster. Registered machines can be used either way.
+                        {distribution?.kind === "managed"
+                          ? "The selected cloud account creates and manages the Kubernetes control plane."
+                          : "Lets the platform create machines for the cluster. Registered machines can be used either way."}
                       </p>
                     </div>
                     {provisionable.length === 0 ? (
@@ -550,12 +624,12 @@ export function CreateClusterWizard() {
                             <SelectContent>{provisionable.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                           </Select>
                         </Field>
-                        <Field label="SSH key installed on new machines">
+                        {distribution?.kind !== "managed" && <Field label="SSH key installed on new machines">
                           <Select value={state.credentialId} onValueChange={(v) => update({ credentialId: v })}>
                             <SelectTrigger className="w-full"><SelectValue placeholder="Choose a key" /></SelectTrigger>
                             <SelectContent>{sshKeys.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                           </Select>
-                        </Field>
+                        </Field>}
                       </div>
                     )}
                   </div>
@@ -662,6 +736,11 @@ export function CreateClusterWizard() {
                     control planes can also be added later.
                   </p>
                 </div>
+                {distribution?.kind === "managed" ? (
+                  <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-4 text-sm text-muted-foreground">
+                    The cloud provider operates the Kubernetes control plane. Configure the initial worker node groups in the next step.
+                  </div>
+                ) : <>
                 <MachinePicker
                   machines={machineList}
                   selected={state.cpMachines}
@@ -682,6 +761,7 @@ export function CreateClusterWizard() {
                       <SelectItem value="none">The first control plane (single control plane)</SelectItem>
                       <SelectItem value="kube-vip">Virtual IP managed by the cluster (kube-vip)</SelectItem>
                       <SelectItem value="external">An existing load balancer or DNS name</SelectItem>
+                      {state.provider === "aws" && <SelectItem value="provider">AWS Network Load Balancer</SelectItem>}
                     </SelectContent>
                   </Select>
                 </Field>
@@ -704,6 +784,21 @@ export function CreateClusterWizard() {
                     <Input value={state.cpEndpoint} onChange={(e) => update({ cpEndpoint: e.target.value })} placeholder="k8s-api.example.internal:6443" className="font-mono" />
                   </Field>
                 )}
+                {state.lbMode === "provider" && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field label="AWS VPC ID"><Input value={state.providerLbVpc} onChange={(e) => update({ providerLbVpc: e.target.value })} placeholder="vpc-0123456789abcdef0" /></Field>
+                    <Field label="Subnet IDs" hint="Comma-separated subnets in the VPC; use at least two Availability Zones for high availability.">
+                      <Input value={state.providerLbSubnets} onChange={(e) => update({ providerLbSubnets: e.target.value })} placeholder="subnet-..., subnet-..." />
+                    </Field>
+                    <Field label="AWS provider connection">
+                      <Select value={state.connectionId} onValueChange={(v) => update({ connectionId: v })}>
+                        <SelectTrigger className="w-full"><SelectValue placeholder="Choose a connection" /></SelectTrigger>
+                        <SelectContent>{(connections.data ?? []).filter((c) => c.provider_type === "aws").map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </Field>
+                  </div>
+                )}
+                </>}
               </section>
             )}
 
@@ -713,7 +808,9 @@ export function CreateClusterWizard() {
                   <div>
                     <h2 className="font-semibold">Worker nodes</h2>
                     <p className="text-sm text-muted-foreground">
-                      Group workers into pools with shared labels and taints. With no workers, the control plane runs workloads.
+                      {distribution?.kind === "managed"
+                        ? "Configure provider-managed node groups and their initial size."
+                        : "Group workers into pools with shared labels and taints. With no workers, the control plane runs workloads."}
                     </p>
                   </div>
                   <Button
@@ -750,26 +847,26 @@ export function CreateClusterWizard() {
                           </Button>
                         )}
                       </div>
-                      <MachinePicker
+                      {distribution?.kind !== "managed" && <MachinePicker
                         machines={machineList}
                         selected={pool.machines}
                         onChange={(ids) => setPool({ machines: ids })}
                         takenElsewhere={new Set([...cpIds, ...otherPools])}
-                      />
+                      />}
                       <NewMachines
-                        enabled={canProvision}
+                        enabled={distribution?.kind === "managed" || canProvision}
                         count={pool.newCount}
                         size={pool.size}
                         onChange={({ count, size }) => setPool({ ...(count !== undefined && { newCount: count }), ...(size && { size }) })}
                       />
-                      <div className="grid gap-4 md:grid-cols-2">
+                      {distribution?.kind !== "managed" && <div className="grid gap-4 md:grid-cols-2">
                         <Field label="Labels">
                           <KeyValueEditor items={pool.labels} onChange={(labels) => setPool({ labels })} placeholder={["key", "value"]} />
                         </Field>
                         <Field label="Taints">
                           <TaintEditor items={pool.taints} onChange={(taints) => setPool({ taints })} />
                         </Field>
-                      </div>
+                      </div>}
                     </div>
                   );
                 })}
@@ -790,6 +887,36 @@ export function CreateClusterWizard() {
                 </div>
                 <div className="space-y-4">
                   <h2 className="font-semibold">Advanced options</h2>
+                  {state.distribution === "eks" && <div className="space-y-3 rounded-lg border border-border p-4">
+                    <h3 className="font-medium">Amazon EKS settings</h3>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <Field label="Cluster IAM role ARN"><Input value={state.eksClusterRoleArn} onChange={(e) => update({ eksClusterRoleArn: e.target.value })} placeholder="arn:aws:iam::123456789012:role/EKSClusterRole" /></Field>
+                      <Field label="Node group IAM role ARN"><Input value={state.eksNodeRoleArn} onChange={(e) => update({ eksNodeRoleArn: e.target.value })} placeholder="arn:aws:iam::123456789012:role/EKSNodeRole" /></Field>
+                      <Field label="Subnet IDs" hint="Use subnets in at least two Availability Zones."><Input value={state.eksSubnets} onChange={(e) => update({ eksSubnets: e.target.value })} placeholder="subnet-..., subnet-..." /></Field>
+                      <Field label="EC2 instance types" hint="Comma-separated, for example t3.medium."><Input value={state.eksInstanceTypes} onChange={(e) => update({ eksInstanceTypes: e.target.value })} placeholder="t3.medium" /></Field>
+                    </div>
+                    <p className="text-xs text-muted-foreground">The AWS identity needs EKS cluster and node group permissions. IAM roles and subnet networking must already exist in the selected account.</p>
+                  </div>}
+                  {state.distribution === "aks" && <div className="space-y-3 rounded-lg border border-border p-4">
+                    <h3 className="font-medium">Azure AKS settings</h3>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <Field label="Resource group"><Input value={state.aksResourceGroup} onChange={(e) => update({ aksResourceGroup: e.target.value })} /></Field>
+                      <Field label="Azure location"><Input value={state.aksLocation} onChange={(e) => update({ aksLocation: e.target.value })} placeholder="eastus" /></Field>
+                      <Field label="Node subnet resource ID"><Input value={state.aksSubnet} onChange={(e) => update({ aksSubnet: e.target.value })} placeholder="/subscriptions/.../subnets/k8s" /></Field>
+                      <Field label="Node VM size"><Input value={state.aksVmSize} onChange={(e) => update({ aksVmSize: e.target.value })} placeholder="Standard_D2s_v5" /></Field>
+                    </div>
+                    <p className="text-xs text-muted-foreground">The service principal needs AKS and network permissions. The resource group and subnet must already exist.</p>
+                  </div>}
+                  {state.distribution === "gke" && <div className="space-y-3 rounded-lg border border-border p-4">
+                    <h3 className="font-medium">Google GKE settings</h3>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <Field label="Location"><Input value={state.gkeLocation} onChange={(e) => update({ gkeLocation: e.target.value })} placeholder="us-central1" /></Field>
+                      <Field label="VPC network"><Input value={state.gkeNetwork} onChange={(e) => update({ gkeNetwork: e.target.value })} placeholder="default" /></Field>
+                      <Field label="Subnetwork"><Input value={state.gkeSubnetwork} onChange={(e) => update({ gkeSubnetwork: e.target.value })} placeholder="default" /></Field>
+                      <Field label="Node machine type"><Input value={state.gkeMachineType} onChange={(e) => update({ gkeMachineType: e.target.value })} placeholder="e2-standard-2" /></Field>
+                    </div>
+                    <p className="text-xs text-muted-foreground">The service account needs Kubernetes Engine cluster and node pool permissions, and the network and subnet must already exist.</p>
+                  </div>}
                   <label className="flex items-start gap-3 text-sm">
                     <input type="checkbox" className="mt-1" checked={state.allowSwap} onChange={(e) => update({ allowSwap: e.target.checked })} />
                     <span>

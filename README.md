@@ -8,12 +8,13 @@ installation, cluster administration, workload management and monitoring from a 
   ones: as Docker containers on this computer (Local provider) or as VMs on Proxmox VE (preview). The platform
   pins host keys and inspects OS, hardware and prerequisites, and can start, stop, reboot and destroy the machines
   it provisioned.
-* **Cloud accounts (preview):** validate AWS, Azure and Google Cloud credentials and inventory their instances
-  (read-only).
+* **Cloud accounts (preview):** validate AWS, Azure and Google Cloud credentials and inventory their instances.
+  All three can provision machines from explicit image and network settings; these machines can be used by kubeadm.
+  The same connections can provision EKS, AKS and GKE clusters with provider-managed node pools.
 * **Clusters:** a wizard installs Kubernetes with kubeadm (containerd, Calico or Flannel, worker pools with labels
   and taints) on registered machines and/or machines it provisions for the cluster. Highly available control planes
-  get a kube-vip virtual IP (or use an external load balancer). Every install ends with a smoke test (pod scheduling,
-  image pull, cluster DNS). The kubeconfig is stored encrypted.
+  can use kube-vip, an existing endpoint, or an AWS Network Load Balancer managed by the platform. The platform can
+  also create and delete EKS, AKS and GKE clusters with managed node pools. kubeconfigs and provider credentials are stored encrypted.
 * **Cluster lifecycle:** add nodes (registered or newly provisioned, workers or control planes) and remove them
   (drain, reset, leave etcd, optionally destroy the machine); delete clusters with or without their machines.
 * **Node management:** cordon, uncordon, drain (PodDisruptionBudget-aware), labels, taints and kubelet/containerd
@@ -21,10 +22,10 @@ installation, cluster administration, workload management and monitoring from a 
 * **Visibility:** import existing clusters by kubeconfig and see live health, nodes, namespaces, pods, events,
   topology and CPU/memory utilization (metrics-server can be installed from the UI). Health is observed every minute.
 * **Workloads:** browse and manage pods, deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs, CronJobs,
-  Services, ConfigMaps and Secrets. Scale, restart, roll back, trigger and suspend CronJobs, edit YAML with a
+  Services, ConfigMaps and Secrets. Configure CPU or memory based Deployment autoscaling policies; scale, restart, roll back, trigger and suspend CronJobs, edit YAML with a
   server-side dry run and diff before applying, follow pod logs live and open an audited shell in a container.
   A guided form builds new deployments (with an optional Service).
-* **Not implemented yet:** cloud provisioning and managed Kubernetes, vSphere, other distributions,
+* **Not implemented yet:** vSphere, other self-managed distributions,
   networking/storage management. "Preview" providers are implemented against the vendor's documented API and
   tested with simulators, but not yet verified against a live system. The UI and API say
   so explicitly rather than simulating them. See [documentation/architecture.md](documentation/architecture.md).
@@ -126,7 +127,7 @@ npm run build
 | 4 | kubeadm installation engine, cluster create/delete, provisioning during install, kube-vip HA, node add/remove, node management, post-install smoke test ✅ |
 | 1 | Dashboard and cluster connectivity: import, live health/nodes/namespaces/pods/events, utilization ✅ |
 | 2 | Kubernetes workload management: resources, YAML apply with dry-run diff, logs, terminal ✅ |
-| 5 | Cluster upgrades, scaling policies, cloud provisioning and load balancers, managed Kubernetes (EKS/AKS/GKE) |
+| 5 | kubeadm upgrades, AWS/Azure/GCP machine provisioning, Deployment autoscaling policies, AWS provider load balancers, and managed EKS/AKS/GKE provisioning are implemented |
 | 6 | Networking and storage |
 | 7 | Enterprise administration (OIDC, RBAC, organizations, backup) |
 | 8 | Advanced operations (Prometheus, Grafana, Loki, Helm, GitOps, CRDs) |

@@ -44,6 +44,7 @@ export interface ResourceDetail {
   yaml: string;
   events: KubeEvent[];
   capabilities: { scale: boolean; restart: boolean };
+  scaling_policy?: Record<string, unknown> | null;
   rollout?: Rollout;
   history?: Revision[];
   pods?: KubePod[];
@@ -105,6 +106,24 @@ export function useScale(clusterId: string, kind: ResourceKind) {
   return useMutation({
     mutationFn: ({ namespace, name, replicas }: { namespace: string; name: string; replicas: number }) =>
       api.post<{ replicas: number; previous: number }>(`${base(clusterId)}/resources/${kind}/${namespace}/${name}/scale`, { replicas }),
+    onSuccess: invalidate,
+  });
+}
+
+export function useSetScalingPolicy(clusterId: string) {
+  const invalidate = useInvalidate(clusterId);
+  return useMutation({
+    mutationFn: ({ namespace, name, ...body }: { namespace: string; name: string; minimum: number; maximum: number; metric: "cpu" | "memory"; target_utilization: number; scale_down_stabilization_seconds: number }) =>
+      api.put<Record<string, unknown>>(`${base(clusterId)}/deployments/${namespace}/${name}/scaling-policy`, body),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteScalingPolicy(clusterId: string) {
+  const invalidate = useInvalidate(clusterId);
+  return useMutation({
+    mutationFn: ({ namespace, name }: { namespace: string; name: string }) =>
+      apiRequest<void>(`${base(clusterId)}/deployments/${namespace}/${name}/scaling-policy`, { method: "DELETE" }),
     onSuccess: invalidate,
   });
 }

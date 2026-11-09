@@ -64,6 +64,7 @@ class ConnectionTarget:
     kubeconfig: ResolvedKubeconfig
     server_override: str | None = None
     tls_server_name: str | None = None
+    token_provider: Callable[[], str] | None = None
 
     @property
     def server(self) -> str:
@@ -151,8 +152,9 @@ class KubeClient:
         if params:
             url += ("&" if "?" in url else "?") + urlencode({k: v for k, v in params.items() if v is not None})
         headers = {"Accept": "application/json", "User-Agent": "kubernetes-platform/0.1"}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
+        token = self.target.token_provider() if self.target.token_provider else self._token
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         payload = None
         if body is not None:
             headers["Content-Type"] = content_type
@@ -187,8 +189,9 @@ class KubeClient:
         if params:
             url += "?" + urlencode({k: v for k, v in params.items() if v is not None})
         headers = {"Accept": "*/*", "User-Agent": "kubernetes-platform/0.1"}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
+        token = self.target.token_provider() if self.target.token_provider else self._token
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         try:
             response = self._pool.request(
                 "GET",

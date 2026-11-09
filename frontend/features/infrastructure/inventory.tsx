@@ -27,14 +27,14 @@ export function CloudResourcesPage() {
       <PageHeader
         eyebrow="Infrastructure"
         title="Cloud resources"
-        description="Instances in your AWS, Azure and Google Cloud accounts (read-only)."
+        description="Inventory AWS, Azure and Google Cloud instances; provision machines through AWS and Google Cloud connections."
       />
       <div className="flex gap-3 rounded-lg border border-sky-500/20 bg-sky-500/5 p-4 text-sm">
         <Info className="mt-0.5 size-4 shrink-0 text-sky-400" />
         <p className="text-muted-foreground">
-          Cloud support is at the foundation stage: the platform validates credentials and inventories instances.
-          Creating, powering and deleting cloud machines, and managed Kubernetes (EKS, AKS, GKE), are planned for
-          Phase 5. Cloud providers are in preview until verified against live accounts.
+          Cloud providers are in preview until verified against live accounts. AWS and Google Cloud support
+          creating and deleting platform-owned machines with explicit image and network settings. Existing
+          discovered instances remain read-only. Managed Kubernetes (EKS, AKS, GKE) remains planned.
         </p>
       </div>
       <ProviderInventory

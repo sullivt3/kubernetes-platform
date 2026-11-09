@@ -56,6 +56,9 @@ class ClusterPlanInput(BaseModel):
     anchor: PlannedNode | None = None
     # Delete/remove: also destroy platform-provisioned machines at their provider.
     destroy_machines: bool = False
+    # Upgrade: exact target patch version (for example ``1.34.2``).
+    target_version: str | None = None
+    allow_emptydir_data: bool = False
 
     @property
     def control_planes(self) -> list[PlannedNode]:

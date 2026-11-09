@@ -344,8 +344,8 @@ class ProviderConnectionService:
         self._require(cls, ProviderCapability.DISCOVER)
         if cls.category.value == "cloud":
             raise CapabilityNotSupportedError(
-                "Cloud instances are inventoried read-only until cloud provisioning (Phase 5); "
-                "register them as SSH machines instead"
+                "Discovered cloud instances are read-only and cannot be imported through this flow; "
+                "platform-provisioned machines are registered automatically"
             )
         self._check_new_name(principal, name)
         if not HOST_RE.match(host):

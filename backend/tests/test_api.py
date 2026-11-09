@@ -100,7 +100,7 @@ class TestOperations:
         assert all(s["status"] == "succeeded" for s in op["steps"])
         assert op["result"]["database"]["schema_revision"]
         assert op["result"]["providers"] == {"available": 2, "preview": 4, "planned": 1}
-        assert op["result"]["distributions"] == {"available": 1, "planned": 7}
+        assert op["result"]["distributions"] == {"available": 4, "planned": 4}
 
         listed = client.get(f"{API}/operations").json()
         assert listed["total"] == 1 and listed["items"][0]["id"] == op["id"]

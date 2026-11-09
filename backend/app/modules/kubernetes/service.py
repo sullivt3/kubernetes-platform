@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -27,8 +29,10 @@ from app.modules.cluster_lifecycle.distributions.types import DistributionType
 from app.modules.cluster_lifecycle.models import Cluster, ClusterLifecycleState, ClusterOrigin
 from app.modules.credentials.models import Credential, CredentialKind
 from app.modules.credentials.service import CredentialService
+from app.modules.infrastructure.models import ProviderConnection
 from app.modules.kubernetes import client as kclient
 from app.modules.kubernetes import kubeconfig, reads, views
+from app.modules.providers.registry import provider_registry
 from app.orchestration.models import Operation
 from app.orchestration.service import OperationService
 
@@ -58,6 +62,49 @@ def validate_connection_settings(server_override: str | None, tls_server_name: s
         raise ValidationFailedError("TLS server name must be a hostname or IP address")
 
 
+def _managed_token_provider(session: Session, secret_store: SecretStore, cluster: Cluster) -> Any:
+    """Build an in-memory token refresher for a provider-managed cluster API."""
+    managed = ((cluster.spec or {}).get("options") or {}).get("managed") or {}
+    if cluster.distribution not in {DistributionType.EKS, DistributionType.GKE} or not cluster.provider_connection_id:
+        return None
+    connection = session.get(ProviderConnection, cluster.provider_connection_id)
+    if connection is None:
+        raise InvalidStateError("The managed cluster's provider connection was deleted")
+    credential: bytes | None = None
+    if connection.credential_id:
+        credential_record = session.get(Credential, connection.credential_id)
+        if credential_record is None:
+            raise InvalidStateError("The managed cluster's provider credential was deleted")
+        credential = CredentialService(session, secret_store).reveal(cluster.organization_id, credential_record.id)
+    provider_type, config = connection.provider_type, dict(connection.config or {})
+    cluster_name = str(managed.get("cluster_name") or "")
+    if cluster.distribution is DistributionType.EKS and not cluster_name:
+        raise InvalidStateError("The managed EKS cluster name is missing")
+
+    token_cache: tuple[str, float] | None = None
+    token_lock = threading.Lock()
+
+    def token() -> str:
+        nonlocal token_cache
+        with token_lock:
+            if token_cache is not None and token_cache[1] > time.monotonic():
+                return token_cache[0]
+        provider = provider_registry.create(provider_type, config, credential)
+        try:
+            value = (
+                provider.eks_bearer_token(cluster_name)  # type: ignore[attr-defined]
+                if cluster.distribution is DistributionType.EKS
+                else provider.gke_bearer_token()  # type: ignore[attr-defined]
+            )
+        finally:
+            provider.close()
+        with token_lock:
+            token_cache = (value, time.monotonic() + 45)
+        return value
+
+    return token
+
+
 def api_for(session: Session, secret_store: SecretStore, cluster: Cluster) -> kclient.ClusterAPI:
     """Pooled API client for a cluster. Decrypts the kubeconfig only when (re)building."""
     if cluster.access_credential_id is None:
@@ -68,6 +115,14 @@ def api_for(session: Session, secret_store: SecretStore, cluster: Cluster) -> kc
     credential = session.get(Credential, cluster.access_credential_id)
     if credential is None:
         raise InvalidStateError("The cluster's kubeconfig credential was deleted")
+    provider_connection = (
+        session.get(ProviderConnection, cluster.provider_connection_id) if cluster.provider_connection_id else None
+    )
+    provider_credential = (
+        session.get(Credential, provider_connection.credential_id)
+        if provider_connection is not None and provider_connection.credential_id
+        else None
+    )
     key = (
         cluster.id,
         credential.id,
@@ -75,6 +130,9 @@ def api_for(session: Session, secret_store: SecretStore, cluster: Cluster) -> kc
         credential.key_id,
         cluster.api_server_override,
         cluster.tls_server_name,
+        cluster.updated_at,
+        provider_connection.updated_at if provider_connection else None,
+        provider_credential.updated_at if provider_credential else None,
     )
 
     def target() -> kclient.ConnectionTarget:
@@ -83,6 +141,7 @@ def api_for(session: Session, secret_store: SecretStore, cluster: Cluster) -> kc
             kubeconfig=kubeconfig.resolve(text),
             server_override=cluster.api_server_override,
             tls_server_name=cluster.tls_server_name,
+            token_provider=_managed_token_provider(session, secret_store, cluster),
         )
 
     return kclient.client_for(key, target)
@@ -99,6 +158,7 @@ def connection_target(session: Session, secret_store: SecretStore, cluster: Clus
         kubeconfig=kubeconfig.resolve(text),
         server_override=cluster.api_server_override,
         tls_server_name=cluster.tls_server_name,
+        token_provider=_managed_token_provider(session, secret_store, cluster),
     )
 
 
@@ -110,7 +170,7 @@ def record_observation(cluster: Cluster, summary: dict[str, Any] | None, error: 
         detail["observed_at"] = _now().isoformat()
         detail.pop("health_error", None)
         cluster.last_contact_at = _now()
-        if summary.get("version"):
+        if summary.get("version") and cluster.lifecycle_state is not ClusterLifecycleState.UPGRADING:
             cluster.kubernetes_version = summary["version"]
         if cluster.lifecycle_state in OBSERVABLE:
             cluster.lifecycle_state = ClusterLifecycleState(views.health_state(summary))
