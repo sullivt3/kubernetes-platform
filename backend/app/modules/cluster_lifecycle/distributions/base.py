@@ -58,7 +58,10 @@ class ClusterPlanInput(BaseModel):
     destroy_machines: bool = False
     # Upgrade: exact target patch version (for example ``1.34.2``).
     target_version: str | None = None
+    target_release_revision: int = Field(default=1, ge=1, le=100)
     allow_emptydir_data: bool = False
+    pool_name: str | None = None
+    pool_count: int | None = Field(default=None, ge=0, le=1000)
 
     @property
     def control_planes(self) -> list[PlannedNode]:
@@ -108,6 +111,10 @@ class KubernetesDistribution(ABC):
         if spec.network.cni not in self.supported_cnis:
             supported = ", ".join(sorted(c.value for c in self.supported_cnis))
             problems.append(f"CNI '{spec.network.cni}' is not supported by {self.display_name} ({supported})")
+        if spec.network.cni is CniPlugin.CILIUM and spec.distribution.value in {"kind", "k3s", "eks"}:
+            minor = int(spec.kubernetes_version.removeprefix("v").split(".")[1])
+            if minor not in range(33, 37):
+                problems.append("The pinned Cilium 1.20 installer supports Kubernetes 1.33 through 1.36")
         if spec.control_plane.count > 1 and DistributionCapability.HIGH_AVAILABILITY not in self.capabilities:
             problems.append(f"{self.display_name} does not support multiple control-plane nodes")
         if self.kind is DistributionKind.MANAGED and spec.control_plane.count != 0:

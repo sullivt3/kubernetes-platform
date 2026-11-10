@@ -276,6 +276,16 @@ class KubernetesService:
         )
         if membership is None:
             raise NotFoundError(f"{name} is not a node the platform manages in this cluster")
+        native = cluster.distribution.value if cluster.distribution.value in {"k3s", "rke2"} else None
+        if native:
+            if unit == "containerd":
+                log_command = f"tail -n {int(lines)} /var/lib/rancher/{native}/agent/containerd/containerd.log"
+            else:
+                role = "server" if membership.role.value == "control_plane" else "agent"
+                service_unit = ("k3s" if role == "server" else "k3s-agent") if native == "k3s" else f"rke2-{role}"
+                log_command = f"journalctl -u {service_unit} -n {int(lines)} --no-pager -o short-iso"
+        else:
+            log_command = f"journalctl -u {unit} -n {int(lines)} --no-pager -o short-iso"
         try:
             target = load_target(self.session, self.secret_store, principal.organization_id, membership.machine_id)
         except Exception as exc:
@@ -283,7 +293,7 @@ class KubernetesService:
         try:
             with open_host(target.endpoint, target.auth) as executor:
                 result = executor.run(
-                    f"journalctl -u {unit} -n {int(lines)} --no-pager -o short-iso",
+                    log_command,
                     CommandOptions(sudo=True, timeout_seconds=30),
                 )
         except HostAccessError as exc:

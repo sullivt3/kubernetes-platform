@@ -22,7 +22,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ApiError } from "@/lib/api/client";
-import { useCredentials, useMachines } from "@/lib/api/hooks";
+import { MachineTemplateEditor, machineTemplate, type MachineSize } from "@/features/infrastructure/machine-template";
+import { useCredentials, useMachines, useDistributions } from "@/lib/api/hooks";
 import { useConnections } from "@/lib/api/infra";
 import type { KubeNode } from "@/lib/api/kube";
 import {
@@ -346,6 +347,7 @@ const SIZES = [
 ];
 
 export function AddNodesDialog({ cluster, open, onClose }: { cluster: ClusterDetail; open: boolean; onClose: () => void }) {
+  const distributions = useDistributions();
   const add = useAddNodes(cluster.id);
   const notify = useOperationToast();
   const machines = useMachines();
@@ -360,14 +362,15 @@ export function AddNodesDialog({ cluster, open, onClose }: { cluster: ClusterDet
   const [newPool, setNewPool] = useState("workers");
   const [selected, setSelected] = useState<string[]>([]);
   const [count, setCount] = useState("0");
-  const [size, setSize] = useState(SIZES[0]);
+  const [size, setSize] = useState<MachineSize>(SIZES[0]);
   const [connectionId, setConnectionId] = useState(cluster.spec.provider_connection_id ?? "");
   const [credentialId, setCredentialId] = useState(cluster.spec.machine_credential_id ?? "");
   const [error, setError] = useState<string | null>(null);
 
   const isCp = pool === cpPool;
   const available = (machines.data ?? []).filter((m) => !m.cluster_name && m.lifecycle_state === "ready");
-  const provisioners = (connections.data ?? []).filter((c) => c.capabilities.includes("provision"));
+  const supported = distributions.data?.find((d) => d.type === cluster.distribution)?.supported_providers ?? [];
+  const provisioners = (connections.data ?? []).filter((c) => c.capabilities.includes("provision") && supported.includes(c.provider_type));
   const keys = (credentials.data?.items ?? []).filter((c) => c.kind === "ssh_private_key");
   const n = Number(count) || 0;
   const poolName = pool === "__new" ? newPool : pool;
@@ -385,7 +388,7 @@ export function AddNodesDialog({ cluster, open, onClose }: { cluster: ClusterDet
         pool: poolName,
         existing_machine_ids: selected,
         provision_count: n,
-        machine_template: n > 0 ? { cpu_cores: size.cpu, memory_mb: size.memory, disk_gb: size.disk } : null,
+        machine_template: n > 0 ? machineTemplate(size) : null,
         provider_connection_id: n > 0 ? connectionId : null,
         machine_credential_id: n > 0 ? credentialId : null,
       },
@@ -482,6 +485,7 @@ export function AddNodesDialog({ cluster, open, onClose }: { cluster: ClusterDet
                 </div>
               ))}
           </div>
+          {n > 0 && <MachineTemplateEditor size={size} onChange={setSize} provider={provisioners.find((c) => c.id === connectionId)?.provider_type ?? cluster.spec.provider_type} />}
           {problems.length > 0 && <ul className="space-y-1 text-sm text-amber-300/90">{problems.map((p) => <li key={p}>• {p}</li>)}</ul>}
           {error && <p role="alert" className="rounded border border-red-500/30 bg-red-500/5 p-2 text-sm text-red-300">{error}</p>}
         </div>

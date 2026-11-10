@@ -6,11 +6,12 @@ import ipaddress
 from typing import Any
 
 import yaml
+from sqlalchemy import select
 
 from app.core.principal import Principal
 from app.modules.cluster_lifecycle.distributions.base import ClusterPlanInput
 from app.modules.cluster_lifecycle.models import Cluster
-from app.modules.credentials.models import CredentialKind
+from app.modules.credentials.models import Credential, CredentialKind
 from app.modules.credentials.service import CredentialService
 from app.modules.infrastructure.models import ProviderConnection
 from app.modules.infrastructure.provider_workflows import provider_for
@@ -28,8 +29,15 @@ def create(ctx: StepContext) -> dict[str, Any]:
     connection_id = plan.spec.provider_connection_id
     if connection_id is None:
         raise StepFailedError("Managed cluster creation needs a cloud provider connection")
+    with ctx.db() as session:
+        registered = session.get(Cluster, plan.cluster_id)
+        persisted_managed = ((registered.spec or {}).get("options", {}).get("managed") or {}) if registered else {}
+    cloud_name = str(
+        persisted_managed.get("cluster_name") or f"{plan.cluster_name[:26].rstrip('-')}-{plan.cluster_id.hex[:12]}"
+    )
     options = {
         **plan.spec.options,
+        "managed_cni": plan.spec.network.cni.value,
         "managed_pod_cidr": plan.spec.network.pod_cidr,
         "managed_service_cidr": plan.spec.network.service_cidr,
         "managed_dns_service_ip": str(ipaddress.ip_network(plan.spec.network.service_cidr).network_address + 10),
@@ -40,6 +48,10 @@ def create(ctx: StepContext) -> dict[str, Any]:
             "count": pool.count,
             "minimum": int(options.get("managed_min_node_count", 1)),
             "maximum": max(int(options.get("managed_max_node_count", max(3, pool.count))), pool.count),
+            "disk_gb": pool.machine_template.disk_gb if pool.machine_template else 20,
+            "machine_type": (
+                pool.machine_template.provider_options.get("machine_type") if pool.machine_template else None
+            ),
             "labels": pool.labels,
             "taints": [taint.model_dump(mode="json", by_alias=True) for taint in pool.taints],
         }
@@ -47,20 +59,20 @@ def create(ctx: StepContext) -> dict[str, Any]:
         if pool.count > 0
     ]
     request = ManagedClusterRequest(
-        name=plan.cluster_name,
+        name=cloud_name,
         version=plan.spec.kubernetes_version,
         options=options,
         node_pools=node_pools,
     )
     with provider_for(ctx, connection_id) as provider:
-        external_id = provider.managed_cluster_id(plan.cluster_name, options)
+        external_id = provider.managed_cluster_id(cloud_name, options)
         with ctx.db() as session:
             cluster = session.get(Cluster, plan.cluster_id)
             if cluster is None:
                 raise StepFailedError("Cluster registration was deleted before provider provisioning")
             persisted = dict(cluster.spec or {})
             persisted_options = dict(persisted.get("options") or {})
-            persisted_options["managed"] = {"cluster_name": plan.cluster_name, "external_id": external_id}
+            persisted_options["managed"] = {"cluster_name": cloud_name, "external_id": external_id}
             persisted["options"] = persisted_options
             cluster.spec = persisted
         created = provider.create_managed_cluster(request)
@@ -105,20 +117,32 @@ def create(ctx: StepContext) -> dict[str, Any]:
         if connection is None or cluster is None:
             raise StepFailedError("The provider connection or cluster registration was deleted")
         name = f"cluster-{plan.cluster_name}-managed-access"
-        credential = CredentialService(session, ctx.secret_store).create(
-            principal,
-            name=name,
-            kind=CredentialKind.KUBECONFIG,
-            secret_value=kubeconfig,
-            description=f"Provider-managed API access for {plan.cluster_name}",
-            public_metadata={"cluster": plan.cluster_name, "provider": connection.provider_type.value},
+        service = CredentialService(session, ctx.secret_store)
+        existing = session.scalar(
+            select(Credential).where(Credential.organization_id == ctx.organization_id, Credential.name == name)
+        )
+        credential = (
+            service.replace_secret(principal, existing.id, kubeconfig)
+            if existing
+            else service.create(
+                principal,
+                name=name,
+                kind=CredentialKind.KUBECONFIG,
+                secret_value=kubeconfig,
+                description=f"Provider-managed API access for {plan.cluster_name}",
+                public_metadata={"cluster": plan.cluster_name, "provider": connection.provider_type.value},
+            )
         )
         cluster.access_credential_id = credential.id
         cluster.api_endpoint = created.endpoint
-        cluster.kubernetes_version = plan.spec.kubernetes_version
+        cluster.kubernetes_version = "v" + (
+            ".".join(plan.spec.kubernetes_version.removeprefix("v").split(".")[:2])
+            if plan.spec.distribution.value == "eks"
+            else plan.spec.kubernetes_version.removeprefix("v")
+        )
         persisted = dict(cluster.spec or {})
         persisted_options = dict(persisted.get("options") or {})
-        persisted_options["managed"] = {"cluster_name": plan.cluster_name, "external_id": external_id}
+        persisted_options["managed"] = {"cluster_name": cloud_name, "external_id": external_id}
         persisted["options"] = persisted_options
         cluster.spec = persisted
     ctx.info(f"Managed Kubernetes API is ready at {created.endpoint}")
@@ -136,3 +160,34 @@ def delete(ctx: StepContext) -> dict[str, Any]:
         provider.delete_managed_cluster(str(external_id))
     ctx.info("Provider-managed Kubernetes cluster deleted")
     return {"deleted": True}
+
+
+def resize(ctx: StepContext) -> dict[str, Any]:
+    plan = _plan(ctx)
+    external_id = (plan.spec.options.get("managed") or {}).get("external_id")
+    if not external_id or not plan.spec.provider_connection_id or not plan.pool_name or plan.pool_count is None:
+        raise StepFailedError("Managed pool operation is missing its provider identifiers")
+    with provider_for(ctx, plan.spec.provider_connection_id) as provider:
+        provider.resize_managed_pool(str(external_id), plan.pool_name, plan.pool_count)
+    with ctx.db() as session:
+        cluster = session.get(Cluster, plan.cluster_id)
+        if cluster is None:
+            raise StepFailedError("Cluster registration no longer exists")
+        persisted = dict(cluster.spec)
+        pools = [dict(pool) for pool in persisted.get("worker_pools", [])]
+        for pool in pools:
+            if pool["name"] == plan.pool_name:
+                pool["count"] = plan.pool_count
+        persisted["worker_pools"] = pools
+        cluster.spec = persisted
+    return {"pool": plan.pool_name, "count": plan.pool_count}
+
+
+def upgrade(ctx: StepContext) -> dict[str, Any]:
+    plan = _plan(ctx)
+    external_id = (plan.spec.options.get("managed") or {}).get("external_id")
+    if not external_id or not plan.spec.provider_connection_id or not plan.target_version:
+        raise StepFailedError("Managed upgrade is missing its provider identifiers")
+    with provider_for(ctx, plan.spec.provider_connection_id) as provider:
+        provider.upgrade_managed_cluster(str(external_id), plan.target_version)
+    return {"version": plan.target_version}

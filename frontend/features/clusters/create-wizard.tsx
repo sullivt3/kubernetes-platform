@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { DEFAULT_MACHINE_SIZE as DEFAULT_SIZE, MachineTemplateEditor as SizeEditor, machineTemplate as template, type MachineSize as Size } from "@/features/infrastructure/machine-template";
 import { MachineStateBadge, primaryAddress } from "@/features/infrastructure/machines";
 import { ApiError } from "@/lib/api/client";
 import {
@@ -39,12 +40,6 @@ const VERSION = /^1\.\d{1,2}(\.\d{1,3})?$/;
 const LABEL_KEY = /^([a-z0-9]([-a-z0-9.]*[a-z0-9])?\/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$/;
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
-interface Size {
-  cpu: number;
-  memory: number;
-  disk: number;
-}
-const DEFAULT_SIZE: Size = { cpu: 2, memory: 2048, disk: 20 };
 type LbMode = "none" | "kube-vip" | "external" | "provider";
 
 interface KeyValue {
@@ -96,6 +91,11 @@ export interface WizardState {
   conntrackZero: boolean;
   ignorePreflight: string;
   resolvConf: string;
+  releaseRevision: number;
+  nfsDriver: boolean;
+  storageClass: string;
+  nfsServer: string;
+  nfsShare: string;
 }
 
 export const INITIAL: WizardState = {
@@ -135,9 +135,12 @@ export const INITIAL: WizardState = {
   conntrackZero: false,
   ignorePreflight: "",
   resolvConf: "",
+  releaseRevision: 1,
+  nfsDriver: false,
+  storageClass: "",
+  nfsServer: "",
+  nfsShare: "",
 };
-
-const template = (size: Size) => ({ cpu_cores: size.cpu, memory_mb: size.memory, disk_gb: size.disk });
 
 function newMachines(s: WizardState): number {
   return s.cpNew + s.pools.reduce((n, p) => n + p.newCount, 0);
@@ -145,9 +148,11 @@ function newMachines(s: WizardState): number {
 
 export function buildSpec(s: WizardState): ClusterSpecInput {
   const managed = ["eks", "aks", "gke"].includes(s.distribution);
-  const provisioning = !managed && newMachines(s) > 0;
+  const local = ["kind", "k3d"].includes(s.distribution);
+  const provisioning = !managed && !local && newMachines(s) > 0;
   // Only explicit choices are sent: the backend fills in defaults (e.g. for container-based machines).
   const options: Record<string, unknown> = {};
+  if (["k3s", "rke2", "k3d"].includes(s.distribution)) options.release_revision = s.releaseRevision;
   if (s.allowSwap) options.allow_swap = true;
   if (s.cpWorkloads !== "auto") options.control_plane_workloads = s.cpWorkloads === "yes";
   if (s.conntrackZero) options.kube_proxy_conntrack_max_per_core = 0;
@@ -180,29 +185,35 @@ export function buildSpec(s: WizardState): ClusterSpecInput {
     name: s.name,
     distribution: s.distribution,
     provider_type: s.provider,
-    provider_connection_id: (provisioning || s.lbMode === "provider" || managed) ? s.connectionId || null : null,
+    provider_connection_id: (provisioning || s.lbMode === "provider" || managed || local) ? s.connectionId || null : null,
     machine_credential_id: provisioning ? s.credentialId || null : null,
     kubernetes_version: s.version,
     container_runtime: "containerd",
-    network: { pod_cidr: s.podCidr, service_cidr: s.serviceCidr, dns_domain: s.dnsDomain, cni: s.cni },
+    network: { pod_cidr: s.podCidr, service_cidr: s.serviceCidr, dns_domain: managed ? "cluster.local" : s.dnsDomain, cni: s.cni },
     control_plane: {
       name: "control-plane",
       count: managed ? 0 : s.cpMachines.length + s.cpNew,
-      existing_machine_ids: s.cpMachines,
+      existing_machine_ids: managed || local ? [] : s.cpMachines,
       machine_template: s.cpNew > 0 ? template(s.cpSize) : null,
-      endpoint: managed || s.lbMode === "none" ? null : s.cpEndpoint.trim(),
-      load_balancer: managed ? "none" : s.lbMode,
+      endpoint: local && s.cpNew > 1 ? "127.0.0.1" : managed || s.lbMode === "none" ? null : s.cpEndpoint.trim(),
+      load_balancer: local && s.cpNew > 1 ? "external" : managed || local ? "none" : s.lbMode,
     },
     worker_pools: s.pools
       .filter((p) => p.machines.length + p.newCount > 0)
       .map((p) => ({
         name: p.name,
         count: managed ? p.newCount : p.machines.length + p.newCount,
-        existing_machine_ids: managed ? [] : p.machines,
+        existing_machine_ids: managed || local ? [] : p.machines,
         machine_template: p.newCount > 0 ? template(p.size) : null,
         labels: Object.fromEntries(p.labels.filter((l) => l.key).map((l) => [l.key, l.value])),
         taints: p.taints.filter((t) => t.key),
       })),
+    storage: {
+      default_storage_class: s.storageClass.trim() || null,
+      csi_drivers: s.nfsDriver ? ["nfs.csi.k8s.io"] : [],
+      nfs_server: s.nfsDriver ? s.nfsServer.trim() || null : null,
+      nfs_share: s.nfsDriver ? s.nfsShare.trim() || null : null,
+    },
     options,
   };
 }
@@ -319,29 +330,18 @@ function MachinePicker({
   );
 }
 
-function SizeEditor({ size, onChange }: { size: Size; onChange: (size: Size) => void }) {
-  const num = (v: string) => Math.max(0, Number(v.replace(/\D/g, "")) || 0);
-  return (
-    <div className="grid grid-cols-3 gap-2">
-      <Field label="CPU">
-        <Input value={size.cpu} onChange={(e) => onChange({ ...size, cpu: num(e.target.value) })} inputMode="numeric" />
-      </Field>
-      <Field label="Memory (MB)">
-        <Input value={size.memory} onChange={(e) => onChange({ ...size, memory: num(e.target.value) })} inputMode="numeric" />
-      </Field>
-      <Field label="Disk (GB)">
-        <Input value={size.disk} onChange={(e) => onChange({ ...size, disk: num(e.target.value) })} inputMode="numeric" />
-      </Field>
-    </div>
-  );
-}
-
 function NewMachines({
   enabled,
   count,
   size,
   onChange,
+  provider,
+  managed = false,
+  local = false,
 }: {
+  provider?: string;
+  managed?: boolean;
+  local?: boolean;
   enabled: boolean;
   count: number;
   size: Size;
@@ -350,7 +350,7 @@ function NewMachines({
   if (!enabled) {
     return (
       <p className="text-xs text-muted-foreground">
-        To have the platform create machines, choose a provider connection and SSH key in step 1 (Local Docker or Proxmox).
+        To have the platform create machines, choose a provider connection and SSH key in step 1.
       </p>
     );
   }
@@ -367,7 +367,7 @@ function NewMachines({
         </Field>
         <p className="pb-2 text-xs text-muted-foreground">Created, inspected and joined automatically.</p>
       </div>
-      {count > 0 && <SizeEditor size={size} onChange={(next) => onChange({ size: next })} />}
+      {count > 0 && <SizeEditor size={size} provider={provider} managed={managed} local={local} onChange={(next) => onChange({ size: next })} />}
     </div>
   );
 }
@@ -387,14 +387,16 @@ const STEPS = [
 function stepErrors(step: number, s: WizardState, distribution?: DistributionDescriptor): string[] {
   const errors: string[] = [];
   const managed = distribution?.kind === "managed";
+  const local = distribution?.kind === "local";
   if (step === 0 && !s.provider) errors.push("Choose an infrastructure provider");
-  if ((step === 3 || step === 4) && !managed && newMachines(s) > 0 && (!s.connectionId || !s.credentialId)) {
+  if ((step === 3 || step === 4) && !managed && !local && newMachines(s) > 0 && (!s.connectionId || !s.credentialId)) {
     errors.push("New machines need a provider connection and an SSH key (step 1, Infrastructure)");
   }
   if (step === 1 && !s.distribution) errors.push("Choose a Kubernetes distribution");
   if (step === 2) {
     if (!DNS_LABEL.test(s.name)) errors.push("Name: lowercase letters, digits and '-' (max 63)");
     if (!VERSION.test(s.version)) errors.push("Choose a Kubernetes version (e.g. 1.34)");
+    if (["kind", "k3d", "k3s", "rke2"].includes(s.distribution) && !/^1\.\d+\.\d+$/.test(s.version)) errors.push("This distribution requires an exact patch version, for example 1.34.2");
     if (!CIDR.test(s.podCidr)) errors.push("Pod CIDR must look like 10.244.0.0/16");
     if (!CIDR.test(s.serviceCidr)) errors.push("Service CIDR must look like 10.96.0.0/12");
     if (!s.cni || (distribution && !distribution.supported_cnis.includes(s.cni))) errors.push("Choose a pod network");
@@ -407,7 +409,7 @@ function stepErrors(step: number, s: WizardState, distribution?: DistributionDes
     const n = s.cpMachines.length + s.cpNew;
     if (n === 0) errors.push("Select or provision at least one control-plane machine");
     if (n > 1 && n % 2 === 0) errors.push("Highly available control planes need an odd number of machines (3 or 5)");
-    if (n > 1 && s.lbMode === "none") errors.push("Several control planes need a shared API endpoint: kube-vip or a load balancer");
+    if (!local && n > 1 && s.lbMode === "none") errors.push("Several control planes need a shared API endpoint: kube-vip or a load balancer");
     if (s.lbMode === "kube-vip" && !IPV4.test(s.cpEndpoint.trim())) errors.push("kube-vip needs a free IPv4 address on the machines' network");
     if (s.lbMode === "external" && !s.cpEndpoint.trim()) errors.push("Provide the load balancer address for the API server");
     if (s.lbMode === "provider" && (!s.connectionId || !s.providerLbVpc.trim() || !s.providerLbSubnets.trim())) {
@@ -512,7 +514,8 @@ export function CreateClusterWizard() {
     (c) => c.provider_type === state.provider && c.capabilities.includes("provision"),
   );
   const sshKeys = (credentials.data?.items ?? []).filter((c) => c.kind === "ssh_private_key");
-  const canProvision = Boolean(state.connectionId && state.credentialId);
+  const local = distribution?.kind === "local";
+  const canProvision = Boolean(state.connectionId && (local || state.credentialId));
   const workerIds = new Set(state.pools.flatMap((p) => p.machines));
   const cpIds = new Set(state.cpMachines);
 
@@ -624,7 +627,7 @@ export function CreateClusterWizard() {
                             <SelectContent>{provisionable.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                           </Select>
                         </Field>
-                        {distribution?.kind !== "managed" && <Field label="SSH key installed on new machines">
+                        {distribution?.kind !== "managed" && !local && <Field label="SSH key installed on new machines">
                           <Select value={state.credentialId} onValueChange={(v) => update({ credentialId: v })}>
                             <SelectTrigger className="w-full"><SelectValue placeholder="Choose a key" /></SelectTrigger>
                             <SelectContent>{sshKeys.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
@@ -656,7 +659,15 @@ export function CreateClusterWizard() {
                         selected={state.distribution === d.type}
                         disabled={planned || !supported}
                         reason={!planned && !supported ? `Not available on ${humanize(state.provider)}` : undefined}
-                        onSelect={() => update({ distribution: d.type, cni: d.default_cni })}
+                        onSelect={() => update({
+                          distribution: d.type, cni: d.default_cni, lbMode: "none", cpEndpoint: "",
+                          version: d.type === "kubeadm" || d.type === "eks" ? state.version : versions.data?.versions.find((v) => v.minor === state.version)?.latest_patch ?? state.version,
+                          ...(d.kind !== "self_managed" ? {
+                            cpMachines: [], cpNew: d.kind === "local" ? Math.max(1, state.cpNew) : 0,
+                            pools: state.pools.map((p) => ({ ...p, machines: [], newCount: d.kind === "managed" ? Math.max(1, p.newCount) : p.newCount,
+                              size: { ...p.size, disk: p.size.disk === 20 && d.type === "aks" ? 128 : p.size.disk === 20 && d.type === "gke" ? 100 : p.size.disk } })),
+                          } : {}),
+                        })}
                       />
                     );
                   })}
@@ -687,7 +698,7 @@ export function CreateClusterWizard() {
                         <SelectTrigger className="w-full"><SelectValue placeholder="Select a version" /></SelectTrigger>
                         <SelectContent>
                           {versions.data.versions.map((v, i) => (
-                            <SelectItem key={v.minor} value={v.minor}>
+                            <SelectItem key={v.minor} value={state.distribution === "kubeadm" || state.distribution === "eks" ? v.minor : v.latest_patch}>
                               {v.minor} (v{v.latest_patch}){i === 0 ? " — latest" : ""}
                             </SelectItem>
                           ))}
@@ -711,16 +722,16 @@ export function CreateClusterWizard() {
                       </SelectContent>
                     </Select>
                   </Field>
-                  <Field label="Pod CIDR" error={state.podCidr && !CIDR.test(state.podCidr) ? "Invalid CIDR" : null}>
-                    <Input value={state.podCidr} onChange={(e) => update({ podCidr: e.target.value })} className="font-mono" />
+                  <Field label="Pod CIDR" hint={state.distribution === "eks" ? "EKS allocates pod addresses from the VPC subnets; this CIDR is unused." : undefined} error={state.podCidr && !CIDR.test(state.podCidr) ? "Invalid CIDR" : null}>
+                    <Input disabled={state.distribution === "eks"} value={state.podCidr} onChange={(e) => update({ podCidr: e.target.value })} className="font-mono" />
                   </Field>
                   <Field label="Service CIDR" error={state.serviceCidr && !CIDR.test(state.serviceCidr) ? "Invalid CIDR" : null}>
                     <Input value={state.serviceCidr} onChange={(e) => update({ serviceCidr: e.target.value })} className="font-mono" />
                   </Field>
                   <Field label="Cluster DNS domain">
-                    <Input value={state.dnsDomain} onChange={(e) => update({ dnsDomain: e.target.value })} className="font-mono" />
+                    <Input disabled={distribution.kind === "managed"} value={distribution.kind === "managed" ? "cluster.local" : state.dnsDomain} onChange={(e) => update({ dnsDomain: e.target.value })} className="font-mono" />
                   </Field>
-                  <Field label="Container runtime" hint="Docker Engine is not required.">
+                  <Field label="Container runtime" hint={local ? "Nodes run in Docker containers. Docker must be available to the worker." : "Containerd is installed or managed by the distribution."}>
                     <Input value={distribution.supported_runtimes.join(", ")} disabled />
                   </Field>
                 </div>
@@ -741,27 +752,29 @@ export function CreateClusterWizard() {
                     The cloud provider operates the Kubernetes control plane. Configure the initial worker node groups in the next step.
                   </div>
                 ) : <>
-                <MachinePicker
+                {!local && <MachinePicker
                   machines={machineList}
                   selected={state.cpMachines}
                   onChange={(ids) => update({ cpMachines: ids })}
                   takenElsewhere={workerIds}
                   requireTwoCpus
-                />
+                />}
                 <NewMachines
+                  provider={state.provider}
+                  local={local}
                   enabled={canProvision}
                   count={state.cpNew}
                   size={state.cpSize}
                   onChange={({ count, size }) => update({ ...(count !== undefined && { cpNew: count }), ...(size && { cpSize: size }) })}
                 />
-                <Field label="API server endpoint">
+                {!local && <><Field label="API server endpoint">
                   <Select value={state.lbMode} onValueChange={(v) => update({ lbMode: v as LbMode })}>
                     <SelectTrigger className="w-full md:w-96"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="none">The first control plane (single control plane)</SelectItem>
-                      <SelectItem value="kube-vip">Virtual IP managed by the cluster (kube-vip)</SelectItem>
+                      {state.distribution === "kubeadm" && <SelectItem value="kube-vip">Virtual IP managed by the cluster (kube-vip)</SelectItem>}
                       <SelectItem value="external">An existing load balancer or DNS name</SelectItem>
-                      {state.provider === "aws" && <SelectItem value="provider">AWS Network Load Balancer</SelectItem>}
+                      {state.provider === "aws" && state.distribution === "kubeadm" && <SelectItem value="provider">AWS Network Load Balancer</SelectItem>}
                     </SelectContent>
                   </Select>
                 </Field>
@@ -799,6 +812,7 @@ export function CreateClusterWizard() {
                   </div>
                 )}
                 </>}
+                </>}
               </section>
             )}
 
@@ -809,7 +823,7 @@ export function CreateClusterWizard() {
                     <h2 className="font-semibold">Worker nodes</h2>
                     <p className="text-sm text-muted-foreground">
                       {distribution?.kind === "managed"
-                        ? "Configure provider-managed node groups and their initial size."
+                        ? (state.distribution === "gke" ? "Configure node pools. Counts are per zone; regional GKE clusters can create nodes across multiple zones." : "Configure provider-managed node groups and their initial size.")
                         : "Group workers into pools with shared labels and taints. With no workers, the control plane runs workloads."}
                     </p>
                   </div>
@@ -847,19 +861,22 @@ export function CreateClusterWizard() {
                           </Button>
                         )}
                       </div>
-                      {distribution?.kind !== "managed" && <MachinePicker
+                      {distribution?.kind !== "managed" && !local && <MachinePicker
                         machines={machineList}
                         selected={pool.machines}
                         onChange={(ids) => setPool({ machines: ids })}
                         takenElsewhere={new Set([...cpIds, ...otherPools])}
                       />}
                       <NewMachines
+                        provider={state.provider}
+                        managed={distribution?.kind === "managed"}
+                        local={local}
                         enabled={distribution?.kind === "managed" || canProvision}
                         count={pool.newCount}
                         size={pool.size}
                         onChange={({ count, size }) => setPool({ ...(count !== undefined && { newCount: count }), ...(size && { size }) })}
                       />
-                      {distribution?.kind !== "managed" && <div className="grid gap-4 md:grid-cols-2">
+                      {<div className="grid gap-4 md:grid-cols-2">
                         <Field label="Labels">
                           <KeyValueEditor items={pool.labels} onChange={(labels) => setPool({ labels })} placeholder={["key", "value"]} />
                         </Field>
@@ -875,13 +892,20 @@ export function CreateClusterWizard() {
 
             {step === 5 && (
               <section className="space-y-5">
+                {["k3s", "rke2", "k3d"].includes(state.distribution) && <Field label="Distribution release revision" hint="For v1.34.2+k3s1 or v1.34.2+rke2r1, use 1. Check that the selected Kubernetes patch has a release for this distribution."><Input type="number" min={1} max={100} value={state.releaseRevision} onChange={(e) => update({ releaseRevision: Number(e.target.value) })} /></Field>}
+                <div className="space-y-3 rounded-lg border border-border p-4">
+                  <h2 className="font-semibold">Cluster storage</h2>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={state.nfsDriver} onChange={(e) => update({ nfsDriver: e.target.checked })} /> Install NFS CSI driver during creation</label>
+                  <Field label="Default StorageClass (optional)" hint="Without an NFS export, this must name a class created by the distribution or cloud provider. An existing default is never silently replaced."><Input value={state.storageClass} onChange={(e) => update({ storageClass: e.target.value })} /></Field>
+                  {state.nfsDriver && <div className="grid gap-3 md:grid-cols-2"><Field label="NFS server (optional)" hint="Provide both fields and a StorageClass name to configure a default NFS class."><Input value={state.nfsServer} onChange={(e) => update({ nfsServer: e.target.value })} /></Field><Field label="NFS export path"><Input value={state.nfsShare} onChange={(e) => update({ nfsShare: e.target.value })} placeholder="/exports/kubernetes" /></Field></div>}
+                </div>
                 <div className="flex gap-3 rounded-lg border border-sky-500/20 bg-sky-500/5 p-4 text-sm">
                   <Info className="mt-0.5 size-4 shrink-0 text-sky-400" />
                   <div className="space-y-1">
                     <p className="font-medium">Storage</p>
                     <p className="text-muted-foreground">
-                      No storage provisioner is installed in this release: workloads that request persistent volumes need a
-                      CSI driver. Storage classes and CSI driver installation arrive in Phase 6.
+                      You can also manage the NFS CSI driver and existing NFS exports after creation in <Link href="/storage/csi-drivers" className="underline underline-offset-4">CSI drivers</Link>, or apply your vendor&apos;s driver manifests.
+                      Select the default class in <Link href="/storage/storage-classes" className="underline underline-offset-4">Storage classes</Link> before creating claims.
                     </p>
                   </div>
                 </div>
@@ -917,7 +941,7 @@ export function CreateClusterWizard() {
                     </div>
                     <p className="text-xs text-muted-foreground">The service account needs Kubernetes Engine cluster and node pool permissions, and the network and subnet must already exist.</p>
                   </div>}
-                  <label className="flex items-start gap-3 text-sm">
+                  {state.distribution === "kubeadm" && <><label className="flex items-start gap-3 text-sm">
                     <input type="checkbox" className="mt-1" checked={state.allowSwap} onChange={(e) => update({ allowSwap: e.target.checked })} />
                     <span>
                       <span className="font-medium">Leave swap enabled</span>
@@ -951,7 +975,7 @@ export function CreateClusterWizard() {
                     >
                       <Input value={state.resolvConf} onChange={(e) => update({ resolvConf: e.target.value })} placeholder="/etc/kubernetes/resolv.conf" className="font-mono" />
                     </Field>
-                  </div>
+                  </div></>}
                 </div>
               </section>
             )}

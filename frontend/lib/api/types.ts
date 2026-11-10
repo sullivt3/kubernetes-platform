@@ -255,6 +255,8 @@ export interface MachineTemplateInput {
   cpu_cores: number;
   memory_mb: number;
   disk_gb: number;
+  image?: string | null;
+  provider_options?: Record<string, unknown>;
 }
 
 export interface NodePoolInput {
@@ -277,6 +279,7 @@ export interface ClusterSpecInput {
   network: { pod_cidr: string; service_cidr: string; dns_domain: string; cni: string };
   control_plane: NodePoolInput & { endpoint?: string | null; load_balancer?: string };
   worker_pools: NodePoolInput[];
+  storage?: { default_storage_class: string | null; csi_drivers: string[]; nfs_server?: string | null; nfs_share?: string | null };
   options: Record<string, unknown>;
 }
 

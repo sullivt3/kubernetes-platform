@@ -23,6 +23,8 @@ from app.modules.credentials.models import CredentialKind
 from app.modules.providers import http
 from app.modules.providers.base import InfrastructureProvider
 from app.modules.providers.http import ProviderApiError
+from app.modules.providers.implementations.cloud_actions import CloudMachineActions
+from app.modules.providers.implementations.managed_actions import ManagedClusterActions
 from app.modules.providers.types import (
     ConnectionCheckResult,
     DiscoveredMachine,
@@ -92,7 +94,7 @@ class GcpConfig(BaseModel):
     zones: list[str] = Field(default_factory=list, description="Limit inventory to these zones (default: all)")
 
 
-class GcpProvider(InfrastructureProvider):
+class GcpProvider(CloudMachineActions, ManagedClusterActions, InfrastructureProvider):
     provider_type = ProviderType.GCP
     display_name = "Google Cloud"
     description = "Compute Engine lifecycle management and GKE managed Kubernetes provisioning."
@@ -104,11 +106,11 @@ class GcpProvider(InfrastructureProvider):
             ProviderCapability.PROVISION,
             ProviderCapability.DELETE,
             ProviderCapability.STATUS,
+            ProviderCapability.POWER,
+            ProviderCapability.NETWORK,
             ProviderCapability.MANAGED_KUBERNETES,
         }
     )
-    planned_capabilities = frozenset({ProviderCapability.POWER, ProviderCapability.NETWORK})
-    planned_capabilities_phase = 5
     implementation_status = ImplementationStatus.PREVIEW
     config_model = GcpConfig
     credential_kinds = frozenset({CredentialKind.GCP_SERVICE_ACCOUNT})
@@ -194,7 +196,7 @@ class GcpProvider(InfrastructureProvider):
             response = http.send("GET", url, headers={"Authorization": f"Bearer {self._access_token(SCOPE)}"})
             http.expect_ok(response, "Google Cloud wait for GKE operation", message_of=_gcp_error)
             result = response.json()
-            if result.get("done"):
+            if result.get("status") == "DONE":
                 if result.get("error"):
                     raise ProviderApiError(f"GKE operation failed: {result['error']}")
                 return
@@ -238,10 +240,11 @@ class GcpProvider(InfrastructureProvider):
                     {
                         "key": str(item["key"]),
                         "value": str(item.get("value") or ""),
-                        "effect": str(item["effect"])
-                        .upper()
-                        .replace("NOSCHEDULE", "NO_SCHEDULE")
-                        .replace("NOEXECUTE", "NO_EXECUTE"),
+                        "effect": {
+                            "NoSchedule": "NO_SCHEDULE",
+                            "PreferNoSchedule": "PREFER_NO_SCHEDULE",
+                            "NoExecute": "NO_EXECUTE",
+                        }[str(item["effect"])],
                     }
                     for item in (pool.get("taints") or [])
                 ]
@@ -250,7 +253,8 @@ class GcpProvider(InfrastructureProvider):
                         "name": pool_name,
                         "initialNodeCount": count,
                         "config": {
-                            "machineType": machine_type,
+                            "machineType": str(pool.get("machine_type") or machine_type),
+                            "diskSizeGb": int(pool.get("disk_gb") or 100),
                             "oauthScopes": [SCOPE],
                             "labels": labels,
                             "taints": taints,
@@ -265,13 +269,17 @@ class GcpProvider(InfrastructureProvider):
                 "initialClusterVersion": request.version.removeprefix("v"),
                 "network": network,
                 "subnetwork": subnetwork,
-                "initialNodeCount": 1,
-                "removeDefaultNodePool": True,
                 "nodePools": pools,
                 "resourceLabels": {"kubernetes-platform-managed": "true"},
-                "ipAllocationPolicy": {"useIpAliases": True},
+                "ipAllocationPolicy": {
+                    "useIpAliases": True,
+                    "clusterIpv4CidrBlock": str(options.get("managed_pod_cidr") or "10.244.0.0/16"),
+                    "servicesIpv4CidrBlock": str(options.get("managed_service_cidr") or "10.96.0.0/12"),
+                },
             }
-            operation = self._gke_request("POST", path, "create GKE cluster", body)
+            if options.get("managed_cni") == "cilium":
+                body["networkConfig"] = {"datapathProvider": "ADVANCED_DATAPATH"}
+            operation = self._gke_request("POST", path, "create GKE cluster", {"cluster": body})
             self._gke_wait_operation(location, str(operation.get("name") or ""))
             current = self._gke_get(location, cluster_name)
         if not current or (current.get("resourceLabels") or {}).get("kubernetes-platform-managed") != "true":
@@ -371,8 +379,10 @@ class GcpProvider(InfrastructureProvider):
             f"{request.ssh_username}\n"
             f"install -d -m 700 -o {request.ssh_username} -g {request.ssh_username} "
             f"/home/{request.ssh_username}/.ssh\n"
-            f"printf '%s\\n' {self._shell_quote(request.ssh_username + ':' + request.ssh_public_key)} "
-            f">> /home/{request.ssh_username}/.ssh/authorized_keys\n"
+            f"printf '%s\\n' {self._shell_quote(request.ssh_public_key)} "
+            f"> /home/{request.ssh_username}/.ssh/authorized_keys\n"
+            f"chmod 600 /home/{request.ssh_username}/.ssh/authorized_keys\n"
+            f"chown {request.ssh_username}:{request.ssh_username} /home/{request.ssh_username}/.ssh/authorized_keys\n"
             f"printf '%s\\n' {self._shell_quote(request.ssh_username + ' ALL=(ALL) NOPASSWD:ALL')} "
             ">/etc/sudoers.d/90-platform\nchmod 440 /etc/sudoers.d/90-platform\n"
         )

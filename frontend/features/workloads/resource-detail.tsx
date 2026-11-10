@@ -72,7 +72,8 @@ function PodsTable({ detail }: { detail: ResourceDetail }) {
 function History({ clusterId, detail }: { clusterId: string; detail: ResourceDetail }) {
   const rollback = useRollback(clusterId);
   const [target, setTarget] = useState<number | null>(null);
-  const { namespace, name } = detail.summary;
+  const namespace = detail.summary.namespace ?? "default";
+  const { name } = detail.summary;
   return (
     <>
       <Table>
@@ -121,7 +122,7 @@ function DataView({ clusterId, detail }: { clusterId: string; detail: ResourceDe
   return (
     <div className="space-y-3">
       {isSecret && !revealed && (
-        <Button size="sm" variant="outline" disabled={reveal.isPending} onClick={() => reveal.mutate({ namespace: detail.summary.namespace, name: detail.summary.name })}>
+        <Button size="sm" variant="outline" disabled={reveal.isPending} onClick={() => reveal.mutate({ namespace: detail.summary.namespace ?? "default", name: detail.summary.name })}>
           <Eye /> Reveal values (audited)
         </Button>
       )}
@@ -181,7 +182,7 @@ function ScaleDialog({ open, onOpenChange, clusterId, kind, detail }: { open: bo
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button
             disabled={!valid || n === current || scale.isPending}
-            onClick={() => scale.mutate({ namespace: detail.summary.namespace, name: detail.summary.name, replicas: n }, {
+            onClick={() => scale.mutate({ namespace: detail.summary.namespace ?? "default", name: detail.summary.name, replicas: n }, {
               onSuccess: () => { toast.success(`Scaled to ${n}`); onOpenChange(false); },
               onError: (e) => toast.error("Scale failed", { description: e.message }),
             })}
@@ -205,7 +206,7 @@ function ScalingPolicyDialog({ open, onOpenChange, clusterId, detail }: { open: 
   const remove = useDeleteScalingPolicy(clusterId);
   const nMin = Number(minimum), nMax = Number(maximum), nTarget = Number(target), nStabilization = Number(stabilization);
   const valid = Number.isInteger(nMin) && Number.isInteger(nMax) && Number.isInteger(nTarget) && Number.isInteger(nStabilization) && nMin >= 1 && nMax >= nMin && nMax <= 1000 && nTarget >= 1 && nTarget <= 100 && nStabilization >= 0 && nStabilization <= 3600;
-  const identity = { namespace: detail.summary.namespace, name: detail.summary.name };
+  const identity = { namespace: detail.summary.namespace ?? "default", name: detail.summary.name };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
@@ -256,7 +257,7 @@ export function ResourceDetailDialog({
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">{config.singular} <span className="font-mono">{target?.name}</span></DialogTitle>
-          <DialogDescription>Namespace {target?.namespace} · live from the cluster</DialogDescription>
+          <DialogDescription>{config.scope === "cluster" ? "Cluster-scoped object · live from the cluster" : `Namespace ${target?.namespace} · live from the cluster`}</DialogDescription>
         </DialogHeader>
         {detail.isLoading && <Skeleton className="h-80" />}
         {detail.isError && <LiveError error={detail.error} clusterId={clusterId} onRetry={() => detail.refetch()} />}
@@ -274,7 +275,7 @@ export function ResourceDetailDialog({
                   </Button>
                 </>
               )}
-              <Button size="sm" variant="outline" className="ml-auto" onClick={() => setDeleting(true)}><Trash2 className="text-red-400" /> Delete</Button>
+              {d.capabilities.delete && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setDeleting(true)}><Trash2 className="text-red-400" /> Delete</Button>}
             </div>
             <Tabs defaultValue={isPod ? "logs" : "overview"}>
               <TabsList className="flex-wrap">
@@ -303,7 +304,7 @@ export function ResourceDetailDialog({
               )}
               {(kind === "configmaps" || kind === "secrets") && <TabsContent value="data" className="pt-4"><DataView clusterId={clusterId} detail={d} /></TabsContent>}
               <TabsContent value="yaml" className="pt-4">
-                <YamlApplyPanel key={`${target.namespace}/${target.name}`} clusterId={clusterId} initial={d.yaml} defaultNamespace={target.namespace} allowNamespace={false} allowFiles={false} height="420px" />
+                <YamlApplyPanel key={`${target.namespace}/${target.name}`} clusterId={clusterId} initial={d.yaml} defaultNamespace={config.scope === "cluster" ? "default" : target.namespace} allowNamespace={false} allowFiles={false} height="420px" />
               </TabsContent>
               <TabsContent value="events" className="pt-4"><Events detail={d} /></TabsContent>
             </Tabs>
@@ -323,7 +324,10 @@ export function ResourceDetailDialog({
               open={deleting}
               onOpenChange={setDeleting}
               title={`Delete ${config.singular.toLowerCase()} ${target.name}?`}
-              description={<p>The object is deleted from namespace {target.namespace}. {kind === "pods" ? "A controller may recreate it." : "Dependent objects are garbage-collected."}</p>}
+              description={<p>
+                {config.scope === "cluster" ? "This cluster-scoped object will be deleted." : `The object is deleted from namespace ${target.namespace}.`}{" "}
+                {kind === "pods" ? "A controller may recreate it." : kind === "persistentvolumeclaims" ? "The backing volume may be deleted depending on its reclaim policy; verify the PersistentVolume and StorageClass first." : kind === "persistentvolumes" ? "The backing storage behavior follows its reclaim policy; verify it before deleting." : "Dependent objects are garbage-collected."}
+              </p>}
               confirmText={target.name}
               confirmLabel="Delete"
               pending={remove.isPending}

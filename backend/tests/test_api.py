@@ -74,7 +74,7 @@ class TestCatalog:
             "aws": "preview",
             "azure": "preview",
             "gcp": "preview",
-            "vsphere": "planned",
+            "vsphere": "preview",
         }
         proxmox = next(p for p in providers if p["type"] == "proxmox")
         assert "api_url" in proxmox["config_schema"]["properties"]
@@ -99,8 +99,8 @@ class TestOperations:
         assert [s["key"] for s in op["steps"]] == ["worker", "database", "redis", "secret_store", "catalogs"]
         assert all(s["status"] == "succeeded" for s in op["steps"])
         assert op["result"]["database"]["schema_revision"]
-        assert op["result"]["providers"] == {"available": 2, "preview": 4, "planned": 1}
-        assert op["result"]["distributions"] == {"available": 4, "planned": 4}
+        assert op["result"]["providers"] == {"available": 2, "preview": 5}
+        assert op["result"]["distributions"] == {"available": 4, "preview": 4}
 
         listed = client.get(f"{API}/operations").json()
         assert listed["total"] == 1 and listed["items"][0]["id"] == op["id"]

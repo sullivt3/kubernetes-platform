@@ -97,7 +97,7 @@ Three independent abstractions:
 | AWS | Preview | Validate and inventory EC2; create and delete platform-owned EC2 instances, EKS clusters/node groups, and tagged Network Load Balancers for kubeadm APIs. |
 | GCP | Preview | Validate and inventory Compute Engine; create/delete platform-owned instances and GKE clusters with managed node pools. |
 | Azure | Preview | Validate and inventory VMs; create/delete platform-owned VMs and AKS clusters with managed node pools. |
-| vSphere | Planned | Catalogued only. |
+| vSphere | Preview | pyVmomi template cloning with VMware cloud-init guestinfo, inventory, hardware, power, owned VM deletion and standard/distributed port-group changes. |
 
 * **Provisioning workflow** (`machine.provision`): create (idempotent) → wait for an address → wait for SSH →
   connect and pin the host key → inspect. The machine row exists from the start (`requested` →
@@ -228,7 +228,13 @@ provision -> machine.provision                 - distribution rules          [wa
 **Scope today.**
 * kubeadm with Calico or Flannel on Linux machines (registered, local containers, Proxmox VMs in preview).
 * kubeadm upgrades are implemented as a tracked operation: one minor version at a time, control planes serially, then each node drained through Kubernetes eviction, upgraded, checked at the target kubelet version, and uncordoned. Cluster version metadata advances only after every node verifies successfully.
-* EKS, AKS and GKE create/delete use provider APIs with ownership tags/labels and managed node pools. AWS EKS IAM tokens and GKE OAuth tokens are refreshed in memory; AKS admin client certificates are stored only in the encrypted kubeconfig. Provider-managed clusters do not create `ClusterMachine` rows. Existing IAM roles, resource groups, networks and subnets are prerequisites; these operations do not create those foundations.
+* EKS, AKS and GKE create/delete/scale/upgrade use provider APIs with ownership tags/labels and managed node pools. AWS EKS IAM tokens and GKE OAuth tokens are refreshed in memory; AKS admin client certificates are stored only in the encrypted kubeconfig. Provider-managed clusters do not create `ClusterMachine` rows. Existing IAM roles, resource groups, networks and subnets are prerequisites; these operations do not create those foundations.
+
+Additional distribution paths are described in [Cluster integrations](cluster-integrations.md).
+Kind/k3d run pinned CLI tools on the configured Docker socket and register encrypted access without creating SSH inventory machines.
+K3s/RKE2 use versioned native installers, ownership markers and redacted join tokens; their server/agent lifecycle uses the same tracked operations.
+Creation-time storage is appended after access registration. Managed and local worker-pool resizing has a separate endpoint from SSH machine addition.
+The local Cilium chart renderer supports installation only; general Helm release management remains Phase 8.
 
 ## Node management
 
@@ -287,10 +293,32 @@ All node changes are audited (`node.cordon`, `node.labels`, `node.taints`, `node
 
 `app/modules/workloads/` builds on the Kubernetes client to read and change resources inside a cluster.
 
-* **Generic kinds.** `kinds.py` describes each supported kind (API group/version, plural, namespaced, which actions
-  apply). One set of routes (`/clusters/{id}/resources/{kind}`) serves pods, deployments, ReplicaSets,
-  StatefulSets, DaemonSets, Jobs, CronJobs, Services, ConfigMaps and Secrets. Adding a kind is a table entry plus
-  a summary function and a frontend column definition.
+* **Generic kinds.** `kinds.py` describes each supported kind (API group/version, plural, scope and which actions
+  apply). Shared routes serve workloads, Services, Ingresses, NetworkPolicies, EndpointSlices, Gateway API
+  resources, persistent volumes and claims, StorageClasses, CSI drivers, VolumeAttachments, ResourceQuotas,
+  LimitRanges, ConfigMaps and Secrets.
+  Cluster-scoped resources use the `cluster` path marker in the detail URL and map to Kubernetes collection paths
+  without a namespace. Controller-managed objects such as CSIDrivers and VolumeAttachments are read-only. Ingress
+  reconciliation needs an installed ingress controller; Gateway API needs its CRDs and controller; NetworkPolicy
+  enforcement depends on the cluster CNI.
+* **DNS inventory and diagnostics.** The service discovery inventory combines Services and ready EndpointSlice
+  addresses using the domain recorded in the cluster spec (or `cluster.local`). The separate `cluster.dns.lookup`
+  workflow runs a temporary, unprivileged Job in the chosen namespace, under its network policies, without a
+  service account token or shell interpolation. Queries, output and execution time are bounded. The operation
+  records actual resolver output, distinguishes a negative answer from an execution failure, and cleans up
+  its Job with a UID precondition. A TTL handles worker crashes. This does not install or reconfigure CoreDNS.
+* **NFS CSI lifecycle.** `kubernetes/storage.py` owns the pinned NFS integration; it shares the existing API client
+  and orchestration engine. The backend downloads the four official NFS CSI v4.13.6 manifests and checks their
+  recorded SHA-256 hashes before applying. Preflight refuses resources managed outside the platform; writes use
+  create-only requests or merge patches with resourceVersion preconditions, and readiness requires current controller
+  and node rollout generations. Optional StorageClass configuration uses an existing NFS 4.1 export and retains
+  data. Default-class conflicts are refused. Removal checks complete inventories of PVs, PVCs and attachments,
+  including retained volumes and pending claims, and deletes only owned objects using UID preconditions.
+  Interrupted installations converge on retry and can be removed without downloading manifests again. The
+  installation step is separate from cluster creation and is available on Storage → CSI drivers. The driver
+  needs Linux hosts with `/var/lib/kubelet`, privileged host mounts, and a reachable NFS export. Its transport
+  and workflow contracts have simulator coverage; live cluster verification is still required before
+  production use. Other vendor drivers use YAML management until their dedicated integrations are added.
 * **Mutations are direct, audited API calls, not operations.** Scale, restart, rollback, CronJob trigger/suspend,
   delete and apply complete in one request against the API server, so queuing them through Celery would only add
   latency. Each one writes an audit event with outcome. Long-running, multi-step work (installing clusters or

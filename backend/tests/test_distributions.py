@@ -147,12 +147,12 @@ class TestCompatibility:
 PLANNED = [d for d in distribution_registry.all() if d.implementation_status.value == "planned"]
 
 
-@pytest.mark.parametrize("d", PLANNED, ids=lambda d: d.distribution_type.value)
-def test_planned_distributions_refuse_to_plan(d: Any) -> None:
-    kind_spec = spec(
-        distribution=d.distribution_type.value,
-        control_plane={"count": 0} if d.kind is DistributionKind.MANAGED else spec().control_plane.model_dump(),
-    )
-    plan = ClusterPlanInput(cluster_id=uuid.uuid4(), cluster_name="x", spec=kind_spec, nodes=[])
-    with pytest.raises(NotImplementedYetError):
-        d.plan_create(plan)
+def test_planned_distributions_refuse_to_plan() -> None:
+    for d in PLANNED:
+        kind_spec = spec(
+            distribution=d.distribution_type.value,
+            control_plane={"count": 0} if d.kind is DistributionKind.MANAGED else spec().control_plane.model_dump(),
+        )
+        plan = ClusterPlanInput(cluster_id=uuid.uuid4(), cluster_name="x", spec=kind_spec, nodes=[])
+        with pytest.raises(NotImplementedYetError):
+            d.plan_create(plan)

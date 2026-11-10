@@ -131,7 +131,18 @@ class NetworkSpec(BaseModel):
 
 class StorageSpec(BaseModel):
     default_storage_class: str | None = Field(default=None, pattern=DNS_LABEL)
-    csi_drivers: list[str] = Field(default_factory=list)
+    csi_drivers: list[Literal["nfs.csi.k8s.io"]] = Field(default_factory=list)
+    nfs_server: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9.:-]*$", max_length=253)
+    nfs_share: str | None = Field(default=None, pattern=r"^/[A-Za-z0-9_./-]*$", max_length=1024)
+
+    @model_validator(mode="after")
+    def _nfs(self) -> StorageSpec:
+        if self.nfs_server or self.nfs_share:
+            if not (self.nfs_server and self.nfs_share and self.default_storage_class):
+                raise ValueError("NFS storage requires a server, export path and StorageClass name")
+            if "nfs.csi.k8s.io" not in self.csi_drivers:
+                raise ValueError("Select the NFS CSI driver when configuring an NFS export")
+        return self
 
 
 class ClusterSpec(BaseModel):

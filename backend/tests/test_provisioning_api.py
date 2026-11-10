@@ -80,7 +80,7 @@ def test_connection_rules(client: TestClient, engine: FakeDocker, ssh_key_creden
         f"{API}/provider-connections",
         json={"name": "vc", "provider_type": "vsphere", "config": {"server": "vc", "datacenter": "dc"}},
     )
-    assert planned.status_code == 422 and "Phase 5" in planned.json()["error"]["message"]
+    assert planned.status_code == 422 and "configuration" in planned.json()["error"]["message"]
     ssh = client.post(f"{API}/provider-connections", json={"name": "ssh2", "provider_type": "ssh"})
     assert ssh.status_code == 422
     wrong_kind = client.post(

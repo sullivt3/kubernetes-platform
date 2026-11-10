@@ -16,11 +16,25 @@ export type ResourceKind =
   | "jobs"
   | "cronjobs"
   | "services"
+  | "ingresses"
+  | "networkpolicies"
+  | "endpointslices"
+  | "persistentvolumes"
+  | "persistentvolumeclaims"
+  | "storageclasses"
+  | "csidrivers"
+  | "volumeattachments"
+  | "gatewayclasses"
+  | "gateways"
+  | "httproutes"
+  | "referencegrants"
+  | "resourcequotas"
+  | "limitranges"
   | "configmaps"
   | "secrets";
 
 /** A list row; fields vary by kind (see backend workloads/summaries.py). */
-export type ResourceRow = Record<string, unknown> & { name: string; namespace: string; created: string };
+export type ResourceRow = Record<string, unknown> & { name: string; namespace: string | null; created: string | null };
 
 export interface Rollout {
   state: "complete" | "progressing" | "failed" | "paused";
@@ -43,7 +57,7 @@ export interface ResourceDetail {
   object: Record<string, unknown>;
   yaml: string;
   events: KubeEvent[];
-  capabilities: { scale: boolean; restart: boolean };
+  capabilities: { scale: boolean; restart: boolean; delete: boolean; namespaced: boolean };
   scaling_policy?: Record<string, unknown> | null;
   rollout?: Rollout;
   history?: Revision[];

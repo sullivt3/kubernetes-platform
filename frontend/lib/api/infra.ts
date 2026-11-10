@@ -28,6 +28,7 @@ export interface ProvisionInput {
   credential_id: string;
   ssh_username?: string;
   network?: string | null;
+  image?: string | null;
   labels?: Record<string, string>;
   provider_options?: Record<string, unknown>;
 }

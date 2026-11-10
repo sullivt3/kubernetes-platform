@@ -99,8 +99,10 @@ Machines include `provider_type`, `connection_name`, `external_id`, `power_state
 | DELETE | `/provider-connections/{id}?confirm=<name>` | 409 while machines belong to it (204). Nothing changes at the provider. |
 | POST | `/provider-connections/{id}/validate` | Re-validate (202). |
 | POST | `/provider-connections/{id}/discover` | `provider.discover` (202). `result.machines`: discovered machines with `inventory_machine`, `importable`, `ssh_endpoint`, `kube_api_endpoint`. Read-only. |
-| POST | `/provider-connections/{id}/machines` | `{names[1..20], cpu_cores, memory_mb, disk_gb, credential_id, ssh_username?, network?, labels?, provider_options?}` (202) → one `machine.provision` operation per machine. `credential_id` must be an SSH private key; its public key is installed. Proxmox: `provider_options.ipconfig` (cloud-init `ipconfig0`). |
+| POST | `/provider-connections/{id}/machines` | `{names[1..20], cpu_cores, memory_mb, disk_gb, credential_id, ssh_username?, network?, image?, labels?, provider_options?}` (202) → one `machine.provision` operation per machine. `credential_id` must be an SSH private key; its public key is installed. Proxmox: `provider_options.ipconfig` (cloud-init `ipconfig0`). |
 | POST | `/provider-connections/{id}/import` | `{external_id, name, host, port, username?, credential_id, kube_api_host?, kube_api_port?}` (201): add an importable discovered machine to the inventory and inspect it. Discovered cloud instances are not importable; provisioned AWS machines are managed through the normal provisioning flow. |
+
+| POST | `/machines/{id}/network?confirm=<machine-name>` | `{network, addresses?, options?}` → `machine.network` (202). Provider-specific network changes on platform-provisioned machines. |
 
 ### Network discovery
 
@@ -122,6 +124,9 @@ Machines include `provider_type`, `connection_name`, `external_id`, `power_state
 | POST | `/clusters/{id}/nodes` | `{pool, existing_machine_ids[], provision_count, machine_template?, provider_connection_id?, machine_credential_id?, labels?, taints?}` → `cluster.nodes.add` (202). `pool` may be an existing pool, the control-plane pool (clusters with a shared endpoint only) or a new worker pool (then `labels`/`taints` apply). |
 | DELETE | `/clusters/{id}/nodes/{node}?confirm=<node>&destroy_machine=<bool>&force=<bool>` | Drain, reset and release the node (`cluster.nodes.remove`, 202). The last control plane cannot be removed. |
 
+| POST | `/clusters/{id}/pools/{pool}/resize` | `{count}` → `cluster.pool.resize` (202). Managed clouds and k3d; scale-down requires `confirm=<cluster-name>`. GKE counts are per zone. |
+| POST | `/clusters/{id}/upgrade` | `{target_version, target_release_revision?, allow_emptydir_data?}` → `cluster.upgrade` (202). kubeadm/K3s/RKE2 and managed clouds; EKS targets the next minor version. |
+
 `ClusterSpec` (abridged):
 `{name, distribution: "kubeadm", provider_type: "ssh"|"local"|"proxmox", provider_connection_id?, machine_credential_id?,
 machine_username?, kubernetes_version: "1.37" | "1.37.2", network: {cni, pod_cidr, service_cidr, dns_domain},
@@ -131,6 +136,12 @@ kube_proxy_conntrack_max_per_core, ignore_preflight_errors, api_server_extra_san
 provider_lb_vpc_id, provider_lb_subnet_ids, provider_lb_scheme}}`. Provider-managed API load balancing currently creates an AWS Network Load Balancer and needs an AWS connection, VPC ID and subnet IDs.
 
 For `eks`, `aks` and `gke`, set `control_plane.count` to `0`, provide a matching cloud `provider_connection_id`, and put desired node counts in `worker_pools` (with a `machine_template` for each nonzero pool). EKS options include `managed_cluster_role_arn`, `managed_node_role_arn` and `managed_subnet_ids`; AKS uses `managed_resource_group`, `managed_location` and `managed_subnet_id`; GKE uses `managed_location`, `managed_network` and `managed_subnetwork`. IAM roles, resource groups, VNets and VPC networks must already exist.
+
+Kind/k3d require a Local Docker connection, exact patch versions and node counts rather than SSH inventory machines.
+K3s/RKE2 accept `options.release_revision` for their release suffix, and use external API load balancing for HA.
+Machine templates accept `image` and `provider_options`; managed templates honor disk and machine-type overrides.
+Creation storage accepts `default_storage_class`, `csi_drivers: ["nfs.csi.k8s.io"]`, `nfs_server` and `nfs_share`.
+See [Cluster integrations](cluster-integrations.md) for configuration, ownership safeguards and supported network operations.
 
 ### Cluster connectivity and live data
 
@@ -159,15 +170,51 @@ Live endpoints return **503 `cluster_unreachable`** or **502 `cluster_auth_faile
 used. `GET /clusters` and `GET /clusters/{id}` include the last observed `health`, `health_error` and
 `observed_at`.
 
+### DNS diagnostics and NFS CSI lifecycle
+
+All paths below are under `/clusters/{id}`. Mutations return an asynchronous `OperationDetail` (202),
+with logs, cancellation and retry available through `/operations/{operation_id}`. The cluster must be
+connected and not deleting; tenancy and the cluster operation concurrency lock apply.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/dns/lookup` | `{namespace?: "default", hostname?: "kubernetes.default.svc", record_type?: "A"}`. Types: A, AAAA, CNAME, SRV, TXT, MX. Starts `cluster.dns.lookup`. |
+| GET | `/storage/nfs` | Supported pinned version, registered/managed state, controller and node readiness, NFS StorageClasses. |
+| POST | `/storage/nfs` | `{storage_class?: null, server?: null, share?: null, make_default?: false}`. Starts `cluster.storage.nfs.install` to install or reconcile NFS CSI v4.13.6. |
+| DELETE | `/storage/nfs?confirm=<cluster-name>` | Starts `cluster.storage.nfs.remove`. Confirmation is mandatory (428 otherwise); references or external ownership fail the operation before deletion. |
+
+DNS results contain `{hostname, record_type, namespace, resolved, exit_code, output}`. A completed query
+that returns NXDOMAIN reports `resolved: false`; scheduling, admission and timeout failures fail the operation.
+The Job runs for at most 60 seconds, output is capped at 32 KiB, and cleanup uses the Job UID. A TTL provides
+cleanup after worker failure. The utility image is `registry.k8s.io/e2e-test-images/dnsutils:1.3`.
+
+For NFS, providing `storage_class` requires both `server` and an absolute `share` path. The existing NFS 4.1
+export must be reachable and writable from Linux nodes using `/var/lib/kubelet`. The installer downloads four
+upstream manifests from a pinned release and checks SHA-256 hashes before applying. It installs privileged
+controller/node plugins and their RBAC in `kube-system`, then waits up to five minutes for readiness.
+Existing resources without the add-on ownership labels are refused; another default StorageClass is never
+silently replaced. Configured classes use `Retain`, `onDelete: retain`, and NFS 4.1. Existing class parameters
+are subject to Kubernetes immutability rules; create a new class to use a different export. Driver readiness
+does not validate the export; provisioning is verified when a claim binds. Snapshot controller installation
+and dedicated installers for other vendors are outside this integration.
+
+Removal refuses incomplete inventories, Pending claims, retained/released volumes, attachments, and foreign
+resources. It deletes only owned driver/RBAC/class resources with UID preconditions; it never deletes PVs,
+PVCs or NFS files. It does not require an upstream download and can clean up a partial installation.
+
 ### Workloads and resources
 
 `{kind}` is one of `pods`, `deployments`, `replicasets`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs`,
-`services`, `configmaps`, `secrets`. All paths are under `/clusters/{id}`.
+`services`, `ingresses`, `networkpolicies`, `endpointslices`, `persistentvolumes`, `persistentvolumeclaims`,
+`storageclasses`, `csidrivers`, `volumeattachments`, `gatewayclasses`, `gateways`, `httproutes`,
+`referencegrants`, `resourcequotas`, `limitranges`, `configmaps`, `secrets`. All paths are under `/clusters/{id}`. For cluster-scoped kinds, pass
+`cluster` in the `{namespace}` path segment; Kubernetes requests omit the namespace. Gateway API resources require
+their CRDs and controller to be installed. Deleting controller-managed CSIDriver and VolumeAttachment objects through this API is disabled.
 
 | Method | Path | Description |
 |---|---|---|
 | GET | `/resources/{kind}?namespace=` | Summaries (status, readiness, images, age…). `truncated` is set when the list was capped. |
-| GET | `/resources/{kind}/{namespace}/{name}` | `{kind, summary, object, yaml, events, capabilities}`, plus `rollout`/`history` for deployments, owned `pods` for controllers and `containers` for pods. Secret values are `<redacted>`. |
+| GET | `/resources/{kind}/{namespace}/{name}` | `{kind, summary, object, yaml, events, capabilities}`, plus kind-specific fields such as deployment history and storage/network summaries. Secret values are `<redacted>`. |
 | DELETE | `/resources/{kind}/{namespace}/{name}?confirm=<name>` | Delete (204). |
 | POST | `/resources/{kind}/{namespace}/{name}/scale` | `{replicas}` (deployments, statefulsets, replicasets). |
 | PUT | `/deployments/{namespace}/{name}/scaling-policy` | `{minimum, maximum, metric: "cpu"|"memory", target_utilization, scale_down_stabilization_seconds?}` creates or updates an `autoscaling/v2` HPA; requests must exist on workload containers. |

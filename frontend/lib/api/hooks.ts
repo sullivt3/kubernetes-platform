@@ -236,10 +236,11 @@ export function useDeleteCluster() {
 export function useUpgradeCluster() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, targetVersion, allowEmptydirData }: { id: string; targetVersion: string; allowEmptydirData: boolean }) =>
+    mutationFn: ({ id, targetVersion, allowEmptydirData, targetReleaseRevision }: { id: string; targetVersion: string; allowEmptydirData: boolean; targetReleaseRevision?: number }) =>
       api.post<OperationDetail>(`/clusters/${id}/upgrade`, {
         target_version: targetVersion,
         allow_emptydir_data: allowEmptydirData,
+        target_release_revision: targetReleaseRevision,
       }),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: queryKeys.clusters });

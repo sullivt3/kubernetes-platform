@@ -39,7 +39,13 @@ from app.modules.infrastructure.workflows import step_connect, step_inspect
 from app.modules.providers.base import InfrastructureProvider
 from app.modules.providers.http import ProviderApiError, ProviderUnreachableError
 from app.modules.providers.registry import provider_registry
-from app.modules.providers.types import DiscoveredMachine, MachineRef, MachineSpecRequest, PowerAction
+from app.modules.providers.types import (
+    DiscoveredMachine,
+    MachineRef,
+    MachineSpecRequest,
+    NetworkConfigRequest,
+    PowerAction,
+)
 from app.orchestration.context import StepContext
 from app.orchestration.models import Operation, OperationStatus
 from app.orchestration.workflow import (
@@ -55,6 +61,7 @@ PROVIDER_VALIDATE = "provider.validate"
 PROVIDER_DISCOVER = "provider.discover"
 MACHINE_PROVISION = "machine.provision"
 MACHINE_POWER = "machine.power"
+MACHINE_NETWORK = "machine.network"
 MACHINE_DEPROVISION = "machine.deprovision"
 NETWORK_DISCOVER = "network.discover"
 PENDING_PREFIX = "pending:"
@@ -232,6 +239,7 @@ class ProvisionParams(BaseModel):
     disk_gb: int = Field(ge=10)
     ssh_username: str = "platform"
     network: str | None = None
+    image: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     provider_options: dict[str, Any] = Field(default_factory=dict)
     # Consumed by the shared connect/inspect steps.
@@ -250,6 +258,7 @@ def step_provision(ctx: StepContext) -> dict[str, Any]:
         memory_mb=p.memory_mb,
         disk_gb=p.disk_gb,
         network=p.network,
+        image=p.image,
         labels=p.labels,
         provider_options=p.provider_options,
         ssh_username=p.ssh_username,
@@ -381,9 +390,41 @@ def step_power(ctx: StepContext) -> dict[str, Any]:
         machine = _machine(session, p.machine_id)
         machine.power_state = _power(status.power_state)
         machine.last_seen_at = datetime.now(UTC)
-    ctx.info(f"{p.machine_name} is now {status.power_state}")
+    ctx.info(
+        f"{p.action.value.capitalize()} request accepted for {p.machine_name}; "
+        f"observed power state: {status.power_state}"
+    )
     ctx.set_result({"power_state": status.power_state})
     return {"power_state": status.power_state}
+
+
+class NetworkParams(BaseModel):
+    machine_id: uuid.UUID
+    machine_name: str
+    connection_id: uuid.UUID
+    request: NetworkConfigRequest
+
+
+def step_network(ctx: StepContext) -> dict[str, Any]:
+    p: NetworkParams = ctx.params  # type: ignore[assignment]
+    with ctx.db() as session:
+        external_id = _machine(session, p.machine_id).external_id
+    with provider_for(ctx, p.connection_id) as provider:
+        provider.configure_network(MachineRef(external_id=external_id), p.request)
+    ctx.info("Provider accepted the network change. Inspect the machine after the provider finishes applying it.")
+    return {"network": p.request.network}
+
+
+workflow_registry.register(
+    WorkflowDefinition(
+        type=MACHINE_NETWORK,
+        title="Configure machine network",
+        params_model=NetworkParams,
+        description="Apply a provider-supported network change to a platform-managed machine.",
+        plan=lambda p: [StepDefinition("network", "Configure network at the provider", step_network)],
+        target=lambda p: OperationTarget(type="machine", id=str(p.machine_id), name=p.machine_name),
+    )
+)
 
 
 workflow_registry.register(

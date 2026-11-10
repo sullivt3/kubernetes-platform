@@ -3,6 +3,7 @@
 import { AlertTriangle, Plus } from "lucide-react";
 import { useState } from "react";
 
+import { WorkerPools } from "@/features/clusters/worker-pools";
 import { EmptyState, TableSkeleton } from "@/components/common/page";
 import { StatusPill } from "@/components/common/status";
 import { Badge } from "@/components/ui/badge";
@@ -138,10 +139,12 @@ export function NodesTable({ clusterId }: { clusterId: string }) {
   if (nodes.isLoading) return <TableSkeleton rows={3} columns={7} />;
   if (nodes.isError) return <LiveError error={nodes.error} clusterId={clusterId} onRetry={() => nodes.refetch()} />;
   const c = cluster.data;
-  const canAdd = c?.origin === "provisioned" && (c.lifecycle_state === "active" || c.lifecycle_state === "degraded");
+  const machineBased = c && ["kubeadm", "k3s", "rke2"].includes(c.distribution);
+  const canAdd = machineBased && c?.origin === "provisioned" && (c.lifecycle_state === "active" || c.lifecycle_state === "degraded");
   return (
     <>
-      {c?.origin === "provisioned" && (
+      {c && <WorkerPools cluster={c} />}
+      {machineBased && c?.origin === "provisioned" && (
         <div className="mb-3 flex items-center justify-between gap-3">
           <p className="text-sm text-muted-foreground">
             {c.nodes.filter((m) => m.membership_state !== "joined").map((m) => `${m.node_name ?? m.machine_name}: ${m.membership_state}`).join(" · ") ||

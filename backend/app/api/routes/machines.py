@@ -17,7 +17,7 @@ from app.core.principal import Principal
 from app.modules.infrastructure.connections import ProviderConnectionService
 from app.modules.infrastructure.models import Machine
 from app.modules.infrastructure.service import MachineService
-from app.modules.providers.types import PowerAction
+from app.modules.providers.types import NetworkConfigRequest, PowerAction
 
 router = APIRouter(prefix="/machines", tags=["machines"])
 
@@ -154,6 +154,17 @@ def power_machine(
 ) -> OperationDetail:
     """Start, stop or reboot a machine through its provider (`machine.power`)."""
     return OperationDetail.model_validate(service.power(principal, machine_id, body.action, confirm=confirm))
+
+
+@router.post("/{machine_id}/network", response_model=OperationDetail, status_code=202)
+def configure_machine_network(
+    machine_id: uuid.UUID,
+    body: NetworkConfigRequest,
+    confirm: str | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
+    service: ProviderConnectionService = Depends(get_connection_service),
+) -> OperationDetail:
+    return OperationDetail.model_validate(service.configure_network(principal, machine_id, body, confirm=confirm))
 
 
 @router.post("/{machine_id}/destroy", response_model=OperationDetail, status_code=202)

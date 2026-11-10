@@ -22,6 +22,8 @@ from pydantic import BaseModel, Field
 from app.modules.credentials.models import CredentialKind
 from app.modules.providers import http
 from app.modules.providers.base import InfrastructureProvider
+from app.modules.providers.implementations.cloud_actions import CloudMachineActions
+from app.modules.providers.implementations.managed_actions import ManagedClusterActions
 from app.modules.providers.types import (
     ConnectionCheckResult,
     DiscoveredMachine,
@@ -71,7 +73,7 @@ class AzureConfig(BaseModel):
     )
 
 
-class AzureProvider(InfrastructureProvider):
+class AzureProvider(CloudMachineActions, ManagedClusterActions, InfrastructureProvider):
     provider_type = ProviderType.AZURE
     display_name = "Microsoft Azure"
     description = "Virtual machine lifecycle management and AKS managed Kubernetes provisioning."
@@ -83,11 +85,11 @@ class AzureProvider(InfrastructureProvider):
             ProviderCapability.PROVISION,
             ProviderCapability.DELETE,
             ProviderCapability.STATUS,
+            ProviderCapability.POWER,
+            ProviderCapability.NETWORK,
             ProviderCapability.MANAGED_KUBERNETES,
         }
     )
-    planned_capabilities = frozenset({ProviderCapability.POWER, ProviderCapability.NETWORK})
-    planned_capabilities_phase = 5
     implementation_status = ImplementationStatus.PREVIEW
     config_model = AzureConfig
     credential_kinds = frozenset({CredentialKind.AZURE_SERVICE_PRINCIPAL})
@@ -177,7 +179,8 @@ class AzureProvider(InfrastructureProvider):
                 {
                     "name": str(pool.get("name") or "workers")[:12].lower().replace("-", "") or "workers",
                     "count": int(pool.get("count") or 0),
-                    "vmSize": vm_size,
+                    "vmSize": str(pool.get("machine_type") or vm_size),
+                    "osDiskSizeGB": int(pool.get("disk_gb") or 128),
                     "osType": "Linux",
                     "mode": "System" if index == 0 else "User",
                     "type": "VirtualMachineScaleSets",
@@ -194,7 +197,7 @@ class AzureProvider(InfrastructureProvider):
             ]
             if not agent_pools:
                 raise http.ProviderApiError("AKS needs at least one initial worker node")
-            body = {
+            body: dict[str, Any] = {
                 "location": location,
                 "tags": {"kubernetes-platform:managed": "true"},
                 "identity": {"type": "SystemAssigned"},
@@ -214,6 +217,8 @@ class AzureProvider(InfrastructureProvider):
                     },
                 },
             }
+            if options.get("managed_cni") == "cilium":
+                body["properties"]["networkProfile"]["networkDataplane"] = "cilium"
             _, headers = self._managed_request("PUT", resource_url, "create AKS cluster", body)
             poll_url = headers.get("azure-asyncoperation") or headers.get("location")
             if poll_url:
@@ -435,9 +440,11 @@ class AzureProvider(InfrastructureProvider):
         nic_id = str(options.get("network_interface_id") or request.network or "")
         image = str(request.image or options.get("image") or "")
         image_parts = image.split(":")
-        if not resource_group or not location or not vm_size or not nic_id or len(image_parts) != 4:
+        subnet_id = str(options.get("subnet_id") or "")
+        if not resource_group or not location or not vm_size or not (nic_id or subnet_id) or len(image_parts) != 4:
             raise http.ProviderApiError(
-                "Azure provisioning requires resource_group, location, vm_size, network_interface_id and "
+                "Azure provisioning requires resource_group, location, vm_size, "
+                "subnet_id (or network_interface_id) and "
                 "publisher:offer:sku:version image"
             )
         if not request.ssh_public_key:
@@ -447,6 +454,8 @@ class AzureProvider(InfrastructureProvider):
             if (existing.get("tags") or {}).get("kubernetes-platform-managed") != "true":
                 raise http.ProviderApiError(f"An unmanaged Azure VM named '{request.name}' already exists")
             return self._machine(resource_group, existing)
+        if not nic_id:
+            nic_id = self._ensure_machine_nic(resource_group, location, request.name, subnet_id)
         publisher, offer, sku, version = image_parts
         body = {
             "location": location,
@@ -472,7 +481,21 @@ class AzureProvider(InfrastructureProvider):
                         },
                     },
                 },
-                "networkProfile": {"networkInterfaces": [{"id": nic_id, "properties": {"primary": True}}]},
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": nic_id,
+                            "properties": {
+                                "primary": True,
+                                **(
+                                    {"deleteOption": "Delete"}
+                                    if not options.get("network_interface_id") and not request.network
+                                    else {}
+                                ),
+                            },
+                        }
+                    ]
+                },
             },
         }
         self._send("PUT", self._vm_url(resource_group, request.name), "create VM", body)
@@ -490,9 +513,59 @@ class AzureProvider(InfrastructureProvider):
             importable=False,
         )
 
+    def _ensure_machine_nic(self, group: str, location: str, name: str, subnet_id: str) -> str:
+        prefix = f"/subscriptions/{self.cfg.subscription_id}/"
+        if not subnet_id.lower().startswith(prefix.lower()) or "/subnets/" not in subnet_id.lower():
+            raise http.ProviderApiError("subnet_id must identify a subnet in this subscription")
+        resource = (
+            f"/subscriptions/{self.cfg.subscription_id}/resourceGroups/{quote(group, safe='')}/"
+            f"providers/Microsoft.Network/networkInterfaces/{quote(name + '-nic', safe='')}"
+        )
+        url = f"{ARM}{resource}?api-version={API_NETWORK}"
+        response = http.send("GET", url, headers={"Authorization": f"Bearer {self._access_token()}"})
+        if response.status != 404:
+            http.expect_ok(response, "Azure inspect network interface", message_of=_azure_error)
+            current = response.json()
+            if (current.get("tags") or {}).get("kubernetes-platform-managed") != "true":
+                raise http.ProviderApiError("Refusing to reuse an unowned network interface")
+        else:
+            self._send(
+                "PUT",
+                url,
+                "create network interface",
+                {
+                    "location": location,
+                    "tags": {"kubernetes-platform-managed": "true"},
+                    "properties": {
+                        "ipConfigurations": [
+                            {
+                                "name": "primary",
+                                "properties": {
+                                    "primary": True,
+                                    "privateIPAllocationMethod": "Dynamic",
+                                    "subnet": {"id": subnet_id},
+                                },
+                            }
+                        ]
+                    },
+                },
+            )
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            nic = self._get(url, "wait for network interface")
+            status = nic.get("properties", {}).get("provisioningState")
+            if status == "Succeeded":
+                return resource
+            if status in {"Failed", "Canceled"}:
+                raise http.ProviderApiError(f"Network interface creation failed: {status}")
+            time.sleep(5)
+        raise http.ProviderApiError("Timed out creating VM network interface")
+
     def _machine_id(self, external_id: str) -> tuple[str, str]:
         parts = external_id.split("/")
         try:
+            if parts[parts.index("subscriptions") + 1].lower() != self.cfg.subscription_id.lower():
+                raise ValueError
             return parts[parts.index("resourceGroups") + 1], parts[parts.index("virtualMachines") + 1]
         except (ValueError, IndexError):
             raise http.ProviderApiError("Azure machine ID must be a virtual machine resource ID") from None

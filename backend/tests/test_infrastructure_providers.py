@@ -111,13 +111,25 @@ def test_eks_bearer_token_is_a_short_lived_signed_sts_url() -> None:
     assert "X-Amz-Signature" in query
 
 
-def test_eks_cluster_create_reuses_tagged_cluster_and_creates_managed_node_group(transport: list[Any]) -> None:
+@pytest.mark.parametrize(
+    ("effect", "aws_effect"),
+    [("NoSchedule", "NO_SCHEDULE"), ("PreferNoSchedule", "PREFER_NO_SCHEDULE"), ("NoExecute", "NO_EXECUTE")],
+)
+def test_eks_cluster_create_reuses_tagged_cluster_and_creates_managed_node_group(
+    transport: list[Any], effect: str, aws_effect: str
+) -> None:
     actions: list[str] = []
 
     def eks_api(request: HttpRequest) -> HttpResponse | None:
         if urlsplit(request.url).hostname != "eks.eu-west-1.amazonaws.com":
             return None
-        action = request.headers.get("X-Amz-Target", "").split(".")[-1]
+        path = urlsplit(request.url).path
+        assert "X-Amz-Target" not in request.headers
+        action = {
+            ("GET", "/clusters/prod"): "DescribeCluster",
+            ("GET", "/clusters/prod/node-groups/workers"): "DescribeNodegroup",
+            ("POST", "/clusters/prod/node-groups"): "CreateNodegroup",
+        }[(request.method, path)]
         actions.append(action)
         if action == "DescribeCluster":
             return _json(
@@ -141,7 +153,10 @@ def test_eks_cluster_create_reuses_tagged_cluster_and_creates_managed_node_group
             )
         if action == "CreateNodegroup":
             payload = json.loads(request.body or b"{}")
-            assert payload["nodegroupName"] == "workers" and payload["scalingConfig"]["desiredSize"] == 2
+            assert payload["nodegroupName"] == "workers"
+            assert payload["scalingConfig"] == {"minSize": 1, "maxSize": 4, "desiredSize": 2}
+            assert payload["diskSize"] == 20 and payload["instanceTypes"] == ["t3.medium"]
+            assert payload["taints"] == [{"key": "dedicated", "effect": aws_effect}]
             return _json(200, {})
         return None
 
@@ -156,12 +171,50 @@ def test_eks_cluster_create_reuses_tagged_cluster_and_creates_managed_node_group
                 "managed_node_role_arn": "arn:aws:iam::123456789012:role/EKSNodeRole",
                 "managed_subnet_ids": ["subnet-a", "subnet-b"],
             },
-            node_pools=[{"name": "workers", "count": 2, "minimum": 1, "maximum": 4}],
+            node_pools=[
+                {
+                    "name": "workers",
+                    "count": 2,
+                    "minimum": 1,
+                    "maximum": 4,
+                    "taints": [{"key": "dedicated", "effect": effect, "value": None}],
+                }
+            ],
         )
     )
     assert result.external_id == "eu-west-1|prod"
     assert result.endpoint.startswith("https://") and result.certificate_authority_data == "Y2E="
     assert "CreateCluster" not in actions and "CreateNodegroup" in actions
+
+
+@pytest.mark.parametrize(
+    ("pool", "extra_options"),
+    [
+        ({"name": "workers", "count": {"invalid": 2}}, {}),
+        ({"name": "workers", "count": 2, "minimum": 3, "maximum": 4}, {}),
+        ({"name": "workers", "count": 2, "maximum": 1}, {}),
+        ({"name": "workers", "count": 2, "taints": [{"key": "dedicated", "effect": "invalid"}]}, {}),
+        ({"name": "workers", "count": 2}, {"managed_node_disk_size_gb": "invalid"}),
+        ({"name": "workers", "count": 2}, {"managed_node_instance_types": {"invalid": "type"}}),
+    ],
+)
+def test_eks_invalid_node_settings_fail_before_cloud_requests(
+    transport: list[Any], pool: dict[str, object], extra_options: dict[str, object]
+) -> None:
+    # The transport rejects every request, so no cluster can be created before validation.
+    request = ManagedClusterRequest(
+        name="prod",
+        version="1.34",
+        options={
+            "managed_cluster_role_arn": "arn:aws:iam::123456789012:role/EKSClusterRole",
+            "managed_node_role_arn": "arn:aws:iam::123456789012:role/EKSNodeRole",
+            "managed_subnet_ids": ["subnet-a", "subnet-b"],
+            **extra_options,
+        },
+        node_pools=[pool],
+    )
+    with pytest.raises(ProviderApiError, match="Invalid EKS node group or compute settings"):
+        _aws().create_managed_cluster(request)
 
 
 # ---- AWS provider --------------------------------------------------------------------

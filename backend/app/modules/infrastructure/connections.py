@@ -251,6 +251,7 @@ class ProviderConnectionService:
         credential_id: uuid.UUID,
         ssh_username: str = "platform",
         network: str | None = None,
+        image: str | None = None,
         labels: dict[str, str] | None = None,
         provider_options: dict[str, Any] | None = None,
     ) -> list[tuple[Machine, Operation]]:
@@ -263,6 +264,12 @@ class ProviderConnectionService:
             raise ValidationFailedError(f"Provision between 1 and {MAX_BATCH} machines at a time")
         if len(set(names)) != len(names):
             raise ValidationFailedError("Machine names must be unique")
+        if (
+            connection.provider_type.value == "azure"
+            and len(names) > 1
+            and (provider_options or {}).get("network_interface_id")
+        ):
+            raise ValidationFailedError("An Azure NIC can attach to one VM; provide a subnet_id for batch provisioning")
         credential = self._ssh_key(principal, credential_id)
         for name in names:
             self._check_new_name(principal, name)
@@ -317,6 +324,7 @@ class ProviderConnectionService:
                     "disk_gb": disk_gb,
                     "ssh_username": ssh_username,
                     "network": network,
+                    "image": image,
                     "labels": labels or {},
                     "provider_options": provider_options or {},
                 },
@@ -435,6 +443,39 @@ class ProviderConnectionService:
                 "machine_name": machine.name,
                 "connection_id": str(connection.id),
                 "action": action.value,
+            },
+        )
+
+    def configure_network(
+        self, principal: Principal, machine_id: uuid.UUID, request, *, confirm: str | None
+    ) -> Operation:
+        machine, connection = self._managed_machine(principal, machine_id)
+        self._require(provider_registry.get_class(connection.provider_type), ProviderCapability.NETWORK)
+        if not machine.provisioned or machine.external_id.startswith(wf.PENDING_PREFIX):
+            raise ConflictError("Network changes require a platform-provisioned machine")
+        if confirm != machine.name:
+            raise ConfirmationRequiredError(
+                "Network changes may interrupt SSH and cluster traffic. Repeat the machine name to confirm.",
+                details={"expected_confirmation": machine.name},
+            )
+        audit.record(
+            self.session,
+            principal=principal,
+            action="machine.network",
+            resource_type="machine",
+            resource_id=machine.id,
+            resource_name=machine.name,
+            details={"network": request.network},
+        )
+        self.session.commit()
+        return self.operations.submit(
+            principal,
+            wf.MACHINE_NETWORK,
+            {
+                "machine_id": str(machine.id),
+                "machine_name": machine.name,
+                "connection_id": str(connection.id),
+                "request": request.model_dump(mode="json"),
             },
         )
 

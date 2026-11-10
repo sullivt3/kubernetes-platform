@@ -79,6 +79,7 @@ class ProvisionRequest(BaseModel):
     credential_id: uuid.UUID = Field(description="SSH private key credential; its public key is installed")
     ssh_username: str = Field(default="platform", pattern=SSH_USER)
     network: str | None = Field(default=None, max_length=128)
+    image: str | None = Field(default=None, max_length=2048)
     labels: dict[str, str] = Field(default_factory=dict)
     provider_options: dict[str, Any] = Field(default_factory=dict)
 
@@ -208,6 +209,7 @@ def provision_machines(
         credential_id=body.credential_id,
         ssh_username=body.ssh_username,
         network=body.network,
+        image=body.image,
         labels=body.labels,
         provider_options=body.provider_options,
     )

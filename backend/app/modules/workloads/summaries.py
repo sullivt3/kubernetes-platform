@@ -168,12 +168,148 @@ def summarize(key: str, obj: Obj) -> Obj:
         row.update(
             type=spec.get("type", "ClusterIP"),
             cluster_ip=spec.get("clusterIP"),
+            external_name=spec.get("externalName"),
             external=[i.get("ip") or i.get("hostname") for i in ingress] + list(spec.get("externalIPs") or []),
             ports=[
                 f"{p.get('port')}{':' + str(p['nodePort']) if p.get('nodePort') else ''}/{p.get('protocol', 'TCP')}"
                 for p in spec.get("ports") or []
             ],
             selector=spec.get("selector") or {},
+        )
+    elif key == "ingresses":
+        rules = spec.get("rules") or []
+        addresses = (status.get("loadBalancer") or {}).get("ingress") or []
+        row.update(
+            ingress_class=spec.get("ingressClassName"),
+            hosts=[rule.get("host") or "*" for rule in rules],
+            paths=sum(len((rule.get("http") or {}).get("paths") or []) for rule in rules),
+            addresses=[item.get("ip") or item.get("hostname") for item in addresses],
+            tls_hosts=[host for tls in spec.get("tls") or [] for host in tls.get("hosts") or []],
+        )
+    elif key == "networkpolicies":
+        policy_types = spec.get("policyTypes") or ["Ingress"]
+        row.update(
+            pod_selector=(spec.get("podSelector") or {}).get("matchLabels") or {},
+            policy_types=policy_types,
+            ingress_rules=len(spec.get("ingress") or []),
+            egress_rules=len(spec.get("egress") or []),
+        )
+    elif key == "endpointslices":
+        endpoints = obj.get("endpoints") or []
+        row.update(
+            service=(row["labels"] or {}).get("kubernetes.io/service-name"),
+            address_type=obj.get("addressType"),
+            endpoints=len(endpoints),
+            ready_endpoints=sum(
+                1 for endpoint in endpoints if (endpoint.get("conditions") or {}).get("ready") is not False
+            ),
+            addresses=[address for endpoint in endpoints for address in endpoint.get("addresses") or []],
+            ready_addresses=[
+                address
+                for endpoint in endpoints
+                if (endpoint.get("conditions") or {}).get("ready") is not False
+                for address in endpoint.get("addresses") or []
+            ],
+            ports=[
+                f"{p.get('name') + ':' if p.get('name') else ''}{p.get('port')}/{p.get('protocol', 'TCP')}"
+                for p in obj.get("ports") or []
+            ],
+        )
+    elif key == "persistentvolumes":
+        claim = spec.get("claimRef") or {}
+        row.update(
+            phase=status.get("phase", "Available"),
+            capacity=(spec.get("capacity") or {}).get("storage"),
+            access_modes=spec.get("accessModes") or [],
+            reclaim_policy=spec.get("persistentVolumeReclaimPolicy", "Retain"),
+            storage_class=spec.get("storageClassName"),
+            claim=f"{claim.get('namespace')}/{claim.get('name')}" if claim.get("name") else None,
+        )
+    elif key == "persistentvolumeclaims":
+        row.update(
+            phase=status.get("phase", "Pending"),
+            requested=((spec.get("resources") or {}).get("requests") or {}).get("storage"),
+            capacity=((status.get("capacity") or {}).get("storage")),
+            access_modes=status.get("accessModes") or spec.get("accessModes") or [],
+            storage_class=spec.get("storageClassName"),
+            volume=spec.get("volumeName"),
+        )
+    elif key == "storageclasses":
+        row.update(
+            provisioner=obj.get("provisioner"),
+            reclaim_policy=obj.get("reclaimPolicy", "Delete"),
+            binding_mode=obj.get("volumeBindingMode", "Immediate"),
+            allow_expansion=bool(obj.get("allowVolumeExpansion", False)),
+            default=(
+                (_meta(obj).get("annotations") or {}).get("storageclass.kubernetes.io/is-default-class") == "true"
+                or (_meta(obj).get("annotations") or {}).get("storageclass.beta.kubernetes.io/is-default-class")
+                == "true"
+            ),
+        )
+    elif key == "csidrivers":
+        row.update(
+            attach_required=spec.get("attachRequired"),
+            pod_info_on_mount=spec.get("podInfoOnMount"),
+            fs_group_policy=spec.get("fsGroupPolicy"),
+            volume_lifecycle_modes=spec.get("volumeLifecycleModes") or [],
+            storage_capacity_tracking=bool(spec.get("storageCapacity", False)),
+        )
+    elif key == "volumeattachments":
+        source = spec.get("source") or {}
+        row.update(
+            driver=spec.get("attacher"),
+            node=spec.get("nodeName"),
+            persistent_volume=source.get("persistentVolumeName"),
+            attached=bool(status.get("attached", False)),
+            attach_error=(status.get("attachError") or {}).get("message"),
+            detach_error=(status.get("detachError") or {}).get("message"),
+        )
+    elif key == "gatewayclasses":
+        conditions = {item.get("type"): item for item in status.get("conditions") or []}
+        row.update(
+            controller=spec.get("controllerName"),
+            accepted=(conditions.get("Accepted") or {}).get("status"),
+            reason=(conditions.get("Accepted") or {}).get("reason"),
+        )
+    elif key == "gateways":
+        conditions = {item.get("type"): item for item in status.get("conditions") or []}
+        row.update(
+            gateway_class=(spec.get("gatewayClassName")),
+            listeners=len(spec.get("listeners") or []),
+            addresses=[item.get("value") for item in status.get("addresses") or []],
+            programmed=(conditions.get("Programmed") or {}).get("status"),
+            accepted=(conditions.get("Accepted") or {}).get("status"),
+        )
+    elif key == "httproutes":
+        parent_conditions = [
+            condition for parent in status.get("parents") or [] for condition in parent.get("conditions") or []
+        ]
+        conditions = {item.get("type"): item for item in parent_conditions}
+        row.update(
+            hosts=spec.get("hostnames") or ["*"],
+            parents=[
+                f"{parent.get('namespace') + '/' if parent.get('namespace') else ''}{parent.get('name')}"
+                for parent in spec.get("parentRefs") or []
+            ],
+            rules=len(spec.get("rules") or []),
+            accepted=(conditions.get("Accepted") or {}).get("status"),
+            resolved_refs=(conditions.get("ResolvedRefs") or {}).get("status"),
+        )
+    elif key == "referencegrants":
+        row.update(from_count=len(spec.get("from") or []), to_count=len(spec.get("to") or []))
+    elif key == "resourcequotas":
+        hard = status.get("hard") or spec.get("hard") or {}
+        used = status.get("used") or {}
+        row.update(
+            hard=[f"{key}: {value}" for key, value in sorted(hard.items())],
+            used=[f"{key}: {value}" for key, value in sorted(used.items())],
+            resource_count=len(hard),
+        )
+    elif key == "limitranges":
+        limits = spec.get("limits") or []
+        row.update(
+            limit_types=[item.get("type") for item in limits],
+            limit_count=len(limits),
         )
     elif key == "configmaps":
         keys = sorted([*(obj.get("data") or {}), *(obj.get("binaryData") or {})])

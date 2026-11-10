@@ -18,25 +18,26 @@ import { cn } from "@/lib/utils";
 import { KIND_CONFIG } from "./kinds";
 import { ResourceDetailDialog } from "./resource-detail";
 
-function ResourceTable({ clusterId, kind }: { clusterId: string; kind: ResourceKind }) {
+export function ResourceTable({ clusterId, kind }: { clusterId: string; kind: ResourceKind }) {
   const config = KIND_CONFIG[kind];
+  const clusterScoped = config.scope === "cluster";
   const [namespace, setNamespace] = useState("");
   const [filter, setFilter] = useState("");
   const [open, setOpen] = useState<{ namespace: string; name: string } | null>(null);
   const namespaces = useClusterNamespaces(clusterId);
-  const resources = useResources(clusterId, kind, namespace);
+  const resources = useResources(clusterId, kind, clusterScoped ? "" : namespace);
   const rows = (resources.data?.items ?? []).filter((r) => !filter || r.name.includes(filter));
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
-        <Select value={namespace || "__all"} onValueChange={(v) => setNamespace(v === "__all" ? "" : v)}>
+        {!clusterScoped && <Select value={namespace || "__all"} onValueChange={(v) => setNamespace(v === "__all" ? "" : v)}>
           <SelectTrigger className="w-56" aria-label="Namespace"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="__all">All namespaces</SelectItem>
             {namespaces.data?.map((n) => <SelectItem key={n.name} value={n.name}>{n.name}</SelectItem>)}
           </SelectContent>
-        </Select>
+        </Select>}
         <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter by name" className="h-8 w-56" />
         {resources.data && <span className="ml-auto text-sm text-muted-foreground">{rows.length} {config.title.toLowerCase()}{resources.data.truncated ? " (truncated)" : ""}</span>}
       </div>
@@ -57,10 +58,10 @@ function ResourceTable({ clusterId, kind }: { clusterId: string; kind: ResourceK
               </TableHeader>
               <TableBody>
                 {rows.map((row) => (
-                  <TableRow key={`${row.namespace}/${row.name}`} className="cursor-pointer" onClick={() => setOpen({ namespace: row.namespace, name: row.name })}>
+                  <TableRow key={`${row.namespace ?? "cluster"}/${row.name}`} className="cursor-pointer" onClick={() => setOpen({ namespace: row.namespace ?? "cluster", name: row.name })}>
                     <TableCell className="max-w-80">
                       <p className="truncate font-medium" title={row.name}>{row.name}</p>
-                      <p className="text-xs text-muted-foreground">{row.namespace}</p>
+                      <p className="text-xs text-muted-foreground">{row.namespace ?? "Cluster-scoped"}</p>
                     </TableCell>
                     {config.columns.map((c) => <TableCell key={c.header} className={cn("text-sm", c.className)}>{c.cell(row)}</TableCell>)}
                   </TableRow>

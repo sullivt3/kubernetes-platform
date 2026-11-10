@@ -14,7 +14,8 @@ installation, cluster administration, workload management and monitoring from a 
 * **Clusters:** a wizard installs Kubernetes with kubeadm (containerd, Calico or Flannel, worker pools with labels
   and taints) on registered machines and/or machines it provisions for the cluster. Highly available control planes
   can use kube-vip, an existing endpoint, or an AWS Network Load Balancer managed by the platform. The platform can
-  also create and delete EKS, AKS and GKE clusters with managed node pools. kubeconfigs and provider credentials are stored encrypted.
+  also create, scale, upgrade and delete EKS, AKS and GKE clusters with managed node pools. kubeconfigs and provider credentials are stored encrypted.
+* **Additional integrations (preview):** Kind/k3d Docker clusters, K3s/RKE2 native installers and lifecycle, vSphere template cloning, and creation-time storage. The wizard collects actual image, network, cloud machine type, labels, taints and disk settings.
 * **Cluster lifecycle:** add nodes (registered or newly provisioned, workers or control planes) and remove them
   (drain, reset, leave etcd, optionally destroy the machine); delete clusters with or without their machines.
 * **Node management:** cordon, uncordon, drain (PodDisruptionBudget-aware), labels, taints and kubelet/containerd
@@ -22,12 +23,16 @@ installation, cluster administration, workload management and monitoring from a 
 * **Visibility:** import existing clusters by kubeconfig and see live health, nodes, namespaces, pods, events,
   topology and CPU/memory utilization (metrics-server can be installed from the UI). Health is observed every minute.
 * **Workloads:** browse and manage pods, deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs, CronJobs,
-  Services, ConfigMaps and Secrets. Configure CPU or memory based Deployment autoscaling policies; scale, restart, roll back, trigger and suspend CronJobs, edit YAML with a
+  Services, Ingresses, NetworkPolicies, ConfigMaps and Secrets. Configure CPU or memory based Deployment autoscaling policies; scale, restart, roll back, trigger and suspend CronJobs, edit YAML with a
   server-side dry run and diff before applying, follow pod logs live and open an audited shell in a container.
   A guided form builds new deployments (with an optional Service).
-* **Not implemented yet:** vSphere, other self-managed distributions,
-  networking/storage management. "Preview" providers are implemented against the vendor's documented API and
-  tested with simulators, but not yet verified against a live system. The UI and API say
+* **Networking and storage:** manage Services, Ingresses, Gateway API resources, NetworkPolicies, service discovery,
+  volumes, claims, StorageClasses and CSI inventory. Run live DNS lookups inside a temporary cluster pod. Install,
+  reconcile and safely remove the NFS CSI driver (preview), optionally configuring an existing NFS export and a
+  default StorageClass. ResourceQuotas and LimitRanges have dedicated views and YAML management.
+* **Not implemented yet:** dedicated installers for CSI vendors other
+  than NFS (their manifests can be applied through the YAML editor). "Preview" integrations follow documented APIs and
+  are tested with simulators, but not yet verified against a live system. The UI and API say
   so explicitly rather than simulating them. See [documentation/architecture.md](documentation/architecture.md).
 
 ## Stack
@@ -117,6 +122,7 @@ npm run build
 * [Architecture](documentation/architecture.md): module boundaries, orchestration engine, security model, structure decisions
 * [Configuration](documentation/configuration.md): every environment variable, key rotation
 * [API](documentation/api.md): endpoints and conventions (OpenAPI at `/api/v1/docs`)
+* [Cluster integrations](documentation/cluster-integrations.md): local/native distributions, managed lifecycle, vSphere, VM inputs and creation-time storage
 
 ## Roadmap
 
@@ -127,7 +133,7 @@ npm run build
 | 4 | kubeadm installation engine, cluster create/delete, provisioning during install, kube-vip HA, node add/remove, node management, post-install smoke test ✅ |
 | 1 | Dashboard and cluster connectivity: import, live health/nodes/namespaces/pods/events, utilization ✅ |
 | 2 | Kubernetes workload management: resources, YAML apply with dry-run diff, logs, terminal ✅ |
-| 5 | kubeadm upgrades, AWS/Azure/GCP machine provisioning, Deployment autoscaling policies, AWS provider load balancers, and managed EKS/AKS/GKE provisioning are implemented |
-| 6 | Networking and storage |
+| 5 | kubeadm upgrades, cloud VM provisioning, autoscaling policies, AWS load balancers, managed EKS/AKS/GKE create/delete/scale/upgrade; overdue Kind/k3d, K3s/RKE2 and vSphere paths implemented as preview; creation wizard VM, CNI and storage wiring |
+| 6 | Networking and storage ✅: resource management, live DNS diagnostics, PV/PVC, StorageClasses, CSI inventory and NFS CSI install/reconcile/remove (preview); ResourceQuotas and LimitRanges |
 | 7 | Enterprise administration (OIDC, RBAC, organizations, backup) |
 | 8 | Advanced operations (Prometheus, Grafana, Loki, Helm, GitOps, CRDs) |

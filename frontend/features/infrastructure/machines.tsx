@@ -48,6 +48,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ApiError } from "@/lib/api/client";
+import { MachineNetwork } from "./machine-network";
 import {
   useCredentials,
   useDeleteMachine,
@@ -339,6 +340,7 @@ export function MachinesPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Machine | null>(null);
   const [retrusting, setRetrusting] = useState<Machine | null>(null);
+  const [networking, setNetworking] = useState<Machine | null>(null);
 
   const startInspect = (machine: Machine, acceptNewHostKey = false) =>
     inspect.mutate(
@@ -487,6 +489,7 @@ export function MachinesPage() {
                               <DropdownMenuItem onSelect={() => setRetrusting(m)}>
                                 <KeyRound /> Accept new host key…
                               </DropdownMenuItem>
+                              {m.provisioned && can(m, "network") && <DropdownMenuItem onSelect={() => setNetworking(m)}>Configure network…</DropdownMenuItem>}
                               {can(m, "power") && !m.external_id.startsWith("pending:") && (
                                 <>
                                   <DropdownMenuSeparator />
@@ -539,6 +542,7 @@ export function MachinesPage() {
       </Card>
 
       <RegisterDialog open={registering} onOpenChange={setRegistering} />
+      {networking && <MachineNetwork key={networking.id} machine={networking} onClose={() => setNetworking(null)} />}
       <ConfirmDialog
         open={destroying !== null}
         onOpenChange={(open) => !open && setDestroying(null)}

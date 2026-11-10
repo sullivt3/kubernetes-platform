@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useClusters, useKubernetesVersions, useUpgradeCluster } from "@/lib/api/hooks";
 
 function minorOf(version: string | null): number | null {
-  const match = version?.replace(/^v/, "").match(/^1\.(\d+)\.(\d+)$/);
+  const match = version?.replace(/^v/, "").match(/^1\.(\d+)(?:\.(\d+))?(?:[-+].*)?$/);
   return match ? Number(match[1]) : null;
 }
 
@@ -27,27 +27,31 @@ export function ClusterUpgrades() {
   const [clusterId, setClusterId] = useState("");
   const [targetVersion, setTargetVersion] = useState("");
   const [allowEmptydirData, setAllowEmptydirData] = useState(false);
+  const [releaseRevision, setReleaseRevision] = useState(1);
 
   const upgradeable = (clusters.data ?? []).filter(
     (cluster) =>
       cluster.origin === "provisioned" &&
-      cluster.distribution === "kubeadm" &&
+      ["kubeadm", "k3s", "rke2", "eks", "aks", "gke"].includes(cluster.distribution) &&
       minorOf(cluster.kubernetes_version) !== null &&
       !cluster.active_operation_id &&
       ["active", "degraded"].includes(cluster.lifecycle_state),
   );
   const selected = upgradeable.find((cluster) => cluster.id === clusterId);
   const currentMinor = minorOf(selected?.kubernetes_version ?? null);
-  const targetVersionValid = /^1\.\d{1,2}\.\d{1,3}$/.test(targetVersion);
+  const eks = selected?.distribution === "eks";
+  const managed = ["eks", "aks", "gke"].includes(selected?.distribution ?? "");
+  const native = ["k3s", "rke2"].includes(selected?.distribution ?? "");
+  const targetVersionValid = (eks ? /^1\.\d{1,2}$/ : /^1\.\d{1,2}\.\d{1,3}$/).test(targetVersion);
   const targets = (versions.data?.versions ?? [])
     .filter((version) => {
       const minor = Number(version.minor.split(".")[1]);
       return currentMinor !== null && minor >= currentMinor && minor <= currentMinor + 1;
     })
-    .map((version) => version.latest_patch)
+    .map((version) => eks ? version.minor : version.latest_patch)
     .filter((version) => {
       const [major, minor, patch] = version.split(".").map(Number);
-      const current = (selected?.kubernetes_version ?? "").replace(/^v/, "").split(".").map(Number);
+      const current = (selected?.kubernetes_version ?? "").replace(/^v/, "").replace(/[+-].*$/, "").split(".").map(Number);
       return major === 1 && (minor > current[1] || (minor === current[1] && patch > current[2]));
     });
 
@@ -59,7 +63,7 @@ export function ClusterUpgrades() {
   function submit() {
     if (!selected || !targetVersion) return;
     upgrade.mutate(
-      { id: selected.id, targetVersion, allowEmptydirData },
+      { id: selected.id, targetVersion, allowEmptydirData, targetReleaseRevision: native ? releaseRevision : undefined },
       {
         onSuccess: (operation) => {
           toast.success(`Upgrade to ${targetVersion} queued`);
@@ -75,7 +79,7 @@ export function ClusterUpgrades() {
       <PageHeader
         eyebrow="Kubernetes"
         title="Cluster upgrades"
-        description="Upgrade kubeadm clusters by one minor version at a time. Nodes are processed individually and drained through Kubernetes eviction so PodDisruptionBudgets apply."
+        description="Upgrade platform-created clusters one minor release at a time. Self-managed nodes are drained and upgraded in order; managed services use the cloud provider upgrade process."
       />
       {(clusters.isLoading || versions.isLoading) && <TableSkeleton rows={2} columns={3} />}
       {clusters.isError && <ErrorState error={clusters.error} onRetry={() => clusters.refetch()} />}
@@ -84,22 +88,22 @@ export function ClusterUpgrades() {
         <EmptyState
           icon={Boxes}
           title="No upgradeable clusters"
-          description="Cluster upgrades currently support platform-installed kubeadm clusters with a recorded Kubernetes patch version."
-          action={<Button asChild variant="outline" size="sm"><Link href="/kubernetes/create">Create a kubeadm cluster</Link></Button>}
+          description="Create a supported cluster and record its Kubernetes version to enable upgrades."
+          action={<Button asChild variant="outline" size="sm"><Link href="/kubernetes/create">Create a cluster</Link></Button>}
         />
       )}
       {clusters.data && upgradeable.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><ArrowUpCircle className="size-4" /> Upgrade a cluster</CardTitle>
-            <CardDescription>Control planes upgrade serially, followed by a drain, kubelet update and readiness check for each node.</CardDescription>
+            <CardDescription>Self-managed control planes upgrade serially, followed by workers. Cloud services upgrade their control plane and node pools through native APIs.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="upgrade-cluster">Cluster</Label>
                 <Select value={clusterId} onValueChange={chooseCluster}>
-                  <SelectTrigger id="upgrade-cluster" className="w-full"><SelectValue placeholder="Select a kubeadm cluster" /></SelectTrigger>
+                  <SelectTrigger id="upgrade-cluster" className="w-full"><SelectValue placeholder="Select a cluster" /></SelectTrigger>
                   <SelectContent>
                     {upgradeable.map((cluster) => <SelectItem key={cluster.id} value={cluster.id}>{cluster.name} · {cluster.kubernetes_version}</SelectItem>)}
                   </SelectContent>
@@ -120,8 +124,9 @@ export function ClusterUpgrades() {
                 <datalist id="upgrade-version-options">{targets.map((version) => <option key={version} value={version} />)}</datalist>
               </div>
             </div>
-            {selected && <p id="upgrade-version-help" className="text-xs text-muted-foreground">Current: <span className="font-mono">{selected.kubernetes_version}</span>. Choose a newer patch in the same minor or the next minor release. Suggested releases come from Kubernetes upstream.</p>}
-            <label className="flex items-start gap-2 text-sm text-muted-foreground">
+            {selected && <p id="upgrade-version-help" className="text-xs text-muted-foreground">Current: <span className="font-mono">{selected.kubernetes_version}</span>. {eks ? "EKS accepts the next minor version, for example 1.35." : "Choose an exact patch in the same or next minor release."} Suggested releases come from Kubernetes upstream; confirm that the target is supported by your distribution or cloud service.</p>}
+            {native && <div className="space-y-1"><Label>Target distribution release revision</Label><Input type="number" min={1} max={100} value={releaseRevision} onChange={(e) => setReleaseRevision(Number(e.target.value))} className="w-24" /><p className="text-xs text-muted-foreground">For +k3s1 or +rke2r1, use 1. Select a revision published for the target patch.</p></div>}
+            {!managed && <label className="flex items-start gap-2 text-sm text-muted-foreground">
               <input
                 type="checkbox"
                 checked={allowEmptydirData}
@@ -129,7 +134,7 @@ export function ClusterUpgrades() {
                 className="mt-0.5 accent-primary"
               />
               <span>Allow the upgrade to evict pods with <code>emptyDir</code> volumes. Data in those temporary volumes will be lost.</span>
-            </label>
+            </label>}
             {!versions.data?.available && versions.data?.message && <p role="status" className="text-sm text-amber-300">{versions.data.message}</p>}
             <Button onClick={submit} disabled={!selected || !targetVersionValid || upgrade.isPending}>
               <ArrowUpCircle /> {upgrade.isPending ? "Starting upgrade…" : "Start upgrade"}

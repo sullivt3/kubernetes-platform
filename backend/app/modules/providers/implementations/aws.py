@@ -18,15 +18,17 @@ import hmac
 import json
 import time
 from datetime import UTC, datetime
-from typing import Any
-from urllib.parse import quote, urlsplit
+from typing import Any, Literal
+from urllib.parse import quote, urlencode, urlsplit
 from xml.etree import ElementTree
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from app.modules.credentials.models import CredentialKind
 from app.modules.providers import http
 from app.modules.providers.base import InfrastructureProvider
+from app.modules.providers.implementations.cloud_actions import CloudMachineActions
+from app.modules.providers.implementations.managed_actions import ManagedClusterActions
 from app.modules.providers.types import (
     ConnectionCheckResult,
     DiscoveredMachine,
@@ -141,6 +143,45 @@ def _aws_error(response: http.HttpResponse) -> str:
     return f"{code}: {message}".strip(": ")
 
 
+EKS_TAINT_EFFECTS = {
+    "NoSchedule": "NO_SCHEDULE",
+    "PreferNoSchedule": "PREFER_NO_SCHEDULE",
+    "NoExecute": "NO_EXECUTE",
+}
+
+
+class _EksTaint(BaseModel):
+    key: str = Field(min_length=1)
+    value: str | None = Field(default=None, max_length=63)
+    effect: Literal["NoSchedule", "PreferNoSchedule", "NoExecute"]
+
+
+class _EksNodePool(BaseModel):
+    name: str = Field(min_length=1, max_length=63)
+    count: int = Field(ge=0)
+    minimum: int = Field(default=1, ge=0)
+    maximum: int | None = Field(default=None, ge=1)
+    labels: dict[str, str] = Field(default_factory=dict)
+    taints: list[_EksTaint] = Field(default_factory=list, max_length=50)
+    disk_gb: int | None = Field(default=None, ge=20, le=2000)
+    machine_type: str | None = Field(default=None, min_length=1)
+
+    @property
+    def maximum_size(self) -> int:
+        return self.maximum if self.maximum is not None else max(3, self.count)
+
+    @model_validator(mode="after")
+    def _bounds(self) -> _EksNodePool:
+        if self.count > 0 and not self.minimum <= self.count <= self.maximum_size:
+            raise ValueError("Node count must be between its minimum and maximum")
+        return self
+
+
+class _EksComputeOptions(BaseModel):
+    managed_node_instance_types: list[str] = Field(default_factory=lambda: ["t3.medium"], min_length=1)
+    managed_node_disk_size_gb: int = Field(default=20, ge=20, le=2000)
+
+
 class AwsConfig(BaseModel):
     access_key_id: str = Field(
         pattern=r"^(AKIA|ASIA)[A-Z0-9]{12,124}$",
@@ -157,7 +198,7 @@ class AwsConfig(BaseModel):
     )
 
 
-class AwsProvider(InfrastructureProvider):
+class AwsProvider(CloudMachineActions, ManagedClusterActions, InfrastructureProvider):
     provider_type = ProviderType.AWS
     display_name = "Amazon Web Services"
     description = "EC2 and EKS provisioning, inventory, lifecycle management, and Network Load Balancers."
@@ -169,12 +210,12 @@ class AwsProvider(InfrastructureProvider):
             ProviderCapability.PROVISION,
             ProviderCapability.DELETE,
             ProviderCapability.STATUS,
+            ProviderCapability.POWER,
+            ProviderCapability.NETWORK,
             ProviderCapability.LOAD_BALANCER,
             ProviderCapability.MANAGED_KUBERNETES,
         }
     )
-    planned_capabilities = frozenset({ProviderCapability.POWER, ProviderCapability.NETWORK})
-    planned_capabilities_phase = 5
     implementation_status = ImplementationStatus.PREVIEW
     config_model = AwsConfig
     credential_kinds = frozenset({CredentialKind.AWS_ACCESS_KEY})
@@ -476,16 +517,42 @@ class AwsProvider(InfrastructureProvider):
         return f"{kind}: {error}".strip(": ")
 
     def _eks(self, action: str, payload: dict[str, object], *, what: str) -> dict[str, Any]:
-        url = f"https://eks.{self.cfg.region}.amazonaws.com/clusters"
-        body = json.dumps(payload, separators=(",", ":")).encode()
+        params = dict(payload)
+        name = quote(str(params.pop("clusterName", params.pop("name", ""))), safe="")
+        group = quote(str(params.pop("nodegroupName", "")), safe="")
+        update = quote(str(params.pop("updateId", "")), safe="")
+        paths = {
+            "CreateCluster": ("POST", "/clusters"),
+            "DescribeCluster": ("GET", f"/clusters/{name}"),
+            "DeleteCluster": ("DELETE", f"/clusters/{name}"),
+            "CreateNodegroup": ("POST", f"/clusters/{name}/node-groups"),
+            "DescribeNodegroup": ("GET", f"/clusters/{name}/node-groups/{group}"),
+            "DeleteNodegroup": ("DELETE", f"/clusters/{name}/node-groups/{group}"),
+            "ListNodegroups": ("GET", f"/clusters/{name}/node-groups"),
+            "UpdateClusterVersion": ("POST", f"/clusters/{name}/updates"),
+            "UpdateNodegroupConfig": ("POST", f"/clusters/{name}/node-groups/{group}/update-config"),
+            "UpdateNodegroupVersion": ("POST", f"/clusters/{name}/node-groups/{group}/update-version"),
+            "DescribeUpdate": (
+                "GET",
+                f"/clusters/{name}/updates/{update}" + (f"?nodegroupName={group}" if group else ""),
+            ),
+        }
+        if action not in paths:
+            raise http.ProviderApiError(f"Unsupported EKS action: {action}")
+        method, path = paths[action]
+        if action == "CreateCluster":
+            params["name"] = str(payload["name"])
+        if action == "CreateNodegroup":
+            params["nodegroupName"] = str(payload["nodegroupName"])
+        url = f"https://eks.{self.cfg.region}.amazonaws.com{path}"
+        if method == "GET" and params:
+            url += ("&" if "?" in url else "?") + urlencode(params)
+        body = json.dumps(params, separators=(",", ":")).encode() if method == "POST" else b""
         access, secret, token = self._keys()
         headers = aws_sigv4(
-            method="POST",
+            method=method,
             url=url,
-            headers={
-                "Content-Type": "application/x-amz-json-1.1",
-                "X-Amz-Target": f"AmazonEKS.{action}",
-            },
+            headers={"Content-Type": "application/json"},
             body=body,
             region=self.cfg.region,
             service="eks",
@@ -493,9 +560,23 @@ class AwsProvider(InfrastructureProvider):
             secret_key=secret,
             session_token=token,
         )
-        response = http.send("POST", url, headers=headers, body=body)
+        response = http.send(method, url, headers=headers, body=body)
         http.expect_ok(response, f"AWS {what}", message_of=self._eks_error)
         return response.json() if response.body else {}
+
+    def _eks_nodegroups(self, name: str) -> list[str]:
+        result: list[str] = []
+        token: str | None = None
+        for _ in range(50):
+            params: dict[str, object] = {"clusterName": name, "maxResults": 100}
+            if token:
+                params["nextToken"] = token
+            page = self._eks("ListNodegroups", params, what="ListNodegroups")
+            result.extend(page.get("nodegroups") or [])
+            token = page.get("nextToken")
+            if not token:
+                return result
+        raise http.ProviderApiError("EKS node group pagination exceeded the safety limit")
 
     def _eks_cluster(self, name: str) -> dict[str, Any] | None:
         try:
@@ -536,12 +617,24 @@ class AwsProvider(InfrastructureProvider):
             or any(not isinstance(item, str) for item in subnet_ids)
         ):
             raise http.ProviderApiError("EKS needs at least two subnet IDs in different Availability Zones")
+        try:
+            pools = TypeAdapter(list[_EksNodePool]).validate_python(request.node_pools)
+            compute = _EksComputeOptions.model_validate(options)
+        except ValidationError as exc:
+            raise http.ProviderApiError(
+                "Invalid EKS node group or compute settings",
+                details={"errors": exc.errors(include_url=False, include_context=False, include_input=False)},
+            ) from exc
         cluster = self._eks_cluster(request.name)
         if cluster is None:
             payload: dict[str, object] = {
                 "name": request.name,
-                "version": request.version.removeprefix("v"),
+                "version": ".".join(request.version.removeprefix("v").split(".")[:2]),
                 "roleArn": role_arn,
+                "kubernetesNetworkConfig": {
+                    "ipFamily": "ipv4",
+                    "serviceIpv4Cidr": str(options.get("managed_service_cidr") or "10.96.0.0/12"),
+                },
                 "resourcesVpcConfig": {
                     "subnetIds": subnet_ids,
                     "endpointPublicAccess": bool(options.get("managed_endpoint_public_access", True)),
@@ -567,10 +660,12 @@ class AwsProvider(InfrastructureProvider):
         if cluster.get("status") != "ACTIVE":
             cluster = self._wait_eks_cluster(request.name, {"ACTIVE"})
 
-        for pool in request.node_pools:
-            pool_name = str(pool.get("name") or "")[:63]
-            count = int(pool.get("count") or 0)
-            if not pool_name or count < 1:
+        if cluster is None:
+            raise http.ProviderApiError("EKS cluster disappeared while waiting for it to become active")
+
+        for pool in pools:
+            pool_name, count = pool.name, pool.count
+            if count < 1:
                 continue
             existing_group = None
             try:
@@ -582,8 +677,6 @@ class AwsProvider(InfrastructureProvider):
             except http.ProviderApiError as exc:
                 if "ResourceNotFoundException" not in exc.message:
                     raise
-                instance_types = options.get("managed_node_instance_types") or ["t3.medium"]
-                disk_size = int(options.get("managed_node_disk_size_gb") or 20)
                 self._eks(
                     "CreateNodegroup",
                     {
@@ -592,24 +685,22 @@ class AwsProvider(InfrastructureProvider):
                         "nodeRole": node_role_arn,
                         "subnets": subnet_ids,
                         "scalingConfig": {
-                            "minSize": int(pool.get("minimum", 1)),
-                            "maxSize": int(pool.get("maximum", max(3, count))),
+                            "minSize": pool.minimum,
+                            "maxSize": pool.maximum_size,
                             "desiredSize": count,
                         },
-                        "instanceTypes": instance_types,
-                        "diskSize": disk_size,
-                        "labels": pool.get("labels") or {},
+                        "instanceTypes": [pool.machine_type]
+                        if pool.machine_type
+                        else compute.managed_node_instance_types,
+                        "diskSize": pool.disk_gb or compute.managed_node_disk_size_gb,
+                        "labels": pool.labels,
                         "taints": [
                             {
-                                "key": item["key"],
-                                "value": item.get("value"),
-                                "effect": str(item["effect"])
-                                .upper()
-                                .replace("NOSCHEDULE", "NO_SCHEDULE")
-                                .replace("PREFER_NO_SCHEDULE", "PREFER_NO_SCHEDULE")
-                                .replace("NOEXECUTE", "NO_EXECUTE"),
+                                "key": item.key,
+                                "effect": EKS_TAINT_EFFECTS[item.effect],
+                                **({"value": item.value} if item.value is not None else {}),
                             }
-                            for item in (pool.get("taints") or [])
+                            for item in pool.taints
                         ],
                         "tags": {"kubernetes-platform:managed": "true"},
                     },
@@ -655,7 +746,7 @@ class AwsProvider(InfrastructureProvider):
             return
         if (cluster.get("tags") or {}).get("kubernetes-platform:managed") != "true":
             raise http.ProviderApiError("Refusing to delete an EKS cluster without the platform ownership tag")
-        groups = self._eks("ListNodegroups", {"clusterName": name}, what="ListNodegroups").get("nodegroups") or []
+        groups = self._eks_nodegroups(name)
         for group in groups:
             described = (
                 self._eks(
@@ -709,9 +800,9 @@ class AwsProvider(InfrastructureProvider):
                 "GET",
                 "/",
                 canonical_query,
-                f"host:{host}\nx-k8s-aws-id:{cluster_name}",
+                f"host:{host}\nx-k8s-aws-id:{cluster_name}\n",
                 "host;x-k8s-aws-id",
-                "UNSIGNED-PAYLOAD",
+                hashlib.sha256(b"").hexdigest(),
             ]
         )
         string_to_sign = "\n".join(

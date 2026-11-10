@@ -104,7 +104,8 @@ function ProvisionForm() {
     connection?.provider_type === "azure" && !azureGroup.trim() && "Azure: enter a resource group",
     connection?.provider_type === "azure" && !azureLocation.trim() && "Azure: enter a location",
     connection?.provider_type === "azure" && !azureSize.trim() && "Azure: enter a VM size",
-    connection?.provider_type === "azure" && !azureNic.trim() && "Azure: enter an existing network interface resource ID",
+    connection?.provider_type === "azure" && !azureNic.trim() && "Azure: enter a subnet or network interface resource ID",
+    connection?.provider_type === "azure" && names.length > 1 && !azureNic.includes("/subnets/") && "Azure: use a subnet when provisioning multiple VMs",
     connection?.provider_type === "azure" && azureImage.split(":").length !== 4 && "Azure: image format is publisher:offer:sku:version",
   ].filter(Boolean) as string[];
 
@@ -130,7 +131,7 @@ function ProvisionForm() {
       providerOptions.resource_group = azureGroup.trim();
       providerOptions.location = azureLocation.trim();
       providerOptions.vm_size = azureSize.trim();
-      providerOptions.network_interface_id = azureNic.trim();
+      providerOptions[azureNic.includes("/subnets/") ? "subnet_id" : "network_interface_id"] = azureNic.trim();
       providerOptions.image = azureImage.trim();
     }
     provision.mutate(
@@ -277,7 +278,7 @@ function ProvisionForm() {
               <div className="space-y-1.5"><Label htmlFor="p-azure-location">Location</Label><Input id="p-azure-location" value={azureLocation} onChange={(e) => setAzureLocation(e.target.value)} placeholder="eastus" /></div>
               <div className="space-y-1.5"><Label htmlFor="p-azure-size">VM size</Label><Input id="p-azure-size" value={azureSize} onChange={(e) => setAzureSize(e.target.value)} placeholder="Standard_B2s" /></div>
               <div className="space-y-1.5"><Label htmlFor="p-azure-image">Marketplace image</Label><Input id="p-azure-image" value={azureImage} onChange={(e) => setAzureImage(e.target.value)} placeholder="Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest" /></div>
-              <div className="space-y-1.5 md:col-span-2"><Label htmlFor="p-azure-nic">Existing NIC resource ID</Label><Input id="p-azure-nic" value={azureNic} onChange={(e) => setAzureNic(e.target.value)} placeholder="/subscriptions/.../networkInterfaces/..." /><p className="text-xs text-muted-foreground">The NIC must connect to a subnet and security group that permits SSH from the platform and Kubernetes traffic between nodes.</p></div>
+              <div className="space-y-1.5 md:col-span-2"><Label htmlFor="p-azure-nic">Subnet or existing NIC resource ID</Label><Input id="p-azure-nic" value={azureNic} onChange={(e) => setAzureNic(e.target.value)} placeholder="/subscriptions/.../virtualNetworks/.../subnets/..." /><p className="text-xs text-muted-foreground">A subnet creates one network interface per VM. A pre-existing NIC can be used for one VM. Network security rules must permit SSH from the platform and traffic between cluster nodes.</p></div>
             </div>
           )}
           {problems.length > 0 && (

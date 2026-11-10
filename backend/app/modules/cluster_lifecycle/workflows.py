@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.cluster_lifecycle.distributions.base import ClusterPlanInput
 from app.modules.cluster_lifecycle.distributions.registry import distribution_registry
+from app.modules.cluster_lifecycle.distributions.storage_steps import plan_storage
 from app.modules.cluster_lifecycle.models import (
     Cluster,
     ClusterLifecycleState,
@@ -21,6 +22,7 @@ CLUSTER_DELETE = "cluster.delete"
 CLUSTER_ADD_NODES = "cluster.nodes.add"
 CLUSTER_REMOVE_NODES = "cluster.nodes.remove"
 CLUSTER_UPGRADE = "cluster.upgrade"
+CLUSTER_RESIZE_POOL = "cluster.pool.resize"
 
 
 def _target(p: ClusterPlanInput) -> OperationTarget:
@@ -79,7 +81,7 @@ create_workflow = workflow_registry.register(
         title="Create cluster",
         description="Prepare machines, install Kubernetes and register the new cluster.",
         params_model=ClusterPlanInput,
-        plan=lambda p: distribution_registry.get(p.spec.distribution).plan_create(p),
+        plan=lambda p: [*distribution_registry.get(p.spec.distribution).plan_create(p), *plan_storage(p)],
         target=_target,
         title_for=lambda p: f"Create cluster {p.cluster_name}",
         on_status=on_create_status,
@@ -140,6 +142,8 @@ def on_upgrade_status(session: Session, op: Operation) -> None:
             cluster.kubernetes_version = version
             spec = dict(cluster.spec or {})
             spec["kubernetes_version"] = version
+            if plan.spec.distribution.value in {"k3s", "rke2"}:
+                spec["options"] = {**spec.get("options", {}), "release_revision": plan.target_release_revision}
             cluster.spec = spec
         cluster.lifecycle_state = ClusterLifecycleState.ACTIVE
         cluster.status_detail = {**(cluster.status_detail or {}), "last_upgrade_operation_id": str(op.id)}
@@ -186,5 +190,26 @@ upgrade_workflow = workflow_registry.register(
         target=_target,
         title_for=lambda p: f"Upgrade {p.cluster_name} to {p.target_version}",
         on_status=on_upgrade_status,
+    )
+)
+
+
+def _resize_steps(plan: ClusterPlanInput):
+    from app.modules.cluster_lifecycle.distributions import local_steps, managed_steps
+    from app.orchestration.workflow import StepDefinition
+
+    handler = local_steps.resize if plan.spec.distribution.value == "k3d" else managed_steps.resize
+    return [StepDefinition("resize", "Resize worker pool through its provider", handler)]
+
+
+workflow_registry.register(
+    WorkflowDefinition(
+        type=CLUSTER_RESIZE_POOL,
+        title="Resize worker pool",
+        params_model=ClusterPlanInput,
+        description="Change the desired node count of an existing managed or k3d worker pool.",
+        plan=_resize_steps,
+        target=_target,
+        title_for=lambda p: f"Resize {p.cluster_name}/{p.pool_name} to {p.pool_count}",
     )
 )

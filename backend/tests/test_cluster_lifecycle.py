@@ -167,7 +167,6 @@ class TestValidation:
         [
             ({"network": {"cni": "cilium"}}, "CNI 'cilium' is not supported"),
             ({"kubernetes_version": "1.27"}, "not supported; use 1.30"),
-            ({"provider_type": "vsphere"}, "cannot run on 'vsphere'"),
         ],
     )
     def test_unsupported_choices(

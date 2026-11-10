@@ -23,6 +23,7 @@ import { useCluster, useDeleteCluster } from "@/lib/api/hooks";
 import type { ClusterDetail } from "@/lib/api/types";
 import { formatRelative } from "@/lib/format";
 import { ClusterStateBadge } from "./cluster-state";
+import { WorkerPools } from "./worker-pools";
 
 const TABS = ["overview", "nodes", "namespaces", "pods", "events", "topology", "settings", "operations"] as const;
 type Tab = (typeof TABS)[number];
@@ -160,6 +161,7 @@ export function ClusterDetailView({ params }: { params: Promise<{ id: string }> 
         <TabsContent value="overview" className="space-y-6 pt-4">
           {live(<ClusterOverview cluster={c} />)}
           <InstallationNodes cluster={c} />
+          <WorkerPools cluster={c} />
         </TabsContent>
         <TabsContent value="nodes" className="pt-4">{live(<NodesTable clusterId={c.id} />)}</TabsContent>
         <TabsContent value="namespaces" className="pt-4">{live(<NamespacesTable clusterId={c.id} />)}</TabsContent>

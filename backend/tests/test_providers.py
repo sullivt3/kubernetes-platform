@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from app.core.errors import CapabilityNotSupportedError, NotImplementedYetError, ValidationFailedError
+from app.core.errors import CapabilityNotSupportedError, ValidationFailedError
 from app.modules.providers.base import CAPABILITY_METHODS, InfrastructureProvider
 from app.modules.providers.registry import ProviderRegistry, provider_registry
 from app.modules.providers.types import (
@@ -46,9 +46,13 @@ def test_provider_metadata_is_complete(cls: type[InfrastructureProvider]) -> Non
         assert capability_contract_violations(cls) == []
 
 
-def test_planned_providers_cannot_be_instantiated() -> None:
-    with pytest.raises(NotImplementedYetError, match="Phase 5"):
+def test_vsphere_requires_a_username_and_is_instantiable_without_network_access() -> None:
+    with pytest.raises(ValidationFailedError):
         provider_registry.create(ProviderType.VSPHERE, {"server": "vc", "datacenter": "dc1"}, credential=b"pw")
+    provider = provider_registry.create(
+        ProviderType.VSPHERE, {"server": "vc", "datacenter": "dc1", "username": "ops"}, credential=b"pw"
+    )
+    assert provider.implementation_status is ImplementationStatus.PREVIEW
 
 
 def test_config_validation_reports_field_errors() -> None:

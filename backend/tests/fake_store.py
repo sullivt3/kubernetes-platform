@@ -25,7 +25,12 @@ RESOURCES = {
         ("services", "Service", True),
         ("configmaps", "ConfigMap", True),
         ("secrets", "Secret", True),
+        ("serviceaccounts", "ServiceAccount", True),
         ("events", "Event", True),
+        ("persistentvolumes", "PersistentVolume", False),
+        ("persistentvolumeclaims", "PersistentVolumeClaim", True),
+        ("resourcequotas", "ResourceQuota", True),
+        ("limitranges", "LimitRange", True),
     ],
     "apps/v1": [
         ("deployments", "Deployment", True),
@@ -35,6 +40,26 @@ RESOURCES = {
     ],
     "batch/v1": [("jobs", "Job", True), ("cronjobs", "CronJob", True)],
     "autoscaling/v2": [("horizontalpodautoscalers", "HorizontalPodAutoscaler", True)],
+    "networking.k8s.io/v1": [
+        ("ingresses", "Ingress", True),
+        ("networkpolicies", "NetworkPolicy", True),
+    ],
+    "discovery.k8s.io/v1": [("endpointslices", "EndpointSlice", True)],
+    "storage.k8s.io/v1": [
+        ("storageclasses", "StorageClass", False),
+        ("csidrivers", "CSIDriver", False),
+        ("volumeattachments", "VolumeAttachment", False),
+    ],
+    "rbac.authorization.k8s.io/v1": [
+        ("clusterroles", "ClusterRole", False),
+        ("clusterrolebindings", "ClusterRoleBinding", False),
+    ],
+    "gateway.networking.k8s.io/v1": [
+        ("gatewayclasses", "GatewayClass", False),
+        ("gateways", "Gateway", True),
+        ("httproutes", "HTTPRoute", True),
+        ("referencegrants", "ReferenceGrant", True),
+    ],
 }
 
 
@@ -143,7 +168,7 @@ class FakeStore:
         params = params or {}
         payload = json.loads(body) if isinstance(body, bytes) else body
         self.requests.append((method, path, params))
-        if path in ("/api/v1", "/apis/apps/v1", "/apis/batch/v1"):
+        if path == "/api/v1" or (path.startswith("/apis/") and path[len("/apis/") :] in RESOURCES):
             group = "v1" if path == "/api/v1" else path[len("/apis/") :]
             return self._ok({"resources": [{"name": p, "kind": k, "namespaced": n} for p, k, n in RESOURCES[group]]})
         if path.endswith("/eviction") and method == "POST":
@@ -221,9 +246,12 @@ class FakeStore:
             obj["metadata"]["generation"] = obj["metadata"].get("generation", 1) + 1
             return self._ok(obj)
         if method == "POST":
-            payload.setdefault("metadata", {}).setdefault(
-                "namespace", path.split("/")[path.split("/").index("namespaces") + 1]
-            )
+            if "/namespaces/" in path:
+                payload.setdefault("metadata", {}).setdefault(
+                    "namespace", path.split("/")[path.split("/").index("namespaces") + 1]
+                )
+            if self.path_for(payload) in self.objects:
+                return self._err(409, "already exists")
             return self._ok(self.put(payload), 201)
         if method == "DELETE":
             if path not in self.objects:

@@ -136,6 +136,12 @@ class InfrastructureProvider(ABC):
     def delete_managed_cluster(self, external_id: str) -> None:
         raise self._unsupported(ProviderCapability.MANAGED_KUBERNETES)
 
+    def resize_managed_pool(self, external_id: str, pool: str, count: int) -> None:
+        raise self._unsupported(ProviderCapability.MANAGED_KUBERNETES)
+
+    def upgrade_managed_cluster(self, external_id: str, version: str) -> None:
+        raise self._unsupported(ProviderCapability.MANAGED_KUBERNETES)
+
     def connection_endpoint(self, host: str, port: int | None, username: str | None) -> HostEndpoint:
         """How to reach an existing machine registered by address (defaults applied)."""
         raise self._unsupported(ProviderCapability.REGISTER_EXISTING)

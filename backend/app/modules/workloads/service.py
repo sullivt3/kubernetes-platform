@@ -100,11 +100,16 @@ class WorkloadService:
             "yaml": yaml.safe_dump(summaries.clean_for_edit(safe), sort_keys=False),
             "events": reads.events(
                 api,
-                namespace,
+                namespace if kind.namespaced else None,
                 f"involvedObject.kind={kind.kind},involvedObject.name={name}",
                 limit=50,
             ),
-            "capabilities": {"scale": kind.scalable, "restart": kind.restartable},
+            "capabilities": {
+                "scale": kind.scalable,
+                "restart": kind.restartable,
+                "delete": kind.deletable,
+                "namespaced": kind.namespaced,
+            },
         }
         if key == "deployments":
             hpas, _ = kclient.list_items(api, f"/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers")
@@ -186,6 +191,8 @@ class WorkloadService:
         confirm: str | None,
     ) -> None:
         kind = get_kind(key)
+        if not kind.deletable:
+            raise ValidationFailedError(f"Deleting {kind.kind} objects through the platform is disabled")
         _check_name(namespace, "namespace")
         _check_name(name, "name")
         if confirm != name:
@@ -195,7 +202,14 @@ class WorkloadService:
             )
         cluster, api = self._api(principal, cluster_id)
         kclient.send_json(api, "DELETE", kind.item(namespace, name), {"propagationPolicy": "Background"})
-        self._audit(principal, cluster, f"{key[:-1]}.delete", kind.kind, namespace, name)
+        self._audit(
+            principal,
+            cluster,
+            f"{kind.kind.lower()}.delete",
+            kind.kind,
+            namespace if kind.namespaced else None,
+            name,
+        )
 
     def scale(
         self, principal: Principal, cluster_id: uuid.UUID, key: str, namespace: str, name: str, replicas: int

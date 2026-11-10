@@ -74,6 +74,11 @@ class TestSummaries:
             "status": {},
         }
         assert summaries.summarize("services", svc)["ports"] == ["80:30080/TCP"]
+        legacy_class = {
+            "metadata": {"name": "legacy", "annotations": {"storageclass.beta.kubernetes.io/is-default-class": "true"}},
+            "provisioner": "nfs.csi.k8s.io",
+        }
+        assert summaries.summarize("storageclasses", legacy_class)["default"] is True
         secret = {"metadata": {"name": "x"}, "type": "Opaque", "data": {"b": "eA==", "a": "eQ=="}}
         row = summaries.summarize("secrets", secret)
         assert row["keys"] == ["a", "b"] and "eA==" not in json.dumps(row)
@@ -271,7 +276,7 @@ class TestWorkloadApi:
         assert [(h["revision"], h["current"]) for h in detail["history"]] == [(2, True), (1, False)]
         assert [p["name"] for p in detail["pods"]] == ["web-1"]
         assert "uid:" not in detail["yaml"] and "kind: Deployment" in detail["yaml"]
-        assert detail["capabilities"] == {"scale": True, "restart": True}
+        assert detail["capabilities"] == {"scale": True, "restart": True, "delete": True, "namespaced": True}
 
         rollback = client.post(f"{API}/clusters/{cluster_id}/deployments/default/web/rollback", json={"revision": 1})
         assert rollback.status_code == 200 and rollback.json()["images"] == ["nginx:1.26"]
@@ -314,6 +319,215 @@ class TestWorkloadApi:
         assert path not in store.objects
         actions = audit_actions(client)
         assert {"deployment.scale", "deployment.restart", "deployment.delete"} <= set(actions)
+
+    def test_phase6_network_and_storage_resource_views(
+        self, client: TestClient, store: FakeStore, cluster_id: str
+    ) -> None:
+        store.put(
+            {
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "Ingress",
+                "metadata": {"name": "web", "namespace": "default"},
+                "spec": {
+                    "ingressClassName": "nginx",
+                    "rules": [{"host": "app.example.test", "http": {"paths": [{"path": "/"}]}}],
+                },
+                "status": {"loadBalancer": {"ingress": [{"ip": "192.0.2.10"}]}},
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "NetworkPolicy",
+                "metadata": {"name": "allow-web", "namespace": "default"},
+                "spec": {
+                    "podSelector": {"matchLabels": {"app": "web"}},
+                    "policyTypes": ["Ingress"],
+                    "ingress": [{}],
+                },
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "discovery.k8s.io/v1",
+                "kind": "EndpointSlice",
+                "metadata": {
+                    "name": "web-abc",
+                    "namespace": "default",
+                    "labels": {"kubernetes.io/service-name": "web"},
+                },
+                "addressType": "IPv4",
+                "ports": [{"name": "http", "port": 8080}],
+                "endpoints": [
+                    {"addresses": ["10.0.0.8"], "conditions": {"ready": True}},
+                    {"addresses": ["10.0.0.9"], "conditions": {"ready": False}},
+                ],
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "v1",
+                "kind": "PersistentVolume",
+                "metadata": {"name": "pv-data"},
+                "spec": {
+                    "capacity": {"storage": "10Gi"},
+                    "accessModes": ["ReadWriteOnce"],
+                    "persistentVolumeReclaimPolicy": "Retain",
+                    "storageClassName": "fast",
+                },
+                "status": {"phase": "Available"},
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "storage.k8s.io/v1",
+                "kind": "StorageClass",
+                "metadata": {
+                    "name": "fast",
+                    "annotations": {"storageclass.kubernetes.io/is-default-class": "true"},
+                },
+                "provisioner": "csi.example.test",
+                "allowVolumeExpansion": True,
+                "volumeBindingMode": "WaitForFirstConsumer",
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "storage.k8s.io/v1",
+                "kind": "CSIDriver",
+                "metadata": {"name": "csi.example.test"},
+                "spec": {"attachRequired": True, "volumeLifecycleModes": ["Persistent"]},
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "gateway.networking.k8s.io/v1",
+                "kind": "GatewayClass",
+                "metadata": {"name": "public"},
+                "spec": {"controllerName": "example.test/gateway-controller"},
+                "status": {"conditions": [{"type": "Accepted", "status": "True"}]},
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "gateway.networking.k8s.io/v1",
+                "kind": "Gateway",
+                "metadata": {"name": "public", "namespace": "default"},
+                "spec": {"gatewayClassName": "public", "listeners": [{"name": "http", "port": 80}]},
+                "status": {
+                    "addresses": [{"value": "192.0.2.20"}],
+                    "conditions": [{"type": "Programmed", "status": "True"}],
+                },
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "gateway.networking.k8s.io/v1",
+                "kind": "HTTPRoute",
+                "metadata": {"name": "web", "namespace": "default"},
+                "spec": {"hostnames": ["app.example.test"], "parentRefs": [{"name": "public"}], "rules": [{}]},
+                "status": {
+                    "parents": [
+                        {
+                            "conditions": [
+                                {"type": "Accepted", "status": "True"},
+                                {"type": "ResolvedRefs", "status": "True"},
+                            ]
+                        }
+                    ]
+                },
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "gateway.networking.k8s.io/v1",
+                "kind": "ReferenceGrant",
+                "metadata": {"name": "allow-route", "namespace": "services"},
+                "spec": {"from": [{}], "to": [{}]},
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "v1",
+                "kind": "PersistentVolumeClaim",
+                "metadata": {"name": "app-data", "namespace": "default"},
+                "spec": {
+                    "accessModes": ["ReadWriteOnce"],
+                    "resources": {"requests": {"storage": "1Gi"}},
+                    "storageClassName": "fast",
+                },
+                "status": {"phase": "Bound", "capacity": {"storage": "1Gi"}},
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "storage.k8s.io/v1",
+                "kind": "VolumeAttachment",
+                "metadata": {"name": "attach-pv-data"},
+                "spec": {
+                    "attacher": "csi.example.test",
+                    "nodeName": "worker-1",
+                    "source": {"persistentVolumeName": "pv-data"},
+                },
+                "status": {"attached": True},
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "v1",
+                "kind": "ResourceQuota",
+                "metadata": {"name": "app-budget", "namespace": "default"},
+                "spec": {"hard": {"pods": "10"}},
+                "status": {"hard": {"pods": "10"}, "used": {"pods": "3"}},
+            }
+        )
+        store.put(
+            {
+                "apiVersion": "v1",
+                "kind": "LimitRange",
+                "metadata": {"name": "app-defaults", "namespace": "default"},
+                "spec": {"limits": [{"type": "Container"}]},
+            }
+        )
+
+        ingress = client.get(f"{API}/clusters/{cluster_id}/resources/ingresses").json()["items"][0]
+        assert ingress["hosts"] == ["app.example.test"] and ingress["addresses"] == ["192.0.2.10"]
+        policy = client.get(f"{API}/clusters/{cluster_id}/resources/networkpolicies").json()["items"][0]
+        assert policy["pod_selector"] == {"app": "web"} and policy["ingress_rules"] == 1
+        endpoint = client.get(f"{API}/clusters/{cluster_id}/resources/endpointslices").json()["items"][0]
+        assert endpoint["service"] == "web" and endpoint["ready_addresses"] == ["10.0.0.8"]
+
+        volumes = client.get(f"{API}/clusters/{cluster_id}/resources/persistentvolumes").json()["items"]
+        assert volumes[0]["namespace"] is None and volumes[0]["capacity"] == "10Gi"
+        pv = client.get(f"{API}/clusters/{cluster_id}/resources/persistentvolumes/cluster/pv-data").json()
+        assert pv["capabilities"]["namespaced"] is False and pv["summary"]["phase"] == "Available"
+        storage_class = client.get(f"{API}/clusters/{cluster_id}/resources/storageclasses/cluster/fast").json()
+        assert storage_class["summary"]["default"] and storage_class["summary"]["provisioner"] == "csi.example.test"
+        driver = client.get(f"{API}/clusters/{cluster_id}/resources/csidrivers/cluster/csi.example.test").json()
+        assert driver["summary"]["attach_required"] is True and driver["capabilities"]["delete"] is False
+        gateway_class = client.get(f"{API}/clusters/{cluster_id}/resources/gatewayclasses/cluster/public").json()
+        assert gateway_class["summary"]["controller"] == "example.test/gateway-controller"
+        gateway = client.get(f"{API}/clusters/{cluster_id}/resources/gateways/default/public").json()
+        assert gateway["summary"]["listeners"] == 1 and gateway["summary"]["programmed"] == "True"
+        route = client.get(f"{API}/clusters/{cluster_id}/resources/httproutes/default/web").json()
+        assert route["summary"]["accepted"] == "True" and route["summary"]["resolved_refs"] == "True"
+        grant = client.get(f"{API}/clusters/{cluster_id}/resources/referencegrants/services/allow-route").json()
+        assert grant["summary"]["from_count"] == 1 and grant["summary"]["to_count"] == 1
+        claim = client.get(f"{API}/clusters/{cluster_id}/resources/persistentvolumeclaims/default/app-data").json()
+        assert claim["summary"]["phase"] == "Bound" and claim["summary"]["requested"] == "1Gi"
+        attachment = client.get(
+            f"{API}/clusters/{cluster_id}/resources/volumeattachments/cluster/attach-pv-data"
+        ).json()
+        assert attachment["summary"]["attached"] and attachment["capabilities"]["delete"] is False
+        quota = client.get(f"{API}/clusters/{cluster_id}/resources/resourcequotas/default/app-budget").json()
+        assert quota["summary"]["used"] == ["pods: 3"]
+        limit_range = client.get(f"{API}/clusters/{cluster_id}/resources/limitranges/default/app-defaults").json()
+        assert limit_range["summary"]["limit_types"] == ["Container"]
+        blocked = client.delete(
+            f"{API}/clusters/{cluster_id}/resources/csidrivers/cluster/csi.example.test",
+            params={"confirm": "csi.example.test"},
+        )
+        assert blocked.status_code == 422
 
     def test_secrets_redacted_and_reveal_audited(self, client: TestClient, store: FakeStore, cluster_id: str) -> None:
         store.put(

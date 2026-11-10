@@ -46,6 +46,7 @@ class Kubeadm(KubernetesDistribution):
             ProviderType.SSH,
             ProviderType.LOCAL,
             ProviderType.PROXMOX,
+            ProviderType.VSPHERE,
             ProviderType.AWS,
             ProviderType.AZURE,
             ProviderType.GCP,

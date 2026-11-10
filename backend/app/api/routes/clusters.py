@@ -198,10 +198,34 @@ class NodesAdd(BaseModel):
 
 
 class ClusterUpgrade(BaseModel):
-    target_version: str = Field(min_length=5, max_length=16, description="Exact target patch, e.g. 1.34.2")
+    target_version: str = Field(
+        min_length=4,
+        max_length=16,
+        pattern=r"^v?1\.\d{1,2}(\.\d{1,3})?$",
+        description="Exact target patch, or the next minor for EKS",
+    )
+    target_release_revision: int = Field(default=1, ge=1, le=100, description="Native K3s/RKE2 target build revision")
     allow_emptydir_data: bool = Field(
         default=False,
         description="Allow draining to remove pods with emptyDir data; those ephemeral files will be lost.",
+    )
+
+
+class PoolResize(BaseModel):
+    count: int = Field(ge=0, le=1000)
+
+
+@router.post("/{cluster_id}/pools/{pool_name}/resize", response_model=OperationDetail, status_code=202)
+def resize_worker_pool(
+    cluster_id: uuid.UUID,
+    pool_name: str,
+    body: PoolResize,
+    confirm: str | None = Query(default=None),
+    principal: Principal = Depends(get_principal),
+    service: ClusterService = Depends(get_cluster_service),
+) -> OperationDetail:
+    return OperationDetail.model_validate(
+        service.resize_pool(principal, cluster_id, pool_name, body.count, confirm=confirm)
     )
 
 
@@ -212,13 +236,14 @@ def upgrade_cluster(
     principal: Principal = Depends(get_principal),
     service: ClusterService = Depends(get_cluster_service),
 ) -> OperationDetail:
-    """Upgrade a platform-installed kubeadm cluster by one minor release at a time."""
+    """Upgrade a platform-created self-managed or cloud cluster one minor release at a time."""
     return OperationDetail.model_validate(
         service.upgrade(
             principal,
             cluster_id,
             body.target_version,
             allow_emptydir_data=body.allow_emptydir_data,
+            target_release_revision=body.target_release_revision,
         )
     )
 

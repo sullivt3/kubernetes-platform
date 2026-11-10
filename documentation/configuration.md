@@ -63,3 +63,7 @@ Pinned CNI versions live in `app/modules/cluster_lifecycle/distributions/kubeadm
 
 The compose stack also creates the `kplatform_test` database that the backend test suite uses. Tests refuse to
 run against any database whose name doesn't contain `test`.
+
+## Additional cluster integrations
+
+See [Cluster integrations](cluster-integrations.md) for vSphere credentials/templates, native K3s/RKE2 prerequisites, local Docker access, pinned tool caches, cloud VM inputs, managed lifecycle permissions and creation-time storage. Install backend dependencies after updating: `python -m pip install -e ".[dev]"` includes the vSphere SDK.

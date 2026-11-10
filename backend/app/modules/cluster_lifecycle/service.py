@@ -30,6 +30,7 @@ from app.modules.cluster_lifecycle.workflows import (
     CLUSTER_CREATE,
     CLUSTER_DELETE,
     CLUSTER_REMOVE_NODES,
+    CLUSTER_RESIZE_POOL,
     CLUSTER_UPGRADE,
 )
 from app.modules.credentials.models import Credential, CredentialKind
@@ -73,7 +74,7 @@ class ClusterService:
         provider_cls = provider_registry.get_class(spec.provider_type)
         if provider_cls.implementation_status is ImplementationStatus.PLANNED:
             result.problems.append(f"The {provider_cls.display_name} provider is not implemented yet")
-        managed = distribution.kind is DistributionKind.MANAGED
+        managed = distribution.kind in (DistributionKind.MANAGED, DistributionKind.LOCAL)
         new_machines = [] if managed else self._new_machine_names(spec)
         if managed:
             connection = (
@@ -85,14 +86,16 @@ class ClusterService:
                 result.problems.append("Managed Kubernetes needs a provider connection in this organization")
             elif connection.provider_type is not spec.provider_type:
                 result.problems.append("The provider connection does not match the selected managed distribution")
-            elif (
+            elif distribution.kind is DistributionKind.MANAGED and (
                 ProviderCapability.MANAGED_KUBERNETES
                 not in provider_registry.get_class(connection.provider_type).capabilities
             ):
                 result.problems.append("The selected provider does not implement managed Kubernetes provisioning")
         if new_machines:
             result.problems.extend(self._provisioning_problems(principal, spec, [n for _, n in new_machines]))
-        result.notes.extend(self._container_defaults(principal, spec))
+            result.problems.extend(self._template_problems(spec))
+        if distribution.kind is DistributionKind.SELF_MANAGED:
+            result.notes.extend(self._container_defaults(principal, spec))
         result.problems.extend(distribution.validate_spec(spec))
         if spec.control_plane.load_balancer.value == "provider":
             connection = (
@@ -134,7 +137,11 @@ class ClusterService:
                 f"{len(new_machines)} machine(s) will be provisioned: {', '.join(n for _, n in new_machines)}"
             )
         preview = ClusterPlanInput(cluster_id=uuid.uuid4(), cluster_name=spec.name, spec=spec, nodes=result.nodes)
-        result.steps = [{"key": s.key, "name": s.name} for s in distribution.plan_create(preview)]
+        from app.modules.cluster_lifecycle.distributions.storage_steps import plan_storage
+
+        result.steps = [
+            {"key": s.key, "name": s.name} for s in [*distribution.plan_create(preview), *plan_storage(preview)]
+        ]
         return result
 
     def _container_defaults(self, principal: Principal, spec: ClusterSpec) -> list[str]:
@@ -154,7 +161,7 @@ class ClusterService:
         )
         containers = sorted(name for name, ptype in rows if provider_registry.get_class(ptype).container_machines)
         distribution = distribution_registry.get(spec.distribution)
-        managed = distribution.kind is DistributionKind.MANAGED
+        managed = distribution.kind in (DistributionKind.MANAGED, DistributionKind.LOCAL)
         new_machines = [] if managed else self._new_machine_names(spec)
         if new_machines and spec.provider_connection_id:
             connection = self.session.get(ProviderConnection, spec.provider_connection_id)
@@ -203,6 +210,7 @@ class ClusterService:
         *,
         connection_id: uuid.UUID | None = None,
         credential_id: uuid.UUID | None = None,
+        match_provider: bool = True,
     ) -> list[str]:
         problems: list[str] = []
         connection_id = connection_id or spec.provider_connection_id
@@ -212,6 +220,8 @@ class ClusterService:
             problems.append("New machines need a provider connection to provision them (provider_connection_id)")
         else:
             cls = provider_registry.get_class(connection.provider_type)
+            if match_provider and connection.provider_type is not spec.provider_type:
+                problems.append("The provisioning connection does not match the selected infrastructure provider")
             if ProviderCapability.PROVISION not in cls.capabilities:
                 problems.append(f"{cls.display_name} connections cannot provision machines")
             elif connection.status is ConnectionStatus.ERROR:
@@ -231,6 +241,41 @@ class ClusterService:
             )
             if existing:
                 problems.append(f"Machine names already in use: {', '.join(sorted(existing))}")
+        return problems
+
+    def _template_problems(self, spec: ClusterSpec) -> list[str]:
+        problems: list[str] = []
+        connection = (
+            self.session.get(ProviderConnection, spec.provider_connection_id) if spec.provider_connection_id else None
+        )
+        defaults = connection.config if connection else {}
+        for pool in (spec.control_plane, *spec.worker_pools):
+            if pool.count <= len(pool.existing_machine_ids) or pool.machine_template is None:
+                continue
+            template = pool.machine_template
+            options = template.provider_options
+            kind = spec.provider_type.value
+            required = {
+                "aws": ("instance_type", "subnet_id", "security_group_ids"),
+                "azure": ("location", "vm_size"),
+                "gcp": ("machine_type", "network"),
+            }.get(kind, ())
+            for key in required:
+                if not options.get(key):
+                    problems.append(f"Pool '{pool.name}' needs provider_options.{key}")
+            if kind in {"aws", "azure", "gcp"} and not (
+                template.image or options.get("image") or options.get("image_id")
+            ):
+                problems.append(f"Pool '{pool.name}' needs an OS image")
+            if kind == "azure":
+                if not (options.get("resource_group") or defaults.get("resource_group")):
+                    problems.append(f"Pool '{pool.name}' needs a resource group")
+                if not (options.get("subnet_id") or options.get("network_interface_id")):
+                    problems.append(f"Pool '{pool.name}' needs a subnet ID or existing network interface")
+                if options.get("network_interface_id") and pool.count - len(pool.existing_machine_ids) > 1:
+                    problems.append("An Azure network interface can attach to only one VM; use a subnet for a pool")
+            if kind == "gcp" and not (options.get("zone") or defaults.get("zones")):
+                problems.append(f"Pool '{pool.name}' needs a Compute Engine zone")
         return problems
 
     def _provision(
@@ -253,6 +298,7 @@ class ClusterService:
             cpu_cores=template.cpu_cores,
             memory_mb=template.memory_mb,
             disk_gb=template.disk_gb,
+            image=template.image,
             credential_id=credential_id,
             ssh_username=username,
             labels={"kplatform.io/pool": pool.name},
@@ -329,8 +375,11 @@ class ClusterService:
                 "The cluster specification is not valid", details={"problems": validation.problems}
             )
         distribution = distribution_registry.get(spec.distribution)
-        managed = distribution.kind is DistributionKind.MANAGED
+        managed = distribution.kind in (DistributionKind.MANAGED, DistributionKind.LOCAL)
         nodes = [n for n in validation.nodes if not n.provisioned]
+        if distribution.kind is DistributionKind.MANAGED:
+            # Provider ownership identifiers are written by the workflow, never accepted from clients.
+            spec.options.pop("managed", None)
         new_machines = [] if managed else self._new_machine_names(spec)
         if new_machines:
             assert spec.provider_connection_id and spec.machine_credential_id  # checked by validate()
@@ -500,6 +549,8 @@ class ClusterService:
         taints: list[Taint] | None = None,
     ) -> Operation:
         cluster = self._managed(principal, cluster_id, DistributionCapability.ADD_NODES)
+        if distribution_registry.get(cluster.distribution).kind is not DistributionKind.SELF_MANAGED:
+            raise ValidationFailedError("Use worker pool resizing for this distribution")
         spec = ClusterSpec.model_validate(cluster.spec)
         if not existing_machine_ids and provision_count < 1:
             raise ValidationFailedError("Select machines to add or a number of machines to provision")
@@ -538,8 +589,23 @@ class ClusterService:
                     names.append(name)
                 index += 1
             problems += self._provisioning_problems(
-                principal, spec, names, connection_id=connection_id, credential_id=credential_id
+                principal, spec, names, connection_id=connection_id, credential_id=credential_id, match_provider=False
             )
+            if template is not None:
+                chosen = self.session.get(ProviderConnection, connection_id or spec.provider_connection_id)
+                request_spec = spec.model_copy(
+                    update={
+                        "provider_type": chosen.provider_type if chosen else spec.provider_type,
+                        "provider_connection_id": connection_id or spec.provider_connection_id,
+                        "control_plane": spec.control_plane.model_copy(
+                            update={"count": len(spec.control_plane.existing_machine_ids)}
+                        ),
+                        "worker_pools": [
+                            NodePoolSpec(name=pool.name, count=provision_count, machine_template=template)
+                        ],
+                    }
+                )
+                problems += self._template_problems(request_spec)
         if problems:
             raise ValidationFailedError("Nodes cannot be added", details={"problems": problems})
 
@@ -686,11 +752,12 @@ class ClusterService:
         target_version: str,
         *,
         allow_emptydir_data: bool = False,
+        target_release_revision: int = 1,
     ) -> Operation:
         cluster = self._managed(principal, cluster_id, DistributionCapability.UPGRADE)
-        if cluster.distribution.value != "kubeadm":
-            raise ValidationFailedError("Automated upgrades are currently implemented only for kubeadm clusters")
-        current_text = (cluster.kubernetes_version or "").removeprefix("v")
+        if distribution_registry.get(cluster.distribution).kind is DistributionKind.MANAGED:
+            return self._managed_upgrade(principal, cluster, target_version)
+        current_text = (cluster.kubernetes_version or "").removeprefix("v").split("+", 1)[0].split("-", 1)[0]
         target_text = target_version.strip().removeprefix("v")
         try:
             current = kubeadm_config.parse_version(current_text)
@@ -703,7 +770,12 @@ class ClusterService:
             raise ValidationFailedError("The cluster's current Kubernetes patch version is unknown")
         if target[1] not in (current[1], current[1] + 1):
             raise ValidationFailedError("Upgrade one Kubernetes minor version at a time")
-        if target <= current:
+        revision_upgrade = (
+            cluster.distribution.value in {"k3s", "rke2"}
+            and target == current
+            and target_release_revision > int((cluster.spec.get("options") or {}).get("release_revision", 1))
+        )
+        if target <= current and not revision_upgrade:
             raise ValidationFailedError("The target version must be newer than the cluster's current version")
         if target[1] < kubeadm_config.MIN_MINOR:
             raise ValidationFailedError(f"Kubernetes 1.{target[1]} is not supported by this platform")
@@ -733,6 +805,7 @@ class ClusterService:
             spec=spec,
             nodes=nodes,
             target_version=target_text,
+            target_release_revision=target_release_revision,
             allow_emptydir_data=allow_emptydir_data,
         )
         operation = self.operations.submit(principal, CLUSTER_UPGRADE, plan.model_dump(mode="json"))
@@ -748,6 +821,83 @@ class ClusterService:
                 "target_version": f"v{target_text}",
                 "allow_emptydir_data": allow_emptydir_data,
             },
+        )
+        self.session.commit()
+        return operation
+
+    def _managed_upgrade(self, principal: Principal, cluster: Cluster, target_version: str) -> Operation:
+        try:
+            observed = (cluster.kubernetes_version or "").removeprefix("v").split("+", 1)[0].split("-", 1)[0]
+            current = kubeadm_config.parse_version(observed)
+            target = kubeadm_config.parse_version(target_version.removeprefix("v"))
+        except ValueError as exc:
+            raise ValidationFailedError(str(exc)) from exc
+        if cluster.distribution.value == "eks":
+            if target[2] is not None:
+                raise ValidationFailedError("EKS upgrades target a minor version, for example 1.35")
+            if target[1] != current[1] + 1:
+                raise ValidationFailedError("Upgrade EKS one minor version at a time")
+        elif (
+            target[2] is None
+            or target[1] not in (current[1], current[1] + 1)
+            or (*target[:2], target[2] or 0) <= (*current[:2], current[2] or 0)
+        ):
+            raise ValidationFailedError("Choose a newer exact patch in the same or next minor version")
+        spec = ClusterSpec.model_validate(cluster.spec)
+        plan = ClusterPlanInput(
+            cluster_id=cluster.id,
+            cluster_name=cluster.name,
+            spec=spec,
+            nodes=[],
+            target_version=target_version.removeprefix("v"),
+        )
+        operation = self.operations.submit(principal, CLUSTER_UPGRADE, plan.model_dump(mode="json"))
+        audit.record(
+            self.session,
+            principal=principal,
+            action="cluster.upgrade",
+            resource_type="cluster",
+            resource_id=cluster.id,
+            resource_name=cluster.name,
+            details={"target_version": target_version},
+        )
+        self.session.commit()
+        return operation
+
+    def resize_pool(
+        self, principal: Principal, cluster_id: uuid.UUID, pool_name: str, count: int, *, confirm: str | None
+    ) -> Operation:
+        cluster = self._managed(principal, cluster_id, DistributionCapability.ADD_NODES)
+        spec = ClusterSpec.model_validate(cluster.spec)
+        if (
+            distribution_registry.get(cluster.distribution).kind is not DistributionKind.MANAGED
+            and cluster.distribution.value != "k3d"
+        ):
+            raise ValidationFailedError("This distribution uses machine-based node addition and removal")
+        pool = next((pool for pool in spec.worker_pools if pool.name == pool_name), None)
+        if pool is None:
+            raise NotFoundError("Worker pool does not exist")
+        if count < 0 or count > 1000:
+            raise ValidationFailedError("Node count must be between 0 and 1000")
+        if count < pool.count and confirm != cluster.name:
+            raise ConfirmationRequiredError(
+                "Scaling down removes nodes and interrupts their workloads. Repeat the cluster name to confirm.",
+                details={"expected_confirmation": cluster.name},
+            )
+        if spec.distribution.value == "aks" and spec.worker_pools[0].name == pool_name and count < 1:
+            raise ValidationFailedError("The AKS system pool must keep at least one node")
+        plan = ClusterPlanInput(
+            cluster_id=cluster.id, cluster_name=cluster.name, spec=spec, nodes=[], pool_name=pool_name, pool_count=count
+        )
+        operation = self.operations.submit(principal, CLUSTER_RESIZE_POOL, plan.model_dump(mode="json"))
+        audit.record(
+            self.session,
+            principal=principal,
+            action="cluster.pool.resize",
+            resource_type="cluster",
+            resource_id=cluster.id,
+            resource_name=cluster.name,
+            details={"pool": pool_name, "from": pool.count, "to": count},
         )
         self.session.commit()
         return operation

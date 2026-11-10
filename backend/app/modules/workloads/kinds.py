@@ -20,6 +20,7 @@ class Kind:
     namespaced: bool = True
     scalable: bool = False
     restartable: bool = False
+    deletable: bool = True
 
     def base(self) -> str:
         return "/api/v1" if self.api_version == "v1" else f"/apis/{self.api_version}"
@@ -48,8 +49,35 @@ KINDS: dict[str, Kind] = {
         Kind("jobs", "Job", "batch/v1", "jobs"),
         Kind("cronjobs", "CronJob", "batch/v1", "cronjobs"),
         Kind("services", "Service", "v1", "services"),
+        Kind("ingresses", "Ingress", "networking.k8s.io/v1", "ingresses"),
+        Kind("networkpolicies", "NetworkPolicy", "networking.k8s.io/v1", "networkpolicies"),
+        Kind("endpointslices", "EndpointSlice", "discovery.k8s.io/v1", "endpointslices"),
+        Kind("persistentvolumes", "PersistentVolume", "v1", "persistentvolumes", namespaced=False),
+        Kind("persistentvolumeclaims", "PersistentVolumeClaim", "v1", "persistentvolumeclaims"),
+        Kind("storageclasses", "StorageClass", "storage.k8s.io/v1", "storageclasses", namespaced=False),
+        Kind("csidrivers", "CSIDriver", "storage.k8s.io/v1", "csidrivers", namespaced=False, deletable=False),
+        Kind(
+            "volumeattachments",
+            "VolumeAttachment",
+            "storage.k8s.io/v1",
+            "volumeattachments",
+            namespaced=False,
+            deletable=False,
+        ),
+        Kind(
+            "gatewayclasses",
+            "GatewayClass",
+            "gateway.networking.k8s.io/v1",
+            "gatewayclasses",
+            namespaced=False,
+        ),
+        Kind("gateways", "Gateway", "gateway.networking.k8s.io/v1", "gateways"),
+        Kind("httproutes", "HTTPRoute", "gateway.networking.k8s.io/v1", "httproutes"),
+        Kind("referencegrants", "ReferenceGrant", "gateway.networking.k8s.io/v1", "referencegrants"),
         Kind("configmaps", "ConfigMap", "v1", "configmaps"),
         Kind("secrets", "Secret", "v1", "secrets"),
+        Kind("resourcequotas", "ResourceQuota", "v1", "resourcequotas"),
+        Kind("limitranges", "LimitRange", "v1", "limitranges"),
     )
 }
 
