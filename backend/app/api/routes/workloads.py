@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import time
@@ -24,6 +25,8 @@ from app.core.secrets import get_secret_store
 from app.db.session import get_session_factory
 from app.modules.auditing import service as audit
 from app.modules.kubernetes.service import connection_target
+from app.modules.organizations.policy import require
+from app.modules.organizations.scope import scope_session
 from app.modules.workloads import terminal
 from app.modules.workloads.service import WorkloadService
 
@@ -289,12 +292,13 @@ async def pod_terminal(
     ):
         await websocket.close(code=4400, reason="invalid pod reference")
         return
-    principal: Principal = websocket.app.state.authenticator.authenticate(websocket)
+    principal = await run_in_threadpool(get_principal, websocket)
 
     def prepare() -> tuple[Any, Any]:
         from app.modules.kubernetes.service import KubernetesService
 
         with get_session_factory()() as session:
+            scope_session(session, principal)
             kubernetes = KubernetesService(session, get_secret_store(), None)  # type: ignore[arg-type]
             cluster = kubernetes.cluster(principal, cluster_id)
             target = connection_target(session, get_secret_store(), cluster)
@@ -320,7 +324,22 @@ async def pod_terminal(
     started = time.monotonic()
     outcome = "closed"
     try:
-        outcome = await terminal.bridge(websocket, target, namespace, name, container)
+        bridge = asyncio.create_task(terminal.bridge(websocket, target, namespace, name, container))
+        try:
+            while not bridge.done():
+                done, _ = await asyncio.wait({bridge}, timeout=10)
+                if done:
+                    break
+                current = await run_in_threadpool(websocket.app.state.authenticator.authenticate, websocket)
+                require(current, "terminal.exec")
+            outcome = await bridge
+        finally:
+            if not bridge.done():
+                bridge.cancel()
+            await asyncio.gather(bridge, return_exceptions=True)
+    except PlatformError:
+        outcome = "access revoked"
+        await websocket.close(code=4403, reason="session or permission changed")
     except WebSocketDisconnect:
         outcome = "browser disconnected"
     finally:

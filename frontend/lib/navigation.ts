@@ -160,9 +160,9 @@ export const NAVIGATION: NavSection[] = [
     title: "Administration",
     icon: Settings2,
     items: [
-      { title: "Users", href: "/administration/users", description: "Platform users and identity provider integration.", phase: 7 },
-      { title: "Organizations & projects", href: "/administration/organizations", description: "Tenant isolation boundaries.", phase: 7 },
-      { title: "Permissions", href: "/administration/permissions", description: "Application role-based access control.", phase: 7 },
+      { title: "Users", href: "/administration/users", description: "Platform users and identity provider integration." },
+      { title: "Organizations & projects", href: "/administration/organizations", description: "Tenant isolation boundaries." },
+      { title: "Permissions", href: "/administration/permissions", description: "Application role-based access control." },
       { title: "Audit log", href: "/administration/audit-log", description: "Every change made through the platform.", keywords: ["audit", "history"] },
       { title: "Integrations", href: "/administration/integrations", description: "Identity, secrets, monitoring and Git integrations.", phase: 8 },
       { title: "Settings", href: "/administration/settings", description: "Platform configuration and environment.", keywords: ["version", "config"] },

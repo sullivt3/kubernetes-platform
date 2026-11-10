@@ -95,6 +95,14 @@ class StepContext:
     def db(self) -> Iterator[Session]:
         session = self._session_factory()
         try:
+            from dataclasses import replace
+
+            from app.core.principal import Principal
+            from app.modules.organizations.scope import scope_session
+
+            operation = session.get(Operation, self.operation_id)
+            project_id = operation.project_id if operation else None
+            scope_session(session, replace(Principal.system(self.organization_id, "workflow"), project_id=project_id))
             yield session
             session.commit()
         except BaseException:

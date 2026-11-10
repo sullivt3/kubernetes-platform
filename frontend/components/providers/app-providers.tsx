@@ -8,6 +8,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError } from "@/lib/api/client";
 import { LiveUpdatesProvider } from "./live-updates";
+import { AuthProvider } from "./auth";
 
 function makeQueryClient() {
   return new QueryClient({
@@ -29,7 +30,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     <ThemeProvider attribute="class" forcedTheme="dark" defaultTheme="dark" disableTransitionOnChange>
       <QueryClientProvider client={queryClient}>
         <TooltipProvider delayDuration={200}>
-          <LiveUpdatesProvider>{children}</LiveUpdatesProvider>
+          <AuthProvider><LiveUpdatesProvider>{children}</LiveUpdatesProvider></AuthProvider>
           <Toaster position="bottom-right" closeButton />
         </TooltipProvider>
       </QueryClientProvider>

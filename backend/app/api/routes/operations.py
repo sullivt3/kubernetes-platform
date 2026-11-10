@@ -19,8 +19,11 @@ from app.api.auth import get_principal
 from app.api.deps import get_operation_service
 from app.api.schemas import ApiModel, Page
 from app.core.config import get_settings
+from app.core.errors import PlatformError
 from app.core.principal import Principal
 from app.db.session import get_session_factory
+from app.modules.organizations.policy import require
+from app.modules.organizations.scope import scope_session
 from app.orchestration.events import operation_channel, organization_operations_channel
 from app.orchestration.models import OperationStatus
 from app.orchestration.runtime import get_dispatcher, get_publisher, load_workflows
@@ -203,6 +206,7 @@ async def _close(subscription: tuple[Any, Any] | None) -> None:
 def _load_state(principal: Principal, operation_id: uuid.UUID, cursor: int) -> tuple[str, list[LogOut], bool]:
     load_workflows()
     with get_session_factory()() as session:
+        scope_session(session, principal)
         service = OperationService(
             session, registry=workflow_registry, dispatcher=get_dispatcher(), publisher=get_publisher()
         )
@@ -242,6 +246,11 @@ async def stream_operation(
         last_snapshot: str | None = None
         try:
             while True:
+                try:
+                    await run_in_threadpool(_refresh_stream_principal, request, principal)
+                except PlatformError:
+                    yield _sse("end", json.dumps({"reason": "access_changed"}))
+                    return
                 snapshot, logs, terminal = await run_in_threadpool(_load_state, principal, operation_id, cursor)
                 for entry in logs:
                     cursor = entry.id
@@ -289,11 +298,22 @@ async def stream_changes(request: Request, principal: Principal = Depends(get_pr
         try:
             yield _sse("ready", "{}")
             while not await request.is_disconnected():
+                try:
+                    await run_in_threadpool(_refresh_stream_principal, request, principal)
+                except PlatformError:
+                    yield _sse("end", json.dumps({"reason": "access_changed"}))
+                    return
                 message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=KEEPALIVE_SECONDS)
                 if message is None:
                     yield ": keepalive\n\n"
                     continue
                 data = message["data"].decode() if isinstance(message["data"], bytes) else str(message["data"])
+                if principal.project_id is not None:
+                    try:
+                        operation_id = uuid.UUID(json.loads(data)["operation_id"])
+                        await run_in_threadpool(_load_state, principal, operation_id, 0)
+                    except (PlatformError, KeyError, ValueError, TypeError):
+                        continue
                 yield _sse("change", data)
         finally:
             await _close(subscription)
@@ -303,3 +323,12 @@ async def stream_changes(request: Request, principal: Principal = Depends(get_pr
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
+
+
+def _refresh_stream_principal(request: Request, original: Principal) -> None:
+    current = request.app.state.authenticator.authenticate(request)
+    require(current, "operations.read")
+    if current.organization_id != original.organization_id or current.project_id != original.project_id:
+        from app.core.errors import PermissionDeniedError
+
+        raise PermissionDeniedError("Stream context changed")

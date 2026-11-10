@@ -7,6 +7,8 @@ from collections.abc import Iterator
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
+from app.api.auth import get_principal
+from app.core.principal import Principal
 from app.core.secrets import get_secret_store
 from app.db.session import get_session_factory
 from app.modules.cluster_lifecycle.service import ClusterService
@@ -14,14 +16,15 @@ from app.modules.credentials.service import CredentialService
 from app.modules.infrastructure.connections import ProviderConnectionService
 from app.modules.infrastructure.service import MachineService
 from app.modules.kubernetes.service import KubernetesService
+from app.modules.organizations.scope import scope_session
 from app.modules.workloads.service import WorkloadService
 from app.orchestration.runtime import get_dispatcher, get_publisher, load_workflows
 from app.orchestration.service import OperationService
 from app.orchestration.workflow import workflow_registry
 
 
-def get_db() -> Iterator[Session]:
-    session = get_session_factory()()
+def get_db(principal: Principal = Depends(get_principal)) -> Iterator[Session]:
+    session = scope_session(get_session_factory()(), principal)
     try:
         yield session
     finally:

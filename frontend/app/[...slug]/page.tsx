@@ -16,10 +16,8 @@ function resolve(slug: string[]) {
   return item && item.phase !== undefined ? { item, section: findNavSection(href) } : null;
 }
 
-export async function generateMetadata({ params }: PageProps<"/[...slug]">): Promise<Metadata> {
-  const resolved = resolve((await params).slug);
-  return { title: resolved?.item.title ?? "Not found" };
-}
+// The auth shell may defer the page body, so placeholder metadata stays static.
+export const metadata: Metadata = { title: "Planned feature" };
 
 export default async function PlannedFeaturePage({ params }: PageProps<"/[...slug]">) {
   const resolved = resolve((await params).slug);

@@ -30,6 +30,10 @@ installation, cluster administration, workload management and monitoring from a 
   volumes, claims, StorageClasses and CSI inventory. Run live DNS lookups inside a temporary cluster pod. Install,
   reconcile and safely remove the NFS CSI driver (preview), optionally configuring an existing NFS export and a
   default StorageClass. ResourceQuotas and LimitRanges have dedicated views and YAML management.
+* **Enterprise administration (Phase 7 in progress):** OIDC login and server-side sessions, organization/project
+  memberships, application permission enforcement and administration pages. New users require explicit access
+  grants. Phase 7 testing, security reporting and backup/restore remain pending; see
+  [enterprise administration](documentation/enterprise-administration.md).
 * **Not implemented yet:** dedicated installers for CSI vendors other
   than NFS (their manifests can be applied through the YAML editor). "Preview" integrations follow documented APIs and
   are tested with simulators, but not yet verified against a live system. The UI and API say
@@ -42,7 +46,7 @@ installation, cluster administration, workload management and monitoring from a 
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, shadcn/ui (Radix), TanStack Query, Lucide |
 | Backend | Python 3.12+, FastAPI, Pydantic 2, SQLAlchemy 2, Alembic, PostgreSQL 17 |
 | Orchestration | Celery 5 + Redis 7, Server-Sent Events for live updates |
-| Security | Fernet-encrypted credentials with key rotation, audit trail, OIDC seam (Phase 7) |
+| Security | Encrypted credentials with key rotation, audit trail, OIDC, database memberships and application RBAC (Phase 7 in progress) |
 
 ## Prerequisites
 
@@ -135,5 +139,5 @@ npm run build
 | 2 | Kubernetes workload management: resources, YAML apply with dry-run diff, logs, terminal ✅ |
 | 5 | kubeadm upgrades, cloud VM provisioning, autoscaling policies, AWS load balancers, managed EKS/AKS/GKE create/delete/scale/upgrade; overdue Kind/k3d, K3s/RKE2 and vSphere paths implemented as preview; creation wizard VM, CNI and storage wiring |
 | 6 | Networking and storage ✅: resource management, live DNS diagnostics, PV/PVC, StorageClasses, CSI inventory and NFS CSI install/reconcile/remove (preview); ResourceQuotas and LimitRanges |
-| 7 | Enterprise administration (OIDC, RBAC, organizations, backup) |
+| 7 | In progress: OIDC/session authentication, organization/project memberships, administration UI and application RBAC foundations implemented; testing, Kubernetes security views, reporting, backup/restore and remaining hardening pending |
 | 8 | Advanced operations (Prometheus, Grafana, Loki, Helm, GitOps, CRDs) |

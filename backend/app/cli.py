@@ -55,6 +55,38 @@ def _recover(_: argparse.Namespace) -> int:
     return 0
 
 
+def _grant_admin(args: argparse.Namespace) -> int:
+    from sqlalchemy import select
+
+    from app.core.principal import Principal
+    from app.db.session import get_session_factory
+    from app.modules.auditing import service as audit
+    from app.modules.organizations.models import User
+    from app.modules.organizations.service import ensure_default_tenancy
+
+    with get_session_factory()() as session:
+        tenancy = ensure_default_tenancy(session)
+        user = session.scalars(select(User).where(User.subject == args.subject)).first()
+        if user is None:
+            print(
+                "User not found. Sign in once, then use the exact issuer|sub identity shown on the access page.",
+                file=sys.stderr,
+            )
+            return 1
+        user.is_platform_admin = True
+        user.is_active = True
+        audit.record(
+            session,
+            principal=Principal.system(tenancy.organization.id, "admin-recovery-cli"),
+            action="user.admin.recover",
+            resource_type="user",
+            resource_id=user.id,
+        )
+        session.commit()
+    print("Platform administrator access granted; this change was audited.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -64,6 +96,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("bootstrap", help="Create default tenancy records").set_defaults(func=_bootstrap)
     sub.add_parser("check", help="Check configuration and dependencies").set_defaults(func=_check)
     sub.add_parser("recover", help="Run one operation recovery pass").set_defaults(func=_recover)
+    admin = sub.add_parser("grant-admin", help="Recover platform administrator access for an existing OIDC identity")
+    admin.add_argument("--subject", required=True)
+    admin.set_defaults(func=_grant_admin)
     args = parser.parse_args(argv)
     return int(args.func(args))
 

@@ -1,18 +1,23 @@
-# API reference (Phase 0)
+# API reference
 
 The machine-readable contract is the OpenAPI document at `/api/v1/openapi.json`. Interactive docs are at
 `/api/v1/docs`. This page summarizes the endpoints and their conventions.
 
 ## Conventions
 
-* **Base path:** `/api/v1`. All endpoints except `/health/*` require an authenticated principal (`AUTH_MODE=dev`
-  in Phase 0).
+* **Base path:** `/api/v1`. Resource endpoints require an authenticated principal and application permissions.
+  Health probes and authentication entry/session endpoints are public; logout and context changes validate the
+  current identity and session CSRF token. OIDC bearer clients use an API audience separate from the browser
+  client ID. See [enterprise administration](enterprise-administration.md) for setup, roles and new endpoints.
 * **Errors** always look like this:
   `{"error": {"code": "conflict", "message": "…", "details": {…}, "request_id": "…"}}`
 
   | Code | HTTP status |
   |---|---|
   | `validation_failed` | 422 |
+  | `authentication_required` | 401 |
+  | `permission_denied` | 403 |
+  | `identity_provider_unavailable` | 503 |
   | `not_found` | 404 |
   | `conflict` | 409 |
   | `invalid_state` | 409 |

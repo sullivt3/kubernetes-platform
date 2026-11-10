@@ -56,6 +56,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const { method = "GET", query, body, headers, signal, responseType = "json" } = options;
   let response: Response;
   try {
+    const csrf = typeof document === "undefined" ? "" : document.cookie.split("; ").find((value) => value.startsWith("kplatform_csrf="))?.split("=").slice(1).join("=");
     response = await fetch(buildUrl(path, query), {
       method,
       signal,
@@ -63,6 +64,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
       headers: {
         Accept: responseType === "text" ? "text/plain, application/json" : "application/json",
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...(method !== "GET" && csrf ? { "X-CSRF-Token": decodeURIComponent(csrf) } : {}),
         ...headers,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -85,6 +87,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith("/auth/") && typeof window !== "undefined") window.dispatchEvent(new Event("platform-auth-expired"));
     if (isErrorBody(payload)) {
       const { code, message, details, request_id } = payload.error;
       throw new ApiError(response.status, code, message, details, request_id);

@@ -14,8 +14,12 @@ All settings are validated at startup. Unsafe combinations make the process refu
 | `REDIS_URL` | `redis://localhost:6379/0` | Celery broker and change-notification channel. |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated list. Browsers normally reach the API through the Next.js proxy, so CORS mainly matters for direct API clients. |
 | `API_PREFIX` | `/api/v1` | API mount path. |
-| `AUTH_MODE` | `dev` | `dev`: every request runs as a local administrator. **Rejected in staging/production.** `oidc`: planned for Phase 7 (startup fails until implemented). |
-| `OIDC_ISSUER_URL`, `OIDC_AUDIENCE` | — | Required when `AUTH_MODE=oidc`. |
+| `AUTH_MODE` | `dev` | `dev`: local administrator, rejected in staging/production. `oidc`: authorization-code login, opaque browser sessions and JWT API access tokens. See [enterprise administration](enterprise-administration.md). |
+| `OIDC_ISSUER_URL`, `OIDC_AUDIENCE`, `OIDC_CLIENT_ID` | — | Required in OIDC mode. API audience must differ from browser client ID. |
+| `OIDC_CLIENT_SECRET` | — | Confidential OIDC client secret; omit for a public client using PKCE. |
+| `OIDC_BOOTSTRAP_SUBJECT` | — | Exact trusted OIDC `sub` granted platform administration only when its user is first created. Remove after setup. |
+| `PUBLIC_URL` | `http://localhost:3000` | Browser-facing origin used for callbacks and CSRF Origin checks. HTTPS required in staging/production. |
+| `AUTH_SESSION_SECONDS` | `28800` | Absolute local browser session lifetime (300–86400 seconds); no silent provider-token refresh. |
 | `SECRET_ENCRYPTION_KEYS` | — (**required**) | `key_id:fernet_key[,key_id:fernet_key…]`. The first key encrypts new secrets; the others only decrypt. Generate with `python -m app.cli generate-key --key-id k1`. |
 | `DISCOVERY_ALLOW_PUBLIC_RANGES` | `false` | Network discovery only scans private, loopback and link-local addresses unless this is enabled. |
 | `DOCKER_HOST` | system default | Docker daemon used by Local provider connections that do not set `docker_host` themselves. Workers need access to it; access to the Docker daemon is equivalent to root on that host. |

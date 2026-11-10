@@ -420,7 +420,10 @@ migrations. Validation happens in the application.
 * **Authentication seam:** every protected route resolves a `Principal` through `get_principal`.
   * Phase 0 ships `AUTH_MODE=dev`, a fixed local administrator. Configuration validation makes it impossible to
     enable in staging or production.
-  * OIDC (Keycloak or compatible) plugs into the same seam in Phase 7.
+  * OIDC (Keycloak or compatible) validates JWTs through discovery/JWKS and uses code/PKCE login with server-side
+    browser sessions. Database memberships resolve organization/project roles; protected routes enforce a central
+    permission policy. Scoped API and workflow sessions constrain resource access. See
+    [enterprise administration](enterprise-administration.md) for setup and the remaining Phase 7 work.
 * **Credentials:**
   * Fernet (AES-128-CBC + HMAC-SHA256) encryption with key IDs. Rotation works by prepending a new key; old
     ciphertexts stay readable.
@@ -442,8 +445,8 @@ migrations. Validation happens in the application.
   * Restricted CORS.
   * Structured errors that never leak internals.
 * **Containers:** the backend runs as a non-root user.
-* **Not yet implemented** (tracked for Phase 7): OIDC, application RBAC enforcement, rate limiting, TLS
-  termination guidance, backup/restore.
+* **Phase 7 remains in progress:** authentication/isolation tests and live OIDC validation, individual UI action
+  visibility, Kubernetes security views/reporting, general API rate limiting, TLS deployment guidance and backup/restore.
 
 ## Frontend architecture
 

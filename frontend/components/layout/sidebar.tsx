@@ -8,6 +8,8 @@ import { Suspense, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { activeHref, NAVIGATION, type NavSection } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/components/providers/auth";
+import { pagePermission } from "@/lib/api/identity";
 
 function SectionGroup({
   section,
@@ -69,9 +71,11 @@ function SectionGroup({
 
 function NavTree({ onNavigate }: { onNavigate?: () => void }) {
   const active = activeHref(usePathname());
+  const auth = useAuth();
+  const visible = NAVIGATION.map((section) => ({ ...section, items: section.items.filter((item) => auth?.context?.permissions.includes(pagePermission(item.href))) })).filter((section) => section.items.length > 0);
   return (
     <>
-      {NAVIGATION.map((section) => (
+      {visible.map((section) => (
         <SectionGroup key={section.title} section={section} active={active} onNavigate={onNavigate} />
       ))}
     </>

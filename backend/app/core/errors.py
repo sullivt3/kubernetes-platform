@@ -47,6 +47,11 @@ class PermissionDeniedError(PlatformError):
     code = "permission_denied"
 
 
+class AuthenticationRequiredError(PlatformError):
+    status_code = 401
+    code = "authentication_required"
+
+
 class InvalidStateError(PlatformError):
     """The resource is not in a state that permits the requested action."""
 

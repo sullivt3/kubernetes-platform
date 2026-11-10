@@ -28,7 +28,7 @@ class Environment(StrEnum):
 class AuthMode(StrEnum):
     # Development only: every request is attributed to a fixed local principal.
     DEV = "dev"
-    # OpenID Connect bearer-token validation (Keycloak or compatible). Planned for Phase 7.
+    # OIDC authorization-code login and JWT access tokens (Keycloak or compatible).
     OIDC = "oidc"
 
 
@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     auth_mode: AuthMode = AuthMode.DEV
     oidc_issuer_url: str | None = None
     oidc_audience: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: SecretStr | None = None
+    oidc_bootstrap_subject: str | None = None
+    public_url: str = "http://localhost:3000"
+    auth_session_seconds: int = Field(default=28_800, ge=300, le=86_400)
 
     # --- Secrets -------------------------------------------------------------
     # Comma-separated "key_id:fernet_key" pairs. The FIRST entry is used for new
@@ -90,8 +95,32 @@ class Settings(BaseSettings):
             raise ValueError("SECRET_ENCRYPTION_KEYS must be set (generate one with: python -m app.cli generate-key)")
         if protected and self.orchestration_inline:
             raise ValueError("ORCHESTRATION_INLINE is a test-only setting")
-        if self.auth_mode is AuthMode.OIDC and not (self.oidc_issuer_url and self.oidc_audience):
-            raise ValueError("AUTH_MODE=oidc requires OIDC_ISSUER_URL and OIDC_AUDIENCE")
+        if self.auth_mode is AuthMode.OIDC:
+            from urllib.parse import urlsplit
+
+            if not (self.oidc_issuer_url and self.oidc_audience and self.oidc_client_id):
+                raise ValueError("AUTH_MODE=oidc requires OIDC_ISSUER_URL, OIDC_AUDIENCE and OIDC_CLIENT_ID")
+            for value in (self.oidc_issuer_url, self.public_url):
+                url = urlsplit(value)
+                local_http = (
+                    not protected and url.scheme == "http" and url.hostname in {"localhost", "127.0.0.1", "::1"}
+                )
+                if (
+                    (url.scheme != "https" and not local_http)
+                    or not url.hostname
+                    or url.username
+                    or url.password
+                    or url.query
+                    or url.fragment
+                ):
+                    raise ValueError(
+                        "OIDC URLs require HTTPS (loopback HTTP is development-only), "
+                        "without credentials, query or fragment"
+                    )
+            if urlsplit(self.public_url).path not in {"", "/"}:
+                raise ValueError("PUBLIC_URL must be an origin without a path")
+            if self.oidc_audience == self.oidc_client_id:
+                raise ValueError("OIDC_AUDIENCE must identify the API separately from OIDC_CLIENT_ID")
         return self
 
     @property

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import Settings
 from app.core.errors import ConfirmationRequiredError, ConflictError, InvalidStateError, NotFoundError
 from app.core.principal import Principal
+from app.db.base import OrganizationScoped
 from app.modules.auditing import service as audit
 from app.orchestration.dispatch import OperationDispatcher
 from app.orchestration.events import ChangeKind, EventPublisher
@@ -72,6 +73,32 @@ class OperationService:
         workflow = self.registry.get(workflow_type)
         validated = workflow.validate_params(params)
         target = workflow.target(validated)
+
+        # Organization-wide administrators may operate on project-owned targets.
+        # Keep the resulting operation and worker-created resources in that project.
+        if target is not None:
+            from app.modules.cluster_lifecycle.models import Cluster
+            from app.modules.infrastructure.models import Machine, ProviderConnection
+
+            models = {
+                "cluster": Cluster,
+                "node": Cluster,
+                "machine": Machine,
+                "provider_connection": ProviderConnection,
+            }
+            model = models.get(target.type)
+            if model is not None:
+                try:
+                    target_uuid = uuid.UUID(target.id.split("/")[0])
+                except ValueError:
+                    target_uuid = None
+                entity = self.session.get(model, target_uuid) if target_uuid else None
+                if isinstance(entity, OrganizationScoped):
+                    if entity.organization_id != principal.organization_id:
+                        raise NotFoundError("Operation target not found")
+                    project_id = entity.project_id
+        if project_id is None:
+            project_id = principal.project_id
 
         if workflow.destructive:
             expected = (target.name or target.id) if target else workflow.type

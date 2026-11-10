@@ -1,8 +1,8 @@
 """Tenancy bootstrap.
 
-Phase 0 runs single-tenant: a ``default`` organization and project are ensured at
-startup. All data is nevertheless scoped by organization so multi-tenancy
-(Phase 7) does not require reworking existing tables or queries.
+A ``default`` organization and project are ensured at startup for existing data
+and initial administration. OIDC identities require explicit membership grants;
+only development mode creates a local platform administrator.
 """
 
 from __future__ import annotations
@@ -54,6 +54,7 @@ def ensure_dev_principal(session: Session, tenancy: Tenancy) -> Principal:
         .on_conflict_do_nothing(index_elements=["subject"])
     )
     user = session.scalars(select(User).where(User.subject == DEV_SUBJECT)).one()
+    user.is_platform_admin = True
     session.commit()
     return Principal(
         user_id=user.id,

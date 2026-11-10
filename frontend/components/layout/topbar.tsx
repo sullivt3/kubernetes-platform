@@ -23,6 +23,7 @@ import { useClusters, useOperations, useSystemInfo } from "@/lib/api/hooks";
 import { useSelectedCluster } from "./cluster-context";
 import { GlobalSearch } from "./global-search";
 import { SidebarContent } from "./sidebar";
+import { ContextSelector, signOut, useAuth } from "@/components/providers/auth";
 
 function ClusterSelector() {
   const clusters = useClusters();
@@ -144,13 +145,15 @@ function UserMenu() {
         </DropdownMenuLabel>
         {info.data?.auth_mode === "dev" && (
           <p className="mx-2 mb-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-300">
-            Development authentication: every request runs as a local administrator. OIDC sign-in arrives in Phase 7.
+            Development authentication: every request runs as a local administrator. Configure OIDC for multi-user sign-in.
           </p>
         )}
         <DropdownMenuSeparator />
+        <DropdownMenuItem asChild><Link href="/administration/permissions">Context & permissions</Link></DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link href="/administration/settings">Platform settings</Link>
         </DropdownMenuItem>
+        {info.data?.auth_mode === "oidc" && <DropdownMenuItem onSelect={() => void signOut()}>Sign out</DropdownMenuItem>}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -158,6 +161,7 @@ function UserMenu() {
 
 export function Topbar() {
   const [menuOpen, setMenuOpen] = useState(false);
+  const auth = useAuth();
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border/60 bg-background/85 px-4 backdrop-blur">
       <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation" onClick={() => setMenuOpen(true)}>
@@ -170,6 +174,7 @@ export function Topbar() {
         </DialogContent>
       </Dialog>
       <ClusterSelector />
+      {auth && <div className="hidden xl:block"><ContextSelector session={auth} /></div>}
       <div className="flex flex-1 justify-center">
         <GlobalSearch />
       </div>

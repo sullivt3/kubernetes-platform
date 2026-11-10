@@ -7,11 +7,14 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/api/client";
 import { useStartSelfCheck } from "@/lib/api/hooks";
+import { useCan } from "@/components/providers/auth";
 
 /** Starts the real platform self-check workflow and opens its live view. */
 export function SelfCheckButton({ variant = "default" }: { variant?: "default" | "outline" }) {
   const router = useRouter();
   const start = useStartSelfCheck();
+  const allowed = useCan("platform.manage");
+  if (!allowed) return null;
   return (
     <Button
       variant={variant}

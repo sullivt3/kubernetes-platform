@@ -14,6 +14,8 @@ class Principal:
     organization_id: uuid.UUID
     roles: frozenset[str] = field(default_factory=frozenset)
     is_system: bool = False
+    project_id: uuid.UUID | None = None
+    organization_role: str | None = None
 
     @classmethod
     def system(cls, organization_id: uuid.UUID, component: str) -> Principal:

@@ -14,7 +14,9 @@ from app.api.auth import Authenticator, build_authenticator, get_principal
 from app.api.errors import install_error_handlers
 from app.api.middleware import RequestContextMiddleware
 from app.api.routes import (
+    administration,
     audit,
+    authentication,
     catalog,
     cluster_live,
     clusters,
@@ -70,21 +72,33 @@ def create_app() -> FastAPI:
         redoc_url=None,
         openapi_url=f"{settings.api_prefix}/openapi.json",
     )
+    app.state.api_prefix = settings.api_prefix
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-        allow_headers=["Content-Type", "Authorization", "Idempotency-Key", "X-Request-ID", "Last-Event-ID"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "Idempotency-Key",
+            "X-Request-ID",
+            "Last-Event-ID",
+            "X-CSRF-Token",
+            "X-Organization-ID",
+            "X-Project-ID",
+        ],
     )
     app.add_middleware(RequestContextMiddleware)
     install_error_handlers(app)
 
     # Unauthenticated: health probes only.
     app.include_router(health.router, prefix=settings.api_prefix)
+    app.include_router(authentication.router, prefix=settings.api_prefix)
 
     protected = APIRouter(dependencies=[Depends(get_principal)])
     for module in (
+        administration,
         system,
         catalog,
         operations,

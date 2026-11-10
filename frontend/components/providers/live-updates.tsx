@@ -81,6 +81,11 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         source?.close();
         reconnectTimer = window.setTimeout(connect, RECONNECT_MS);
       });
+      source.addEventListener("end", () => {
+        source?.close();
+        setMode("polling");
+        window.dispatchEvent(new Event("platform-auth-expired"));
+      });
       source.onerror = () => {
         // EventSource retries automatically; poll in the meantime.
         setMode("polling");
