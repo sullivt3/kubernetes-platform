@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { StatusPill } from "@/components/common/status";
 import { YamlEditor, yamlProblems } from "@/components/common/yaml-editor";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -100,6 +101,7 @@ export function YamlApplyPanel({
   height?: string;
   onApplied?: (response: ApplyResponse) => void;
 }) {
+  const canWrite = useCan("clusters.write");
   const [text, setText] = useState(initial);
   const [namespace, setNamespace] = useState(defaultNamespace);
   const [planned, setPlanned] = useState<{ text: string; response: ApplyResponse } | null>(null);
@@ -110,6 +112,7 @@ export function YamlApplyPanel({
   const planIsCurrent = planned?.text === text && planned.response.ok;
 
   const run = (dryRun: boolean) => {
+    if (!canWrite) return;
     setError(null);
     apply.mutate(
       { manifest: text, namespace, dry_run: dryRun },
@@ -134,13 +137,13 @@ export function YamlApplyPanel({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
-        {allowNamespace && (
+        {canWrite && allowNamespace && (
           <div className="space-y-1">
             <Label htmlFor="apply-ns" className="text-xs text-muted-foreground">Default namespace</Label>
             <Input id="apply-ns" value={namespace} onChange={(e) => setNamespace(e.target.value)} className="h-8 w-44 font-mono" />
           </div>
         )}
-        {allowFiles && (
+        {canWrite && allowFiles && (
           <>
             <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-border px-2.5 text-sm hover:bg-muted/40">
               <FileUp className="size-4" /> Import file
@@ -168,16 +171,16 @@ export function YamlApplyPanel({
             </Button>
           </>
         )}
-        <div className="ml-auto flex gap-2">
+        {canWrite && <div className="ml-auto flex gap-2">
           <Button variant="outline" size="sm" disabled={syntax.length > 0 || !text.trim() || apply.isPending} onClick={() => run(true)}>
             <FlaskConical /> {apply.isPending && !planIsCurrent ? "Checking…" : "Dry run & diff"}
           </Button>
           <Button size="sm" disabled={!planIsCurrent || apply.isPending} onClick={() => run(false)} title={planIsCurrent ? "" : "Run a successful dry run of this exact YAML first"}>
             <Rocket /> {apply.isPending && planIsCurrent ? "Applying…" : "Apply"}
           </Button>
-        </div>
+        </div>}
       </div>
-      <YamlEditor value={text} onChange={setText} height={height} />
+      <YamlEditor value={text} onChange={setText} readOnly={!canWrite} height={height} />
       {syntax.length > 0 && (
         <p className="text-xs text-red-300">YAML syntax: {syntax[0].message} {syntax.length > 1 ? `(+${syntax.length - 1} more)` : ""}</p>
       )}

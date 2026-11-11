@@ -84,7 +84,7 @@ def run(ctx: StepContext, tool: str, args: list[str], env: dict[str, str], *, ti
             stdout=output,
             stderr=errors,
             env=env,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
         )
         deadline = time.monotonic() + timeout
         try:

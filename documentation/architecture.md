@@ -179,7 +179,11 @@ provision -> machine.provision                 - distribution rules          [wa
 * Steps run idempotent scripts on nodes, in parallel where safe. Control-plane joins are serialized for etcd safety.
 * Version handling: the minor version chosen by the user is resolved to the newest patch available from
   pkgs.k8s.io on the first control plane, then pinned on every node. Packages are held.
-* containerd comes from Docker's repository, configured with the systemd cgroup driver.
+* containerd comes from Docker's repository for the machine's OS: Fedora, RHEL,
+  CentOS-compatible Rocky/AlmaLinux, Ubuntu or Debian. Its generated config uses
+  the systemd cgroup driver. DNF5 has its own exclude/query path; DNF4 remains
+  supported. Fedora's generated zram swap is persistently disabled when swap is
+  disallowed. See [Fedora hosts](fedora.md) for supported versions and validation.
 * kubeadm configuration is generated (v1beta3/v1beta4), including the pod/service CIDRs, DNS domain, node IPs,
   an HA `controlPlaneEndpoint`, and kubelet/kube-proxy options.
 * **Smoke test.** After all nodes are Ready, a pod (tolerating every taint) resolves

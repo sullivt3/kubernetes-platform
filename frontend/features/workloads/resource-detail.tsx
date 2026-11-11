@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { StatusPill } from "@/components/common/status";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -70,6 +71,7 @@ function PodsTable({ detail }: { detail: ResourceDetail }) {
 }
 
 function History({ clusterId, detail }: { clusterId: string; detail: ResourceDetail }) {
+  const canWrite = useCan("clusters.write");
   const rollback = useRollback(clusterId);
   const [target, setTarget] = useState<number | null>(null);
   const namespace = detail.summary.namespace ?? "default";
@@ -86,7 +88,7 @@ function History({ clusterId, detail }: { clusterId: string; detail: ResourceDet
               <TableCell className="text-xs text-muted-foreground">{h.change_cause ?? "—"}</TableCell>
               <TableCell className="text-sm text-muted-foreground">{formatDateTime(h.created)}</TableCell>
               <TableCell className="text-right">
-                {!h.current && h.revision && (
+                {canWrite && !h.current && h.revision && (
                   <Button size="xs" variant="outline" onClick={() => setTarget(h.revision)}><RotateCcw /> Roll back</Button>
                 )}
               </TableCell>
@@ -115,13 +117,14 @@ function History({ clusterId, detail }: { clusterId: string; detail: ResourceDet
 }
 
 function DataView({ clusterId, detail }: { clusterId: string; detail: ResourceDetail }) {
+  const canReveal = useCan("secrets.reveal");
   const reveal = useRevealSecret(clusterId);
   const isSecret = detail.kind === "Secret";
   const data = (detail.object.data ?? {}) as Record<string, string>;
-  const revealed = reveal.data?.values;
+  const revealed = canReveal ? reveal.data?.values : undefined;
   return (
     <div className="space-y-3">
-      {isSecret && !revealed && (
+      {canReveal && isSecret && !revealed && (
         <Button size="sm" variant="outline" disabled={reveal.isPending} onClick={() => reveal.mutate({ namespace: detail.summary.namespace ?? "default", name: detail.summary.name })}>
           <Eye /> Reveal values (audited)
         </Button>
@@ -238,6 +241,8 @@ export function ResourceDetailDialog({
   target: { namespace: string; name: string } | null;
   onClose: () => void;
 }) {
+  const canWrite = useCan("clusters.write");
+  const canExec = useCan("terminal.exec");
   const config = KIND_CONFIG[kind];
   const detail = useResource(clusterId, kind, target?.namespace ?? null, target?.name ?? null);
   const restart = useRestart(clusterId, kind);
@@ -264,10 +269,10 @@ export function ResourceDetailDialog({
         {d && target && (
           <>
             <div className="flex flex-wrap gap-2">
-              {d.capabilities.scale && <Button size="sm" variant="outline" onClick={() => setScaling(true)}><Scaling /> Scale</Button>}
-              {kind === "deployments" && <Button size="sm" variant="outline" onClick={() => setPolicyDialog(true)}><Scaling /> {d.scaling_policy ? "Scaling policy" : "Autoscale"}</Button>}
-              {d.capabilities.restart && <Button size="sm" variant="outline" onClick={() => setRestarting(true)}><RotateCw /> Restart</Button>}
-              {kind === "cronjobs" && (
+              {canWrite && d.capabilities.scale && <Button size="sm" variant="outline" onClick={() => setScaling(true)}><Scaling /> Scale</Button>}
+              {canWrite && kind === "deployments" && <Button size="sm" variant="outline" onClick={() => setPolicyDialog(true)}><Scaling /> {d.scaling_policy ? "Scaling policy" : "Autoscale"}</Button>}
+              {canWrite && d.capabilities.restart && <Button size="sm" variant="outline" onClick={() => setRestarting(true)}><RotateCw /> Restart</Button>}
+              {canWrite && kind === "cronjobs" && (
                 <>
                   <Button size="sm" variant="outline" disabled={trigger.isPending} onClick={() => trigger.mutate(target, { onSuccess: (r) => toast.success(`Started job ${r.job}`), onError: (e) => toast.error("Could not start job", { description: e.message }) })}><Zap /> Run now</Button>
                   <Button size="sm" variant="outline" disabled={suspend.isPending} onClick={() => suspend.mutate({ ...target, suspend: !d.summary.suspend }, { onError: (e) => toast.error("Failed", { description: e.message }) })}>
@@ -275,13 +280,13 @@ export function ResourceDetailDialog({
                   </Button>
                 </>
               )}
-              {d.capabilities.delete && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setDeleting(true)}><Trash2 className="text-red-400" /> Delete</Button>}
+              {canWrite && d.capabilities.delete && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setDeleting(true)}><Trash2 className="text-red-400" /> Delete</Button>}
             </div>
             <Tabs defaultValue={isPod ? "logs" : "overview"}>
               <TabsList className="flex-wrap">
                 <TabsTrigger value="overview">Overview</TabsTrigger>
                 {isPod && <TabsTrigger value="logs">Logs</TabsTrigger>}
-                {isPod && <TabsTrigger value="terminal">Terminal</TabsTrigger>}
+                {canExec && isPod && <TabsTrigger value="terminal">Terminal</TabsTrigger>}
                 {d.pods && <TabsTrigger value="pods">Pods ({d.pods.length})</TabsTrigger>}
                 {d.history && <TabsTrigger value="history">History</TabsTrigger>}
                 {d.jobs && <TabsTrigger value="jobs">Jobs ({d.jobs.length})</TabsTrigger>}
@@ -291,7 +296,7 @@ export function ResourceDetailDialog({
               </TabsList>
               <TabsContent value="overview" className="pt-4"><Overview detail={d} /></TabsContent>
               {isPod && <TabsContent value="logs" className="pt-4"><PodLogs clusterId={clusterId} namespace={target.namespace} pod={target.name} containers={containers} /></TabsContent>}
-              {isPod && <TabsContent value="terminal" className="pt-4"><PodTerminal clusterId={clusterId} namespace={target.namespace} pod={target.name} containers={d.containers ?? []} /></TabsContent>}
+              {canExec && isPod && <TabsContent value="terminal" className="pt-4"><PodTerminal clusterId={clusterId} namespace={target.namespace} pod={target.name} containers={d.containers ?? []} /></TabsContent>}
               {d.pods && <TabsContent value="pods" className="pt-4"><PodsTable detail={d} /></TabsContent>}
               {d.history && <TabsContent value="history" className="pt-4"><History clusterId={clusterId} detail={d} /></TabsContent>}
               {d.jobs && (
@@ -308,10 +313,10 @@ export function ResourceDetailDialog({
               </TabsContent>
               <TabsContent value="events" className="pt-4"><Events detail={d} /></TabsContent>
             </Tabs>
-            {d.capabilities.scale && scaling && <ScaleDialog open={scaling} onOpenChange={setScaling} clusterId={clusterId} kind={kind} detail={d} />}
-            {kind === "deployments" && policyDialog && <ScalingPolicyDialog open={policyDialog} onOpenChange={setPolicyDialog} clusterId={clusterId} detail={d} />}
+            {canWrite && d.capabilities.scale && scaling && <ScaleDialog open={scaling} onOpenChange={setScaling} clusterId={clusterId} kind={kind} detail={d} />}
+            {canWrite && kind === "deployments" && policyDialog && <ScalingPolicyDialog open={policyDialog} onOpenChange={setPolicyDialog} clusterId={clusterId} detail={d} />}
             <ConfirmDialog
-              open={restarting}
+              open={canWrite && restarting}
               onOpenChange={setRestarting}
               destructive={false}
               title={`Restart ${target.name}?`}
@@ -321,7 +326,7 @@ export function ResourceDetailDialog({
               onConfirm={() => restart.mutate(target, { onSuccess: () => { toast.success("Restart started"); setRestarting(false); }, onError: (e) => toast.error("Restart failed", { description: e.message }) })}
             />
             <ConfirmDialog
-              open={deleting}
+              open={canWrite && deleting}
               onOpenChange={setDeleting}
               title={`Delete ${config.singular.toLowerCase()} ${target.name}?`}
               description={<p>

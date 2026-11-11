@@ -1,13 +1,8 @@
 # Install and configure containerd (from Docker's package repository). Idempotent.
 
+repo_os="$(docker_repo_os)"
 if [ "$OS_FAMILY" = debian ]; then
-  if [ "$ID" = ubuntu ] || [ "$ID" = debian ]; then
-    repo_os="$ID"; codename="${VERSION_CODENAME:-}"
-  elif [[ " ${ID_LIKE:-} " == *" ubuntu "* ]]; then
-    repo_os=ubuntu; codename="${UBUNTU_CODENAME:-}"
-  else
-    repo_os=debian; codename="${VERSION_CODENAME:-}"
-  fi
+  codename="${VERSION_CODENAME:-}"
   [ -n "$codename" ] || fail "cannot determine distribution codename"
   install -m 0755 -d /etc/apt/keyrings
   log "Configuring Docker package repository (containerd.io) for $repo_os $codename"
@@ -18,8 +13,8 @@ if [ "$OS_FAMILY" = debian ]; then
   apt_update
   apt_install containerd.io
 else
-  log "Configuring Docker package repository (containerd.io)"
-  curl -fsSL https://download.docker.com/linux/centos/docker-ce.repo -o /etc/yum.repos.d/docker-ce.repo
+  log "Configuring Docker package repository (containerd.io) for $repo_os"
+  curl -fsSL "https://download.docker.com/linux/${repo_os}/docker-ce.repo" -o /etc/yum.repos.d/docker-ce.repo
   dnf_install containerd.io
 fi
 

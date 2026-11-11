@@ -26,6 +26,7 @@ from sqlalchemy import delete, select
 from app.core.principal import Principal
 from app.modules.cluster_lifecycle.distributions.base import ClusterPlanInput, PlannedNode
 from app.modules.cluster_lifecycle.distributions.kubeadm import config as cfg
+from app.modules.cluster_lifecycle.distributions.linux import swap_script
 from app.modules.cluster_lifecycle.models import (
     Cluster,
     ClusterLifecycleState,
@@ -49,7 +50,7 @@ SMOKE_TEST_TIMEOUT_SECONDS = 300
 @cache
 def _script(name: str) -> str:
     base = resources.files("app.modules.cluster_lifecycle.distributions.kubeadm") / "scripts"
-    return (base / "lib.sh").read_text() + "\n" + (base / name).read_text()
+    return (base / "lib.sh").read_text() + "\n" + swap_script() + "\n" + (base / name).read_text()
 
 
 def _plan(ctx: StepContext) -> ClusterPlanInput:

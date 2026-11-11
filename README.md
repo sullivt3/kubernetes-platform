@@ -32,7 +32,7 @@ installation, cluster administration, workload management and monitoring from a 
   default StorageClass. ResourceQuotas and LimitRanges have dedicated views and YAML management.
 * **Enterprise administration (Phase 7 in progress):** OIDC login and server-side sessions, organization/project
   memberships, application permission enforcement and administration pages. New users require explicit access
-  grants. Phase 7 testing, security reporting and backup/restore remain pending; see
+  grants. Further Phase 7 validation, security reporting and backup/restore remain pending; see
   [enterprise administration](documentation/enterprise-administration.md).
 * **Not implemented yet:** dedicated installers for CSI vendors other
   than NFS (their manifests can be applied through the YAML editor). "Preview" integrations follow documented APIs and
@@ -89,7 +89,8 @@ the command line.
 
 1. **Security → Credentials:** add the SSH private key (or password) for your servers.
 2. **Infrastructure → Machines:** register each server. Requirements: Ubuntu 22.04/24.04, Debian 12/13 or
-   RHEL/Rocky/AlmaLinux 8/9; 2+ CPUs for control planes; 2 GB+ RAM; root or passwordless sudo; outbound access
+   RHEL/Rocky/AlmaLinux 8/9, or Fedora 43/44/45 (conventional Server/Workstation installations);
+   2+ CPUs for control planes; 2 GB+ RAM; root or passwordless sudo; outbound access
    to pkgs.k8s.io, download.docker.com and registry.k8s.io.
 3. **Kubernetes → Create cluster:** follow the wizard. The review step validates against the inventory and shows
    the exact plan. Installation then streams live and can be retried from the failed step.
@@ -105,6 +106,10 @@ To run the whole backend in containers instead, run
 `backend/.env` with the encryption key.
 
 ## Quality checks
+
+For the isolated Docker test stack, local Keycloak, and the configured Python/Node tools,
+see [Local testing environment](documentation/local-testing.md). On this checkout,
+`source scripts/dev-env.sh` activates the tools and `bash scripts/checks.sh` runs the checks.
 
 ```bash
 # Backend (needs the compose services running)
@@ -127,6 +132,7 @@ npm run build
 * [Configuration](documentation/configuration.md): every environment variable, key rotation
 * [API](documentation/api.md): endpoints and conventions (OpenAPI at `/api/v1/docs`)
 * [Cluster integrations](documentation/cluster-integrations.md): local/native distributions, managed lifecycle, vSphere, VM inputs and creation-time storage
+* [Fedora hosts](documentation/fedora.md): Fedora 43–45, per-distribution containerd repositories, DNF5, swap/SELinux behavior and validation
 
 ## Roadmap
 

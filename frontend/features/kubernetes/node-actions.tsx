@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -293,6 +294,7 @@ function RemoveNodeDialog({ clusterId, member, open, onClose }: { clusterId: str
 // ---- action bar -----------------------------------------------------------------------------
 
 export function NodeActions({ clusterId, node, cluster }: { clusterId: string; node: KubeNode; cluster?: ClusterDetail }) {
+  const canWrite = useCan("clusters.write");
   const cordon = useCordonNode(clusterId);
   const [dialog, setDialog] = useState<"labels" | "taints" | "drain" | "remove" | null>(null);
   const [showLogs, setShowLogs] = useState(false);
@@ -304,7 +306,7 @@ export function NodeActions({ clusterId, node, cluster }: { clusterId: string; n
         <Button
           size="sm"
           variant="outline"
-          disabled={cordon.isPending}
+          disabled={!canWrite || cordon.isPending}
           onClick={() =>
             cordon.mutate(
               { name: node.name, cordon: !node.unschedulable },
@@ -317,23 +319,23 @@ export function NodeActions({ clusterId, node, cluster }: { clusterId: string; n
         >
           {node.unschedulable ? <CircleSlash /> : <Ban />} {node.unschedulable ? "Uncordon" : "Cordon"}
         </Button>
-        <Button size="sm" variant="outline" onClick={() => setDialog("drain")}><Waves /> Drain…</Button>
-        <Button size="sm" variant="outline" onClick={() => setDialog("labels")}><Tag /> Labels…</Button>
-        <Button size="sm" variant="outline" onClick={() => setDialog("taints")}><FileText /> Taints…</Button>
+        <Button disabled={!canWrite} size="sm" variant="outline" onClick={() => setDialog("drain")}><Waves /> Drain…</Button>
+        <Button disabled={!canWrite} size="sm" variant="outline" onClick={() => setDialog("labels")}><Tag /> Labels…</Button>
+        <Button disabled={!canWrite} size="sm" variant="outline" onClick={() => setDialog("taints")}><FileText /> Taints…</Button>
         {managed && (
           <Button size="sm" variant={showLogs ? "secondary" : "outline"} onClick={() => setShowLogs((v) => !v)}><ScrollText /> System logs</Button>
         )}
-        {managed && member && (
+        {canWrite && managed && member && (
           <Button size="sm" variant="outline" className="ml-auto text-red-400 hover:text-red-300" onClick={() => setDialog("remove")}>
             <Trash2 /> Remove from cluster…
           </Button>
         )}
       </div>
       {showLogs && <NodeLogs clusterId={clusterId} name={node.name} />}
-      {dialog === "labels" && <LabelsDialog clusterId={clusterId} node={node} open onClose={() => setDialog(null)} />}
-      {dialog === "taints" && <TaintsDialog clusterId={clusterId} node={node} open onClose={() => setDialog(null)} />}
-      {dialog === "drain" && <DrainDialog clusterId={clusterId} node={node} open onClose={() => setDialog(null)} />}
-      {dialog === "remove" && member && <RemoveNodeDialog clusterId={clusterId} member={member} open onClose={() => setDialog(null)} />}
+      {canWrite && dialog === "labels" && <LabelsDialog clusterId={clusterId} node={node} open onClose={() => setDialog(null)} />}
+      {canWrite && dialog === "taints" && <TaintsDialog clusterId={clusterId} node={node} open onClose={() => setDialog(null)} />}
+      {canWrite && dialog === "drain" && <DrainDialog clusterId={clusterId} node={node} open onClose={() => setDialog(null)} />}
+      {canWrite && dialog === "remove" && member && <RemoveNodeDialog clusterId={clusterId} member={member} open onClose={() => setDialog(null)} />}
     </div>
   );
 }

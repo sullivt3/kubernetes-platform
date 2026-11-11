@@ -13,6 +13,7 @@ import yaml
 
 from app.modules.cluster_lifecycle.distributions import access
 from app.modules.cluster_lifecycle.distributions.base import ClusterPlanInput, PlannedNode
+from app.modules.cluster_lifecycle.distributions.linux import swap_script
 from app.modules.infrastructure.access import connect, run_script, tail
 from app.modules.infrastructure.host_access import CommandOptions, HostExecutor
 from app.orchestration.context import StepContext
@@ -45,7 +46,9 @@ def prepare(ctx: StepContext) -> dict[str, Any]:
         with connect(ctx, node.machine_id) as executor:
             result = run_script(
                 executor,
-                """set -eu
+                "set -eu\n"
+                + swap_script()
+                + """
 . /etc/os-release
 if command -v getenforce >/dev/null && [ "$(getenforce)" = Enforcing ]; then
   rpm -q "$DISTRO-selinux" >/dev/null || {
@@ -58,16 +61,17 @@ if command -v apt-get >/dev/null; then
   apt-get update -qq
   apt-get install -y -qq ca-certificates curl tar iptables conntrack socat
 else
-  dnf install -y ca-certificates curl tar iptables conntrack-tools socat
+  iptables_package=iptables
+  if [ "$ID" = fedora ]; then iptables_package=iptables-nft; fi
+  dnf install -y ca-certificates /usr/bin/curl tar "$iptables_package" conntrack-tools socat
 fi
 modprobe overlay || true
 modprobe br_netfilter || true
 install -d /etc/modules-load.d /etc/sysctl.d
-printf 'overlay\\nbr_netfilter\\n' > /etc/modules-load.d/kplatform-k8s.conf
-printf 'net.ipv4.ip_forward=1\\nnet.bridge.bridge-nf-call-iptables=1\\n' > /etc/sysctl.d/99-kplatform-k8s.conf
+printf 'overlay\nbr_netfilter\n' > /etc/modules-load.d/kplatform-k8s.conf
+printf 'net.ipv4.ip_forward=1\nnet.bridge.bridge-nf-call-iptables=1\n' > /etc/sysctl.d/99-kplatform-k8s.conf
 sysctl -p /etc/sysctl.d/99-kplatform-k8s.conf
-swapoff -a
-sed -ri '/^[^#].*[[:space:]]swap[[:space:]]/ s/^/# disabled by kubernetes-platform: /' /etc/fstab
+disable_swap
 if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
   for port in 6443/tcp 9345/tcp 2379-2380/tcp 10250/tcp 8472/udp 4789/udp 4240/tcp; do
     firewall-cmd --permanent --add-port="$port"

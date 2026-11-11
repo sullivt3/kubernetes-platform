@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,6 +14,7 @@ import { apiRequest } from "@/lib/api/client";
 import type { ClusterDetail, NodePoolInput, OperationDetail } from "@/lib/api/types";
 
 function Pool({ cluster, pool }: { cluster: ClusterDetail; pool: NodePoolInput }) {
+  const canWrite = useCan("clusters.write");
   const router = useRouter();
   const [count, setCount] = useState(pool.count);
   const [confirm, setConfirm] = useState("");
@@ -25,10 +27,10 @@ function Pool({ cluster, pool }: { cluster: ClusterDetail; pool: NodePoolInput }
   return <div className="space-y-3 rounded-md border border-border p-4">
     <p className="font-medium">{pool.name}</p>
     <p className="text-xs text-muted-foreground">Desired: {pool.count}{cluster.distribution === "gke" ? " nodes per zone" : " nodes"}. {cluster.distribution === "k3d" && "Scaling down deletes local node containers and their data."}</p>
-    <div className="flex flex-wrap items-end gap-3"><div className="space-y-1"><Label>New desired count</Label><Input type="number" min={0} max={1000} value={count} className="w-28" onChange={(e) => setCount(Number(e.target.value))} /></div>
+    {canWrite && <div className="flex flex-wrap items-end gap-3"><div className="space-y-1"><Label>New desired count</Label><Input type="number" min={0} max={1000} value={count} className="w-28" onChange={(e) => setCount(Number(e.target.value))} /></div>
       {shrinking && <div className="space-y-1"><Label>Type {cluster.name} to confirm node removal</Label><Input value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" /></div>}
       <Button onClick={() => resize.mutate()} disabled={!Number.isInteger(count) || count < 0 || count > 1000 || count === pool.count || (shrinking && confirm !== cluster.name) || resize.isPending || Boolean(cluster.active_operation_id)}>{resize.isPending ? "Submitting…" : "Resize pool"}</Button>
-    </div>
+    </div>}
   </div>;
 }
 

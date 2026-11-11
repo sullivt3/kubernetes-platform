@@ -11,6 +11,8 @@ fi
 kv os_id "${ID:-unknown}"
 kv os_id_like "${ID_LIKE:-}"
 kv os_version_id "${VERSION_ID:-}"
+kv os_variant_id "${VARIANT_ID:-}"
+if [ -e /run/ostree-booted ]; then kv immutable_os yes; else kv immutable_os no; fi
 kv os_pretty_name "${PRETTY_NAME:-}"
 kv hostname "$(hostname 2>/dev/null)"
 kv kernel "$(uname -r)"
@@ -28,6 +30,7 @@ kv primary_ip "$primary_ip"
 
 if [ -d /run/systemd/system ]; then kv systemd yes; else kv systemd no; fi
 if command -v apt-get >/dev/null 2>&1; then pm=apt
+elif command -v dnf5 >/dev/null 2>&1; then pm=dnf5
 elif command -v dnf >/dev/null 2>&1; then pm=dnf
 elif command -v yum >/dev/null 2>&1; then pm=yum
 else pm=none; fi

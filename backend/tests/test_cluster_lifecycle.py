@@ -88,6 +88,19 @@ def all_logs(client: TestClient, operation_id: str) -> str:
 
 
 class TestMachines:
+    def test_fedora_registration_and_reinspection(self, client: TestClient, fleet: FakeCluster) -> None:
+        host = fleet.hosts["10.0.0.11:22"]
+        host.os_id, host.os_version = "fedora", "45"
+        registered = register(client, ssh_credential(client), "fedora-cp", "10.0.0.11")
+        machine_id = registered["machine"]["id"]
+        machine = client.get(f"{API}/machines/{machine_id}").json()
+        assert machine["lifecycle_state"] == "ready"
+        assert machine["os_info"]["id"] == "fedora"
+        assert machine["os_info"]["package_manager"] == "dnf5"
+        assert next(check for check in machine["checks"] if check["key"] == "os")["status"] == "pass"
+        assert next(check for check in machine["checks"] if check["key"] == "selinux")["status"] == "warn"
+        assert client.post(f"{API}/machines/{machine_id}/inspect", json={}).json()["status"] == "succeeded"
+
     def test_registration_inspects_and_pins_host_key(self, client: TestClient, machines: dict[str, str]) -> None:
         machine = client.get(f"{API}/machines/{machines['cp-1']}").json()
         assert machine["lifecycle_state"] == "ready"
@@ -204,6 +217,24 @@ class TestValidation:
 
 
 class TestClusterLifecycle:
+    def test_fedora_control_plane_and_workers_create_and_delete(self, client: TestClient, fleet: FakeCluster) -> None:
+        for host, version in zip(fleet.hosts.values(), ("45", "44", "43"), strict=True):
+            host.os_id, host.os_version = "fedora", version
+        credential_id = ssh_credential(client)
+        machines = {
+            host.name: register(client, credential_id, host.name, host.ip)["machine"]["id"]
+            for host in fleet.hosts.values()
+        }
+        validation = client.post(f"{API}/clusters/validate", json={"spec": spec(machines)}).json()
+        assert validation["valid"], validation["problems"]
+        created = client.post(f"{API}/clusters", json={"spec": spec(machines)}).json()
+        assert created["operation"]["status"] == "succeeded", created["operation"]["error"]
+        cluster_id = created["cluster"]["id"]
+        assert client.get(f"{API}/clusters/{cluster_id}").json()["lifecycle_state"] == "active"
+        deleted = client.delete(f"{API}/clusters/{cluster_id}", params={"confirm": "prod"}).json()
+        assert deleted["status"] == "succeeded", deleted["error"]
+        assert all(host.calls[-1][0] == "reset" for host in fleet.hosts.values())
+
     def test_create_cluster_end_to_end(self, client: TestClient, machines: dict[str, str], fleet: FakeCluster) -> None:
         response = client.post(f"{API}/clusters", json={"spec": spec(machines)})
         assert response.status_code == 202, response.text

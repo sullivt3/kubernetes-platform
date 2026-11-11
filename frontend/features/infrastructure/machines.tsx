@@ -401,7 +401,7 @@ export function MachinesPage() {
               className="m-4"
               icon={Server}
               title="No machines yet"
-              description="Register the Linux servers (physical or virtual) that will become Kubernetes nodes, or provision new ones locally or on Proxmox. Supported: Ubuntu 22.04/24.04, Debian 12/13, RHEL/Rocky/AlmaLinux 8/9 with 2+ CPUs and 2 GB+ RAM."
+              description="Register the Linux servers (physical or virtual) that will become Kubernetes nodes, or provision new ones locally or on Proxmox. Supported: Ubuntu 22.04/24.04, Debian 12/13, RHEL/Rocky/AlmaLinux 8/9, Fedora 43/44/45 (conventional Server/Workstation installations) with 2+ CPUs and 2 GB+ RAM."
               action={
                 <div className="flex gap-2">
                   <Button variant="outline" size="sm" onClick={() => setRegistering(true)}><Plus /> Register machine</Button>

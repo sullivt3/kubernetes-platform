@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { ErrorState, PageHeader, Section } from "@/components/common/page";
 import { OperationStatusBadge, STEP_STYLE, StatusDot, StatusPill } from "@/components/common/status";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -182,6 +183,7 @@ function Facts({ operation }: { operation: Operation }) {
 }
 
 export function OperationDetailView({ params }: { params: Promise<{ id: string }> }) {
+  const canWrite = useCan("operations.write");
   const { id } = use(params);
   const operation = useOperation(id);
   const [generation, setGeneration] = useState(0);
@@ -214,8 +216,8 @@ export function OperationDetailView({ params }: { params: Promise<{ id: string }
 
   const op = operation.data;
   const active = ACTIVE.has(op.status);
-  const canCancel = active && op.status !== "cancelling";
-  const canRetry = op.status === "failed" || op.status === "cancelled";
+  const canCancel = canWrite && active && op.status !== "cancelling";
+  const canRetry = canWrite && (op.status === "failed" || op.status === "cancelled");
   const onError = (title: string) => (error: unknown) =>
     toast.error(title, { description: error instanceof Error ? error.message : String(error) });
 
@@ -288,7 +290,7 @@ export function OperationDetailView({ params }: { params: Promise<{ id: string }
       </Card>
 
       <ConfirmDialog
-        open={confirmCancel}
+        open={canWrite && confirmCancel}
         onOpenChange={setConfirmCancel}
         title="Cancel this operation?"
         description={

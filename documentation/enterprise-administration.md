@@ -2,8 +2,13 @@
 
 Phase 7 is in progress. The first implementation adds OIDC authentication,
 database-controlled memberships, application permissions, and administration UI.
-It has not yet been validated against a live identity provider. Automated tests
-for this phase are deferred until requested; do not treat the phase as complete.
+Dedicated automated coverage now exercises authentication, memberships, application
+permissions, project isolation, operations and worker scope in `backend/tests/test_identity.py`.
+The local Keycloak/browser harness and setup are documented in
+[local testing](local-testing.md). On 2026-11-11 it passed real Keycloak logins for
+the administrator, viewer and operator, role checks, cookie assertions and UI
+logout/session revocation. This does not make Phase 7 complete or establish
+compatibility with every production identity provider.
 
 ## Current implementation
 
@@ -151,8 +156,9 @@ administrator must remain when their administrative privileges are removed.
 
 ## Remaining Phase 7 work
 
-- Automated authentication, membership, isolation, permission and regression tests;
-  live OIDC login/logout and browser/session validation.
+- Extend authentication, membership, isolation and permission regression coverage,
+  including identity-provider outages, key rotation and concurrent administration;
+  verify OIDC behavior against the intended deployment's identity provider.
 - Finish hiding or disabling individual mutation controls for restricted roles.
 - Kubernetes Roles/ClusterRoles/bindings, ServiceAccounts and security-policy views.
 - Security posture reporting and further audit filtering/reporting.

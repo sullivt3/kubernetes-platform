@@ -30,6 +30,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
 ]
+browser = ["playwright>=1.50,<2"]
 
 [build-system]
 requires = ["setuptools>=75"]

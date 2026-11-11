@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import { ErrorState } from "@/components/common/page";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,6 +13,7 @@ import { useClusterNamespaces } from "@/lib/api/kube";
 import { type DnsLookupInput, useDnsLookup } from "@/lib/api/phase6";
 
 export function DnsLookupPanel({ clusterId }: { clusterId: string }) {
+  const canWrite = useCan("clusters.write");
   const namespaces = useClusterNamespaces(clusterId);
   const lookup = useDnsLookup(clusterId);
   const [namespace, setNamespace] = useState("default");
@@ -46,7 +48,7 @@ export function DnsLookupPanel({ clusterId }: { clusterId: string }) {
             <SelectContent>{["A", "AAAA", "CNAME", "SRV", "TXT", "MX"].map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}</SelectContent>
           </Select>
         </div>
-        <Button type="submit" disabled={lookup.isPending || !hostname}>{lookup.isPending ? "Starting…" : "Run lookup"}</Button>
+        <Button type="submit" disabled={!canWrite || lookup.isPending || !hostname}>{lookup.isPending ? "Starting…" : "Run lookup"}</Button>
       </form>
       {namespaces.isError && <ErrorState error={namespaces.error} onRetry={() => namespaces.refetch()} />}
       {lookup.isError && <ErrorState error={lookup.error} />}

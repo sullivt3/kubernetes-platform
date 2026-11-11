@@ -7,6 +7,10 @@ be validated in the target environment before production use.
 
 ## Supported paths
 
+SSH machine installation also supports conventional Fedora 43/44/45 hosts.
+See [Fedora hosts](fedora.md) for the DNF5, runtime repository, swap and SELinux
+behavior and the boundary between package checks and live cluster validation.
+
 | Distribution | Infrastructure | Creation and deletion | Scale workers | Upgrade |
 |---|---|---|---|---|
 | kubeadm | SSH, Local Docker, Proxmox, vSphere, AWS, Azure, GCP | Yes | Machine add/remove | Serial control planes, then workers |

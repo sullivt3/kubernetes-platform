@@ -37,6 +37,7 @@ SUPPORTED_OS: dict[str, set[str]] = {
     "rhel": {"8", "9"},
     "rocky": {"8", "9"},
     "almalinux": {"8", "9"},
+    "fedora": {"43", "44", "45"},
 }
 SUPPORTED_ARCH = {"x86_64", "aarch64"}
 MIN_MEMORY_MB = 1700  # kubeadm requires ~2 GB; leave room for firmware reservations
@@ -58,6 +59,8 @@ class Check:
 
 
 def os_supported(facts: dict[str, str]) -> bool:
+    if facts.get("immutable_os") == "yes":
+        return False
     os_id = facts.get("os_id", "")
     version = facts.get("os_version_id", "")
     versions = SUPPORTED_OS.get(os_id)
@@ -75,6 +78,13 @@ def evaluate(facts: dict[str, str], *, sudo_ok: bool) -> list[Check]:
     pretty = facts.get("os_pretty_name") or facts.get("os_id", "unknown")
     if os_supported(facts):
         add("os", "Operating system", CheckStatus.PASS, f"{pretty} is supported")
+    elif facts.get("immutable_os") == "yes":
+        add(
+            "os",
+            "Operating system",
+            CheckStatus.FAIL,
+            f"{pretty} is an immutable image; installation requires a conventional DNF/APT-managed host",
+        )
     else:
         supported = ", ".join(f"{k} {'/'.join(sorted(v))}" for k, v in SUPPORTED_OS.items())
         add("os", "Operating system", CheckStatus.FAIL, f"{pretty} is not supported (supported: {supported})")
@@ -126,6 +136,13 @@ def evaluate(facts: dict[str, str], *, sudo_ok: bool) -> list[Check]:
         if swap == 0
         else f"{swap} MB enabled; it is disabled during installation unless the cluster allows swap",
     )
+    if facts.get("selinux", "").lower() == "enforcing":
+        add(
+            "selinux",
+            "SELinux",
+            CheckStatus.WARN,
+            "enforcing; kubeadm preparation sets SELinux to permissive; K3s/RKE2 require their signed SELinux policy",
+        )
     free_disk = _int(facts.get("root_disk_free_gb"))
     if free_disk is not None:
         add(
@@ -178,6 +195,8 @@ def summarize(facts: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any], li
     os_info = {
         "id": facts.get("os_id"),
         "id_like": facts.get("os_id_like"),
+        "variant": facts.get("os_variant_id"),
+        "immutable": facts.get("immutable_os") == "yes",
         "version": facts.get("os_version_id"),
         "pretty_name": facts.get("os_pretty_name"),
         "kernel": facts.get("kernel"),

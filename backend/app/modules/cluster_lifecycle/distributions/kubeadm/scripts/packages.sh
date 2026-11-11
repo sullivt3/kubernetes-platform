@@ -25,9 +25,16 @@ gpgkey=${repo}/rpm/repodata/repomd.xml.key
 exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 EOF
   pkg_version_for() {
-    dnf list --showduplicates --disableexcludes=kubernetes kubeadm 2>/dev/null \
-      | awk '$1 ~ /^kubeadm/ {print $2}' \
-      | { if [ -n "${1:-}" ]; then grep -E "^${1//./\\.}-" ; else cat; fi; } | sort -V | tail -1
+    if [ "$DNF" = dnf5 ]; then
+      # DNF5 has a machine-readable builtin query; let RPM compare versions/releases.
+      pattern=kubeadm
+      if [ -n "${1:-}" ]; then pattern="kubeadm-${1}-*"; fi
+      kubernetes_dnf -q --repo=kubernetes repoquery --available --latest-limit=1 --queryformat '%{version}-%{release}\n' "$pattern"
+    else
+      kubernetes_dnf -q list --showduplicates kubeadm \
+        | awk '$1 ~ /^kubeadm/ {print $2}' \
+        | { if [ -n "${1:-}" ]; then grep -E "^${1//./\\.}-" ; else cat; fi; } | sort -V | tail -1
+    fi
   }
 fi
 
@@ -60,7 +67,7 @@ else
   packages=()
   for component in "${components[@]}"; do packages+=("${component}-${pkg_version}"); done
   if [ "$mode" = "install" ]; then packages+=(cri-tools); fi
-  dnf install -y -q --disableexcludes=kubernetes "${packages[@]}"
+  kubernetes_dnf install -y -q "${packages[@]}"
 fi
 systemctl enable kubelet >/dev/null 2>&1
 

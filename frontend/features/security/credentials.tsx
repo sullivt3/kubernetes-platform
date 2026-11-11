@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { EmptyState, ErrorState, PageHeader, TableSkeleton } from "@/components/common/page";
 import { Badge } from "@/components/ui/badge";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -188,6 +189,7 @@ function CreateCredentialDialog({ open, onOpenChange }: { open: boolean; onOpenC
 }
 
 export function CredentialsPage() {
+  const canWrite = useCan("credentials.write");
   const credentials = useCredentials();
   const remove = useDeleteCredential();
   const [creating, setCreating] = useState(false);
@@ -199,7 +201,7 @@ export function CredentialsPage() {
         eyebrow="Security"
         title="Credentials"
         description="SSH keys, kubeconfigs and cloud credentials used by the platform. Values are encrypted at rest, write-only through the API, and never exposed to the browser."
-        actions={
+        actions={canWrite &&
           <Button size="sm" onClick={() => setCreating(true)}>
             <Plus /> Add credential
           </Button>
@@ -215,7 +217,7 @@ export function CredentialsPage() {
               icon={KeyRound}
               title="No credentials stored"
               description="Add the SSH keys, kubeconfigs or cloud credentials the platform will use to reach your infrastructure and clusters."
-              action={<Button variant="outline" size="sm" onClick={() => setCreating(true)}><Plus /> Add credential</Button>}
+              action={canWrite && <Button variant="outline" size="sm" onClick={() => setCreating(true)}><Plus /> Add credential</Button>}
             />
           )}
           {credentials.data && credentials.data.items.length > 0 && (
@@ -253,7 +255,7 @@ export function CredentialsPage() {
                     <TableCell className="text-sm text-muted-foreground">{formatRelative(c.created_at)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{c.last_used_at ? formatRelative(c.last_used_at) : "Never"}</TableCell>
                     <TableCell>
-                      <Button variant="ghost" size="icon" aria-label={`Delete ${c.name}`} onClick={() => setDeleting(c)}>
+                      <Button disabled={!canWrite} variant="ghost" size="icon" aria-label={`Delete ${c.name}`} onClick={() => setDeleting(c)}>
                         <Trash2 className="text-red-400" />
                       </Button>
                     </TableCell>
@@ -265,9 +267,9 @@ export function CredentialsPage() {
         </CardContent>
       </Card>
 
-      <CreateCredentialDialog open={creating} onOpenChange={setCreating} />
+      <CreateCredentialDialog open={canWrite && creating} onOpenChange={setCreating} />
       <ConfirmDialog
-        open={deleting !== null}
+        open={canWrite && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={`Delete credential "${deleting?.name}"?`}
         description={

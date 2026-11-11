@@ -2,6 +2,7 @@
 # Env: DISABLE_SWAP (1|0), NODE_ROLE (control_plane|worker), CNI (calico|flannel)
 
 log "Loading kernel modules (overlay, br_netfilter)"
+install -d /etc/modules-load.d /etc/sysctl.d
 cat > /etc/modules-load.d/kplatform-k8s.conf <<'EOF'
 overlay
 br_netfilter
@@ -21,14 +22,8 @@ sysctl -q -p /etc/sysctl.d/99-kplatform-k8s.conf
 [ "$(cat /proc/sys/net/ipv4/ip_forward)" = "1" ] || fail "could not enable IPv4 forwarding"
 
 if [ "${DISABLE_SWAP:-1}" = "1" ]; then
-  if [ -n "$(swapon --show --noheadings 2>/dev/null)" ]; then
-    log "Disabling swap (required by kubelet)"
-    swapoff -a
-  fi
-  sed -ri '/^[^#].*[[:space:]]swap[[:space:]]/ s/^/# disabled by kubernetes-platform: /' /etc/fstab
-  for unit in $(systemctl list-units --type swap --plain --no-legend 2>/dev/null | awk '{print $1}'); do
-    systemctl mask --now "$unit" >/dev/null 2>&1 || true
-  done
+  log "Disabling swap and preventing it from returning after reboot"
+  disable_swap
 else
   log "Leaving swap enabled (kubelet configured with failSwapOn=false)"
 fi
@@ -38,13 +33,22 @@ if [ "$OS_FAMILY" = debian ]; then
   apt_update
   apt_install ca-certificates curl gnupg openssl conntrack socat iptables ethtool
 else
-  dnf_install ca-certificates curl gnupg2 openssl conntrack-tools socat iptables ethtool tar
+  # Fedora's nft variant supplies the iptables command required by CNIs.
+  iptables_package=iptables
+  if [ "$ID" = fedora ]; then iptables_package=iptables-nft; fi
+  dnf_install ca-certificates /usr/bin/curl gnupg2 openssl conntrack-tools socat "$iptables_package" ethtool tar
 fi
 
-if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" = "Enforcing" ]; then
-  log "Setting SELinux to permissive (required by kubeadm)"
-  setenforce 0
-  sed -ri 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+if command -v getenforce >/dev/null 2>&1; then
+  selinux_state="$(getenforce)"
+  if [ "$selinux_state" = "Enforcing" ]; then
+    log "Setting SELinux to permissive (required by kubeadm)"
+    setenforce 0
+  fi
+  if [ "$selinux_state" = "Enforcing" ] || [ "$selinux_state" = "Permissive" ]; then
+    # Reconcile the boot setting even on retry after setenforce already succeeded.
+    sed -ri 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
+  fi
 fi
 
 # Open required ports when a host firewall is active.

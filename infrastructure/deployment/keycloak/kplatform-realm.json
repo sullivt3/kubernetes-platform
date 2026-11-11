@@ -1,0 +1,64 @@
+{
+  "realm": "kplatform",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "clients": [
+    {
+      "clientId": "kubernetes-platform-web",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:3000/api/v1/auth/callback"],
+      "webOrigins": ["http://localhost:3000"],
+      "attributes": {"pkce.code.challenge.method": "S256"},
+      "protocolMappers": [
+        {
+          "name": "platform-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "kubernetes-platform-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "username": "platform-admin",
+      "enabled": true,
+      "firstName": "Platform",
+      "lastName": "Administrator",
+      "email": "platform-admin@example.test",
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "${KPLATFORM_TEST_USER_PASSWORD}", "temporary": false}]
+    },
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "username": "operator",
+      "enabled": true,
+      "firstName": "Test",
+      "lastName": "Operator",
+      "email": "operator@example.test",
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "${KPLATFORM_TEST_USER_PASSWORD}", "temporary": false}]
+    },
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "username": "viewer",
+      "enabled": true,
+      "firstName": "Test",
+      "lastName": "Viewer",
+      "email": "viewer@example.test",
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "${KPLATFORM_TEST_USER_PASSWORD}", "temporary": false}]
+    }
+  ]
+}

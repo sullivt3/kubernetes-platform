@@ -29,7 +29,7 @@ class SshProvider(InfrastructureProvider):
     provider_type = ProviderType.SSH
     display_name = "SSH / Linux servers"
     description = (
-        "Existing physical or virtual Linux servers (Ubuntu, Debian, RHEL, Rocky, AlmaLinux) "
+        "Existing physical or virtual Linux servers (Ubuntu, Debian, RHEL, Rocky, AlmaLinux, Fedora) "
         "registered by address and managed over SSH."
     )
     category = ProviderCategory.PHYSICAL

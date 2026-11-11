@@ -114,7 +114,7 @@ def cilium_objects(plan: ClusterPlanInput) -> list[dict[str, Any]]:
             capture_output=True,
             text=True,
             timeout=180,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
         )
         if result.returncode:
             raise StepFailedError(f"Could not render Cilium chart: {result.stderr[-1000:]}")

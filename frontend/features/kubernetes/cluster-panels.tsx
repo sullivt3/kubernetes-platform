@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Section } from "@/components/common/page";
 import { StatusPill } from "@/components/common/status";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -81,6 +82,7 @@ function MetricsServerDialog({ cluster, open, onOpenChange }: { cluster: Cluster
 }
 
 export function ClusterOverview({ cluster }: { cluster: ClusterDetail }) {
+  const canWrite = useCan("clusters.write");
   const health = useClusterHealth(cluster.id);
   const [metricsOpen, setMetricsOpen] = useState(false);
   if (health.isLoading) return <Skeleton className="h-72" />;
@@ -113,7 +115,7 @@ export function ClusterOverview({ cluster }: { cluster: ClusterDetail }) {
             {!h.metrics_available && (
               <div className="flex items-center justify-between gap-3 rounded-md border border-border p-3 text-sm">
                 <span className="flex items-center gap-2 text-muted-foreground"><Gauge className="size-4" /> Live usage requires metrics-server.</span>
-                <Button size="sm" variant="outline" onClick={() => setMetricsOpen(true)}>Install metrics-server</Button>
+                <Button disabled={!canWrite} size="sm" variant="outline" onClick={() => setMetricsOpen(true)}>Install metrics-server</Button>
               </div>
             )}
           </CardContent>
@@ -139,12 +141,13 @@ export function ClusterOverview({ cluster }: { cluster: ClusterDetail }) {
           </CardContent>
         </Card>
       </div>
-      <MetricsServerDialog cluster={cluster} open={metricsOpen} onOpenChange={setMetricsOpen} />
+      <MetricsServerDialog cluster={cluster} open={canWrite && metricsOpen} onOpenChange={setMetricsOpen} />
     </div>
   );
 }
 
 export function ClusterSettings({ cluster, onDelete }: { cluster: ClusterDetail; onDelete: () => void }) {
+  const canWrite = useCan("clusters.write");
   const router = useRouter();
   const update = useUpdateConnection(cluster.id);
   const reconnect = useReconnectCluster(cluster.id);
@@ -174,19 +177,19 @@ export function ClusterSettings({ cluster, onDelete }: { cluster: ClusterDetail;
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="override">API server override</Label>
-                <Input id="override" value={override} onChange={(e) => setOverride(e.target.value)} placeholder="https://lb.example.com:6443" className="font-mono" />
+                <Input readOnly={!canWrite} id="override" value={override} onChange={(e) => setOverride(e.target.value)} placeholder="https://lb.example.com:6443" className="font-mono" />
                 <p className="text-xs text-muted-foreground">Use when the platform must reach the API through a different address (NAT, proxy, load balancer).</p>
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="tls-name">TLS server name</Label>
-                <Input id="tls-name" value={tlsName} onChange={(e) => setTlsName(e.target.value)} placeholder="name or IP in the API server certificate" className="font-mono" />
+                <Input readOnly={!canWrite} id="tls-name" value={tlsName} onChange={(e) => setTlsName(e.target.value)} placeholder="name or IP in the API server certificate" className="font-mono" />
                 <p className="text-xs text-muted-foreground">The certificate is always verified; this names the identity to verify when connecting via the override.</p>
               </div>
             </div>
             <div className="flex gap-2">
               <Button
                 size="sm"
-                disabled={!dirty || update.isPending || !cluster.has_kubeconfig}
+                disabled={!canWrite || !dirty || update.isPending || !cluster.has_kubeconfig}
                 onClick={() =>
                   update.mutate(
                     { server_override: override.trim() || null, tls_server_name: tlsName.trim() || null },
@@ -199,7 +202,7 @@ export function ClusterSettings({ cluster, onDelete }: { cluster: ClusterDetail;
               <Button
                 size="sm"
                 variant="outline"
-                disabled={reconnect.isPending || !cluster.has_kubeconfig}
+                disabled={!canWrite || reconnect.isPending || !cluster.has_kubeconfig}
                 onClick={() => reconnect.mutate(undefined, { onSuccess: goToOp, onError: (e) => toast.error("Could not reconnect", { description: e.message }) })}
               >
                 <RefreshCw /> Test connection
@@ -209,7 +212,7 @@ export function ClusterSettings({ cluster, onDelete }: { cluster: ClusterDetail;
         </Card>
       </Section>
 
-      <Section title="Danger zone">
+      {canWrite && <Section title="Danger zone">
         <Card className="border-red-500/30">
           <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             {cluster.origin === "imported" ? (
@@ -231,10 +234,10 @@ export function ClusterSettings({ cluster, onDelete }: { cluster: ClusterDetail;
             )}
           </CardContent>
         </Card>
-      </Section>
+      </Section>}
 
       <ConfirmDialog
-        open={unregistering}
+        open={canWrite && unregistering}
         onOpenChange={setUnregistering}
         title={`Unregister ${cluster.name}?`}
         description={<p>The platform forgets the cluster and deletes its stored kubeconfig. The cluster and its workloads are not touched; you can import it again later.</p>}

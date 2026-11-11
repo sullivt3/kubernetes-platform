@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { ErrorState, PageHeader } from "@/components/common/page";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,6 +16,7 @@ import { useCluster } from "@/lib/api/hooks";
 import { useNfsAction, useNfsStatus } from "@/lib/api/phase6";
 
 function NfsDriver({ clusterId }: { clusterId: string }) {
+  const canWrite = useCan("clusters.write");
   const cluster = useCluster(clusterId);
   const status = useNfsStatus(clusterId);
   const action = useNfsAction(clusterId);
@@ -35,7 +37,7 @@ function NfsDriver({ clusterId }: { clusterId: string }) {
       {status.isLoading && <p className="text-sm text-muted-foreground">Checking the installed driver…</p>}
       {status.isError && <LiveError error={status.error} clusterId={clusterId} onRetry={() => status.refetch()} />}
       {data && <p className="text-sm">{data.installed ? data.ready ? "Ready" : "Installed; waiting for readiness" : "Not installed"} · Controller {data.controller_ready ? "ready" : "not ready"} · Nodes {data.nodes_ready}/{data.nodes_desired}{data.installed && !data.managed ? " · Managed outside this platform" : ""}</p>}
-      {data && (!data.installed || data.managed) && <form className="space-y-4" onSubmit={(event) => {
+      {canWrite && data && (!data.installed || data.managed) && <form className="space-y-4" onSubmit={(event) => {
         event.preventDefault();
         action.mutate({ install: { storage_class: configureClass ? className : null, server: configureClass ? server : null, share: configureClass ? share : null, make_default: configureClass && makeDefault } }, { onSuccess: (op) => setOperationId(op.id) });
       }}>
@@ -57,7 +59,7 @@ function NfsDriver({ clusterId }: { clusterId: string }) {
       {data && data.storage_classes.length > 0 && <p className="text-sm text-muted-foreground">NFS StorageClasses: {data.storage_classes.map((c) => c.name).join(", ")}. <Link href="/storage/storage-classes" className="underline underline-offset-4">Manage storage classes</Link></p>}
       {action.isError && <ErrorState error={action.error} />}
       <Phase6Operation id={operationId} />
-      <ConfirmDialog open={removeOpen} onOpenChange={setRemoveOpen} title="Remove NFS CSI driver?" description={<><p>Remove the platform-managed controller, node plugins, RBAC and StorageClasses. Existing volumes, claims, volume attachments, and resources managed elsewhere block removal. No volume data is deleted.</p>{action.isError && <p className="text-destructive">{action.error.message}</p>}</>} confirmText={cluster.data?.name} confirmLabel="Remove driver" pending={action.isPending} onConfirm={() => {
+      <ConfirmDialog open={canWrite && removeOpen} onOpenChange={setRemoveOpen} title="Remove NFS CSI driver?" description={<><p>Remove the platform-managed controller, node plugins, RBAC and StorageClasses. Existing volumes, claims, volume attachments, and resources managed elsewhere block removal. No volume data is deleted.</p>{action.isError && <p className="text-destructive">{action.error.message}</p>}</>} confirmText={cluster.data?.name} confirmLabel="Remove driver" pending={action.isPending} onConfirm={() => {
         if (cluster.data?.name) action.mutate({ remove: cluster.data.name }, { onSuccess: (op) => { setOperationId(op.id); setRemoveOpen(false); } });
       }} />
     </section>
