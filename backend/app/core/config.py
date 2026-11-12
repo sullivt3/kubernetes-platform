@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     # --- Infrastructure --------------------------------------------------------
     # Network discovery only scans private, loopback and link-local ranges unless enabled.
     discovery_allow_public_ranges: bool = False
+    machine_probe_interval_seconds: int = Field(default=30, ge=10, le=300)
 
     # --- Orchestration -------------------------------------------------------
     # When true, operations execute in-process instead of via Celery (tests only).

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.modules.infrastructure import facts as facts_mod
 from app.modules.infrastructure.access import connect, run_script
 from app.modules.infrastructure.host_access import CommandOptions
-from app.modules.infrastructure.models import Machine, MachineLifecycleState
+from app.modules.infrastructure.models import Machine, MachineConnectivity, MachineLifecycleState
 from app.orchestration.context import StepContext
 from app.orchestration.models import LogLevel, Operation, OperationStatus
 from app.orchestration.workflow import (
@@ -74,6 +74,9 @@ def step_inspect(ctx: StepContext) -> dict[str, Any]:
         machine.checks = facts_mod.checks_to_json(checks)
         machine.inspected_at = now
         machine.last_seen_at = now
+        machine.connectivity_status = MachineConnectivity.REACHABLE
+        machine.connectivity_checked_at = now
+        machine.connectivity_error = None
         if failures:
             machine.lifecycle_state = MachineLifecycleState.ERROR
             machine.last_error = "; ".join(f"{c.label}: {c.message}" for c in failures)

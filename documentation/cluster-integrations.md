@@ -22,6 +22,103 @@ behavior and the boundary between package checks and live cluster validation.
 Kind/k3d upgrades are not advertised as supported. Recreating a cluster is a separate,
 destructive operation, not an in-place upgrade.
 
+## Kubeadm installation verification
+
+Installation checks behavior as well as installed packages:
+
+- The package step verifies kubeadm, kubelet and kubectl match the selected version.
+  Before initializing or joining, every node must start a real CRI pod sandbox and
+  keep it Ready across repeated observations. This uses host networking so it can
+  run before a CNI exists, and removes only its own test sandbox.
+- Containerd synchronizes extracted image files before publishing them as usable.
+  Where required, the installer selects local image pulls to enable this setting.
+  This can increase image pull time and does not repair already damaged caches.
+- The initial Calico/Flannel step waits for the initial control-plane rollout.
+  Workers join afterward, so that step passing does not certify their networking.
+- After joining, the readiness step requires both Node Ready and a Ready networking
+  pod on every selected node. It reports node names and failing init/container
+  reasons. Persistent fatal CNI failures stop the operation after a 120-second
+  startup grace; other startup delays remain bounded by `ready_timeout_seconds`.
+- Before creation succeeds, a temporary ordinary pod on **each selected node**
+  must pull the test image and resolve the Kubernetes API service through cluster
+  DNS to its exact expected service address. This catches tunnel, forwarding and
+  DNS failures even when all system pods report Ready. Test pods are cleaned up
+  after success, failure or cancellation.
+
+A failed runtime check requires examining containerd and the pause image; a failed
+DNS check requires examining the affected node's CNI, routes and host firewall.
+The installer does not purge image caches or disable host firewalls automatically.
+For Calico IP-in-IP, opening TCP/UDP ports alone is insufficient: peers must be
+allowed numeric IP protocol `4` (the `ipip` name can resolve to protocol 94), and
+forwarded pod-to-pod traffic must be permitted within
+its configured pod CIDR. A firewalld zone's input rich rule does not establish a
+forwarding policy. Preserve existing host/hypervisor firewall configuration when
+correcting it, and verify real pod DNS before treating networking as healthy.
+
+## Automatic firewalld policies (kubeadm)
+
+When firewalld is active, OS preparation reconciles persistent policies before
+initialization or joining. No GUI setting is needed. Each cluster owns two policies
+identified by its UUID and an ownership description:
+
+- A host-input policy opens the existing Kubernetes/CNI ports appropriate to the
+  node's role. Calico additionally accepts **numeric IP protocol 4** only from the
+  other nodes' inspected IPv4 addresses.
+- A forwarding policy accepts traffic only when **both source and destination**
+  belong to the configured pod CIDR. Its default target is `CONTINUE`, so other
+  traffic continues through the existing firewall configuration.
+
+Adding a node updates peer allowances on all existing joined hosts as well as the
+new host, without repeating OS or runtime installation on existing nodes. Removing
+a node revokes its peer allowances on surviving hosts. Successful reset removes
+only this cluster's owned policies; unreachable hosts skipped with force require
+cleanup when they return. Existing zone rules and older manually applied repair
+rules are not adopted or deleted.
+
+The manager verifies policy ownership, serializes its own reloads, saves runtime
+zone/policy settings, activates the permanent changes with a normal reload, then
+restores existing runtime settings and VM interface bindings. Unrelated temporary
+settings are not made permanent. Failed updates restore previous owned policies.
+Correct settings are verified without another reload on retry.
+
+Runtime-only zone/policy objects or direct rules that cannot be safely restored
+block the step with an explanation before any changes. Review those settings
+before retrying. This automation uses the system Python/firewalld client supplied
+by the firewalld package. An inactive firewall is not enabled. UFW retains the
+existing port preparation; these policy objects apply specifically to firewalld.
+
+Regression tests cover ownership, retry, rollback, VM bindings and node lifecycle.
+`bash scripts/check-firewall.sh` also exercises a real Fedora firewalld daemon in
+a disposable Docker network namespace with `NET_ADMIN`/`NET_RAW`, including runtime
+preservation, idempotence and removal. It does not use host networking or validate
+a full VM cluster's packet routing.
+
+## Optional kubectl access for a Linux user (kubeadm)
+
+In **Create cluster → Storage & advanced**, enable **Configure kubectl for a Linux
+user** and enter an existing account on the first control-plane machine, including
+`root` if desired. The API equivalent is `spec.options.kubectl_username: "alice"`;
+omit it to leave user kubeconfigs untouched. This option is currently for kubeadm.
+
+Preflight checks the account and home before installing Kubernetes. After node,
+CoreDNS and smoke checks pass, the installer merges the cluster administrator
+configuration into that user's `~/.kube/config`. It gives the directory mode 700
+and file mode 600 under that user's ownership. Existing configuration is backed
+up privately before replacement; retries reuse the same uniquely named context.
+Merge/file operations run as the target user, reject symlinked config paths, and
+leave an invalid existing config unchanged.
+
+A new config selects this cluster automatically. An existing current context is
+preserved; the operation logs show `kubectl config use-context <context>` to select
+the new cluster. A failure in this step can be retried without reinstalling nodes.
+For SSH provisioned as one account, selecting another account configures only the
+selected account; no Linux account is created and no workstation file is changed.
+
+This grants the selected account **cluster administrator** access using the shared
+bootstrap administrator identity. It does not issue individual identities or
+configure OIDC. Cluster deletion leaves user configs/backups in place; old entries
+can be removed with normal kubectl config commands.
+
 ## Local clusters
 
 Select Local Docker, a validated connection and Kind or k3d. No SSH credential or

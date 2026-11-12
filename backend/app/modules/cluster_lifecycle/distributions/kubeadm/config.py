@@ -38,6 +38,12 @@ _PREFLIGHT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,127}$")
 class KubeadmOptions(BaseModel):
     """Distribution-specific options (``ClusterSpec.options``)."""
 
+    kubectl_username: str | None = Field(
+        default=None,
+        pattern=r"^[a-z_][a-z0-9_-]{0,31}$",
+        description="Install administrator kubectl access for this existing Linux user on the first control plane",
+    )
+
     allow_swap: bool = Field(
         default=False,
         description="Leave swap enabled and run kubelet with failSwapOn=false (otherwise swap is disabled).",

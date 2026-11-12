@@ -169,3 +169,15 @@ On this Intel Mac running macOS 14.8.9:
 
 These are local development checks, not production certification or live cloud,
 hypervisor, SSH installer, or managed-cluster integration validation.
+
+### Real firewalld policy check
+
+Run `bash scripts/check-firewall.sh` to build a cached Fedora 45 test image and
+exercise the actual firewalld D-Bus API in a disposable container. The container
+gets `NET_ADMIN` and `NET_RAW` in its own network namespace; it has no host network
+or Docker socket access. A service-status wrapper adapts the check for a container
+without systemd; firewalld, its client and packet-filter configuration are real.
+The test covers creation, a second run without reload, changing allowed peers,
+preserving an existing bridge binding and runtime-only port, and owned-policy
+removal. It does not replace live VM/Calico/DNS testing. The stateful regression
+suite is `backend/tests/test_firewall_policies.py` (use the isolated test DB).

@@ -85,6 +85,7 @@ The machine-readable contract is the OpenAPI document at `/api/v1/openapi.json`.
 | GET | `/machines` | Inventory with inspection results, prerequisite checks and cluster assignment. |
 | POST | `/machines` | Register `{name, host, port?, username?, credential_id}` (201). Returns the machine plus the started `machine.inspect` operation. |
 | GET | `/machines/{id}` | One machine. |
+| PATCH | `/machines/{id}/address` | `{host}` updates a registered SSH machine's address and returns `{machine, operation}` for a new inspection using its pinned host key. 409 for duplicate endpoints or active machine/cluster operations. |
 | POST | `/machines/{id}/inspect` | Re-inspect (202). Body `{accept_new_host_key}`; accepting a new host key requires `?confirm=<name>`. |
 | DELETE | `/machines/{id}?confirm=<name>` | Remove from the inventory. 409 while the machine belongs to a cluster. The server itself is not changed. |
 | POST | `/machines/{id}/power` | `{action: start\|stop\|reboot}` → `machine.power` (202). Stopping or rebooting a cluster node requires `?confirm=<name>`. Only for providers with the `power` capability. |
@@ -92,6 +93,26 @@ The machine-readable contract is the OpenAPI document at `/api/v1/openapi.json`.
 
 Machines include `provider_type`, `connection_name`, `external_id`, `power_state`, `provisioned`,
 `requested_spec` and `provider_metadata` (for local machines: the published Kubernetes API endpoint).
+
+Machine responses include `connectivity_status` (`reachable`, `unreachable`, or
+`unknown`), `connectivity_checked_at`, `connectivity_error`, and `last_seen_at`.
+The scheduler checks saved SSH endpoints every 30 seconds with the pinned host
+key and credentials, using an unprivileged `true` command. It does not reinstall,
+restart or remove machines. No key is accepted automatically by the monitor;
+first contact still requires inspection. Connection failures preserve lifecycle
+and cluster membership. Results older than three probe intervals become unknown,
+so a stopped scheduler cannot leave a stale green status. The Machines page polls
+every 10 seconds; **Unassigned** describes cluster membership, not connectivity.
+An SSH failure cannot establish whether a VM was deleted, powered off, moved or
+blocked by a network problem; these all appear unavailable until access recovers.
+
+Use **Infrastructure → Machines → actions → Update address** when a registered
+SSH server moves to another IP or hostname. Its ID, SSH port/user/credential,
+trusted host key and cluster assignment are preserved. The address is saved even
+if the subsequent inspection fails; follow the returned operation for the result.
+Changing this connection does not configure the server's network, update a
+cluster's API endpoint, or regenerate Kubernetes certificates. Provider-provisioned
+machines retain their provider-managed identity and do not expose this action.
 
 ### Provider connections and provisioning
 

@@ -20,7 +20,9 @@ from datetime import UTC, datetime
 from functools import cache
 from importlib import resources
 from typing import Any
+from uuid import UUID
 
+import yaml
 from sqlalchemy import delete, select
 
 from app.core.principal import Principal
@@ -45,6 +47,7 @@ from app.orchestration.workflow import RetryableStepError, StepFailedError
 MAX_PARALLEL_NODES = 8
 PROVISION_TIMEOUT_SECONDS = 1800
 SMOKE_TEST_TIMEOUT_SECONDS = 300
+CNI_FAILURE_GRACE_SECONDS = 120
 
 
 @cache
@@ -313,6 +316,7 @@ def _for_nodes(
 
 def validate(ctx: StepContext) -> dict[str, Any]:
     plan = _plan(ctx)
+    options = _options(plan)
     problems: list[str] = []
 
     def check(node: PlannedNode, executor: HostExecutor) -> dict[str, Any]:
@@ -328,6 +332,16 @@ def validate(ctx: StepContext) -> dict[str, Any]:
             problems.append(
                 f"{node.name}: already belongs to a Kubernetes cluster "
                 "(/etc/kubernetes/kubelet.conf exists); reset it before using it for a new cluster"
+            )
+        if options.kubectl_username and node.machine_id == plan.lead.machine_id:
+            _execute(
+                ctx,
+                node,
+                executor,
+                "kubectl_config.sh",
+                {"TARGET_USER": options.kubectl_username, "CHECK_ONLY": "1"},
+                action="kubectl account validation",
+                timeout=30,
             )
         interface, cidr = _interface_for(executor, facts.get("primary_ip"))
         ctx.info(
@@ -368,6 +382,73 @@ def _sudo_opts() -> Any:
     return CommandOptions(sudo=True, timeout_seconds=30)
 
 
+def _existing_firewall_nodes(ctx: StepContext, excluded: set[UUID]) -> list[PlannedNode]:
+    plan = _plan(ctx)
+    with ctx.db() as session:
+        return [
+            PlannedNode(
+                machine_id=machine.id,
+                name=membership.node_name or machine.name,
+                role=membership.role.value,
+                pool="existing",
+            )
+            for membership, machine in session.execute(
+                select(ClusterMachine, Machine)
+                .join(Machine, Machine.id == ClusterMachine.machine_id)
+                .where(
+                    ClusterMachine.cluster_id == plan.cluster_id,
+                    Machine.organization_id == ctx.organization_id,
+                    ClusterMachine.membership_state == MachineMembershipState.JOINED,
+                )
+            )
+            if machine.id not in excluded
+        ]
+
+
+def _firewall_action(
+    ctx: StepContext, peers: dict[str, str], *, remove: bool = False
+) -> Callable[[PlannedNode, HostExecutor], None]:
+    plan = _plan(ctx)
+
+    def run(node: PlannedNode, executor: HostExecutor) -> None:
+        own_ip = peers.get(str(node.machine_id))
+        payload = {
+            "cluster_id": str(plan.cluster_id),
+            "pod_cidr": plan.spec.network.pod_cidr,
+            "role": node.role,
+            "cni": plan.spec.network.cni.value,
+            "peers": sorted(set(peers.values()) - {own_ip}),
+        }
+        _execute(
+            ctx,
+            node,
+            executor,
+            "firewall.sh",
+            {
+                "FIREWALL_CONFIG_B64": base64.b64encode(json.dumps(payload).encode()).decode(),
+                "MODE": "remove" if remove else "apply",
+            },
+            action="cluster firewall reconciliation",
+            timeout=300,
+        )
+
+    return run
+
+
+def _firewall_ips(ctx: StepContext, nodes: list[PlannedNode], *, tolerate_unreachable: bool = False) -> dict[str, str]:
+    def inspect(node: PlannedNode, executor: HostExecutor) -> dict[str, Any]:
+        result = run_script(executor, facts_mod.detect_script(), sudo=False, timeout_seconds=120)
+        if not result.ok:
+            raise StepFailedError(f"Cannot inspect firewall peer {node.name}", code="firewall_peer_unknown")
+        facts = facts_mod.parse_facts(result.stdout)
+        return {"ip": str(ipaddress.IPv4Address(facts.get("primary_ip") or ""))}
+
+    return {
+        key: value["ip"]
+        for key, value in _for_nodes(ctx, nodes, inspect, tolerate_unreachable=tolerate_unreachable).items()
+    }
+
+
 def prepare(ctx: StepContext) -> dict[str, Any]:
     plan = _plan(ctx)
     options = _options(plan)
@@ -387,6 +468,12 @@ def prepare(ctx: StepContext) -> dict[str, Any]:
         )
 
     _for_nodes(ctx, plan.nodes, run)
+    existing = _existing_firewall_nodes(ctx, {n.machine_id for n in plan.nodes})
+    peers = {str(n.machine_id): str(ipaddress.IPv4Address(_ip(ctx, n))) for n in plan.nodes} | _firewall_ips(
+        ctx, existing
+    )
+    # Existing hosts need the new peers too; never rerun their OS/runtime setup.
+    _for_nodes(ctx, [*plan.nodes, *existing], _firewall_action(ctx, peers), parallel=False)
     return {}
 
 
@@ -436,11 +523,12 @@ def install_packages(ctx: StepContext) -> dict[str, Any]:
     plan = _plan(ctx)
     version = _version(ctx)
     env = {"K8S_MINOR": cfg.minor_of(version), "K8S_VERSION": version, "MODE": "install"}
-    _for_nodes(
-        ctx,
-        plan.nodes,
-        _script_action(ctx, "packages.sh", env, action="Kubernetes package install"),
-    )
+
+    def install_and_verify(node: PlannedNode, executor: HostExecutor) -> None:
+        _execute(ctx, node, executor, "packages.sh", env, action="Kubernetes package install")
+        _execute(ctx, node, executor, "runtime_check.sh", {}, action="Container runtime verification", timeout=180)
+
+    _for_nodes(ctx, plan.nodes, install_and_verify)
     return {}
 
 
@@ -652,8 +740,9 @@ def install_cni(ctx: StepContext) -> dict[str, Any]:
 def _kubectl(executor: HostExecutor, args: str, *, timeout: float = 120) -> str:
     from app.modules.infrastructure.host_access import CommandOptions
 
+    request_timeout = max(1, min(30, int(timeout) - 5))
     result = executor.run(
-        f"kubectl --kubeconfig /etc/kubernetes/admin.conf {args}",
+        f"kubectl --kubeconfig /etc/kubernetes/admin.conf --request-timeout={request_timeout}s {args}",
         CommandOptions(sudo=True, timeout_seconds=timeout),
     )
     if not result.ok:
@@ -773,32 +862,114 @@ def configure_nodes(ctx: StepContext) -> dict[str, Any]:
     return {}
 
 
+def _cni_readiness(pods: list[dict[str, Any]], expected: set[str]) -> tuple[set[str], dict[str, str], set[str]]:
+    """Observe actual networking pods on each expected node, including init failures."""
+    ready: set[str] = set()
+    problems: dict[str, str] = {}
+    failing: set[str] = set()
+    scheduled: set[str] = set()
+    fatal = {
+        "CrashLoopBackOff",
+        "RunContainerError",
+        "CreateContainerError",
+        "CreateContainerConfigError",
+        "ImagePullBackOff",
+        "ErrImagePull",
+        "InvalidImageName",
+    }
+    for pod in pods:
+        metadata = pod.get("metadata") or {}
+        node = (pod.get("spec") or {}).get("nodeName")
+        if node not in expected or metadata.get("deletionTimestamp"):
+            continue
+        scheduled.add(node)
+        status = pod.get("status") or {}
+        if any(c.get("type") == "Ready" and c.get("status") == "True" for c in status.get("conditions") or []):
+            ready.add(node)
+            continue
+        problem = f"{metadata.get('name', 'network pod')}: {status.get('phase', 'Pending')}"
+        for container in [*(status.get("initContainerStatuses") or []), *(status.get("containerStatuses") or [])]:
+            state = container.get("state") or {}
+            waiting = state.get("waiting") or {}
+            terminated = state.get("terminated") or {}
+            if waiting:
+                reason = waiting.get("reason", "Waiting")
+                problem = f"{metadata.get('name')}/{container.get('name')}: {reason}"
+                if reason in fatal:
+                    failing.add(node)
+                    break
+            elif terminated.get("exitCode", 0) != 0:
+                problem = f"{metadata.get('name')}/{container.get('name')}: exited {terminated['exitCode']}"
+                failing.add(node)
+                break
+        problems[node] = problem
+    for node in expected - scheduled:
+        problems[node] = "no networking pod is scheduled"
+        failing.add(node)
+    for node in ready:
+        problems.pop(node, None)
+        failing.discard(node)
+    return ready, problems, failing
+
+
 def wait_ready(ctx: StepContext) -> dict[str, Any]:
     plan = _plan(ctx)
     options = _options(plan)
     expected = {n.name for n in plan.nodes}
     deadline = time.monotonic() + options.ready_timeout_seconds
     last_report = ""
+    cni = plan.spec.network.cni.value
+    namespace, selector = ("kube-system", "k8s-app=calico-node") if cni == "calico" else ("kube-flannel", "app=flannel")
+    failure_since: dict[str, float] = {}
     with connect(ctx, plan.lead.machine_id) as executor:
         while True:
             ctx.check_cancelled()
-            nodes = json.loads(_kubectl(executor, "get nodes -o json")).get("items", [])
+            nodes = json.loads(_kubectl(executor, "get nodes -o json", timeout=15)).get("items", [])
             ready = {
                 n["metadata"]["name"]
                 for n in nodes
                 if any(c["type"] == "Ready" and c["status"] == "True" for c in n["status"].get("conditions", []))
             }
-            report = f"{len(ready & expected)}/{len(expected)} nodes Ready"
+            pods = json.loads(_kubectl(executor, f"-n {namespace} get pods -l {selector} -o json", timeout=15)).get(
+                "items", []
+            )
+            network_ready, problems, failing = _cni_readiness(pods, expected)
+            report = (
+                f"{len(ready & expected)}/{len(expected)} nodes Ready; "
+                f"{len(network_ready)}/{len(expected)} {cni} pods Ready"
+            )
+            details = [f"[{node}] {problem}" for node, problem in sorted(problems.items())]
+            for node in nodes:
+                name = node["metadata"]["name"]
+                if name in expected - ready:
+                    condition: dict[str, Any] = next(
+                        (c for c in node["status"].get("conditions", []) if c["type"] == "Ready"), {}
+                    )
+                    details.append(
+                        f"[{name}] {condition.get('reason', 'NotReady')}: {condition.get('message', '')[:240]}"
+                    )
+            report += ("\n" + "\n".join(details)) if details else ""
             if report != last_report:
                 ctx.info(report + (f" (waiting for {', '.join(sorted(expected - ready))})" if expected - ready else ""))
                 last_report = report
-            if expected <= ready:
+            if expected <= ready and expected <= network_ready:
                 break
+            now = time.monotonic()
+            for name in set(failure_since) - failing:
+                failure_since.pop(name, None)
+            for name in failing:
+                failure_since.setdefault(name, now)
+                if now - failure_since[name] >= CNI_FAILURE_GRACE_SECONDS:
+                    raise StepFailedError(
+                        f"{cni} failed on {name}: {problems[name]}. "
+                        "Check this node's runtime sandbox, image cache and CNI init containers before retrying.",
+                        code="cni_failed",
+                    )
             if time.monotonic() > deadline:
                 raise StepFailedError(
-                    f"Nodes did not become Ready within {options.ready_timeout_seconds}s: "
-                    f"{', '.join(sorted(expected - ready))}",
-                    code="nodes_not_ready",
+                    f"Node/network readiness timed out after {options.ready_timeout_seconds}s: "
+                    f"{'; '.join(details) or ', '.join(sorted(expected - ready))}",
+                    code="nodes_not_ready" if expected - ready else "cni_not_ready",
                 )
             ctx.set_progress(min(0.9, len(ready & expected) / len(expected)))
             time.sleep(5)
@@ -808,7 +979,9 @@ def wait_ready(ctx: StepContext) -> dict[str, Any]:
         ctx.info("Waiting for cluster DNS (CoreDNS)")
         while True:
             ctx.check_cancelled()
-            status = json.loads(_kubectl(executor, "-n kube-system get deployment coredns -o json")).get("status", {})
+            status = json.loads(_kubectl(executor, "-n kube-system get deployment coredns -o json", timeout=15)).get(
+                "status", {}
+            )
             wanted = status.get("replicas") or 0
             if wanted and (status.get("availableReplicas") or 0) >= wanted:
                 ctx.info(f"CoreDNS available ({wanted}/{wanted})")
@@ -830,6 +1003,52 @@ def wait_ready(ctx: StepContext) -> dict[str, Any]:
         ]
     ctx.info("All nodes are Ready and cluster DNS is running")
     return {"nodes": summary}
+
+
+def configure_kubectl(ctx: StepContext) -> dict[str, Any]:
+    """Give the selected local account opt-in cluster administrator access."""
+    plan = _plan(ctx)
+    username = _options(plan).kubectl_username
+    assert username is not None
+    node = plan.control_planes[0]
+    context = f"kplatform-{plan.cluster_name}-{plan.cluster_id}"
+    with connect(ctx, node.machine_id) as executor:
+        raw = executor.get_file("/etc/kubernetes/admin.conf", sudo=True).decode()
+        ctx.redact(raw)
+        try:
+            document = yaml.safe_load(raw)
+            selected = next(c["context"] for c in document["contexts"] if c["name"] == document["current-context"])
+            cluster = next(c["cluster"] for c in document["clusters"] if c["name"] == selected["cluster"])
+            user = next(u["user"] for u in document["users"] if u["name"] == selected["user"])
+            for key in ("client-key-data", "token", "password"):
+                if user.get(key):
+                    ctx.redact(user[key])
+            payload = json.dumps(
+                {
+                    "apiVersion": "v1",
+                    "kind": "Config",
+                    "clusters": [{"name": context, "cluster": cluster}],
+                    "users": [{"name": context, "user": user}],
+                    "contexts": [{"name": context, "context": {**selected, "cluster": context, "user": context}}],
+                    "current-context": context,
+                }
+            )
+        except (KeyError, TypeError, StopIteration, yaml.YAMLError):
+            raise StepFailedError("The administrator kubeconfig is invalid", code="invalid_kubeconfig") from None
+        encoded = base64.b64encode(payload.encode()).decode()
+        ctx.redact(encoded)
+        _execute(
+            ctx,
+            node,
+            executor,
+            "kubectl_config.sh",
+            {"TARGET_USER": username, "CONTEXT_NAME": context, "CONFIG_B64": encoded},
+            action="configure user kubectl",
+            timeout=60,
+        )
+    ctx.info(f"Kubectl administrator access configured for {username} on {node.name}")
+    ctx.info(f"To select this cluster as {username}: kubectl config use-context {context}")
+    return {"username": username, "machine": node.name, "path": "~/.kube/config", "context": context}
 
 
 def register(ctx: StepContext) -> dict[str, Any]:
@@ -896,12 +1115,26 @@ def register(ctx: StepContext) -> dict[str, Any]:
             "api_endpoint": f"https://{ctx.outputs['init']['api_server_endpoint']}",
             "nodes": len(plan.nodes),
             "kubeconfig_credential": credential_name,
+            **({"kubectl_config": ctx.outputs["kubectl-config"]} if "kubectl-config" in ctx.outputs else {}),
         }
     )
     return {"credential": credential_name}
 
 
 # --------------------------------------------------------------------------- delete
+
+
+def _reset_and_remove_firewall(ctx: StepContext) -> Callable[[PlannedNode, HostExecutor], None]:
+    reset = _script_action(
+        ctx, "reset.sh", {"VIP": cfg.vip_of(_plan(ctx).spec) or ""}, action="kubeadm reset", timeout=600
+    )
+    remove = _firewall_action(ctx, {}, remove=True)
+
+    def run(node: PlannedNode, executor: HostExecutor) -> None:
+        reset(node, executor)
+        remove(node, executor)
+
+    return run
 
 
 def reset_nodes(ctx: StepContext) -> dict[str, Any]:
@@ -911,7 +1144,7 @@ def reset_nodes(ctx: StepContext) -> dict[str, Any]:
     _for_nodes(
         ctx,
         plan.nodes,
-        _script_action(ctx, "reset.sh", {"VIP": cfg.vip_of(plan.spec) or ""}, action="kubeadm reset", timeout=600),
+        _reset_and_remove_firewall(ctx),
         tolerate_unreachable=plan.force,
     )
     return {}
@@ -1020,56 +1253,68 @@ def destroy_machines(ctx: StepContext) -> dict[str, Any]:
 
 
 def smoke_test(ctx: StepContext) -> dict[str, Any]:
-    """Schedule a pod, pull an image and resolve the API service through cluster DNS."""
+    """Verify a real pod can resolve cluster DNS from each selected node."""
     plan = _plan(ctx)
-    name = f"kplatform-smoke-{secrets.token_hex(3)}"
     domain = plan.spec.network.dns_domain
     service_ip = str(next(ipaddress.ip_network(plan.spec.network.service_cidr).hosts()))
-    overrides = {"spec": {"tolerations": [{"operator": "Exists"}], "restartPolicy": "Never"}}
     with connect(ctx, plan.lead.machine_id) as executor:
-        _kubectl(
-            executor,
-            f"-n kube-system run {name} --image={cfg.SMOKE_TEST_IMAGE} --restart=Never "
-            f"--labels=app.kubernetes.io/managed-by=kubernetes-platform "
-            f"--overrides={shlex.quote(json.dumps(overrides))} "
-            f"--command -- nslookup kubernetes.default.svc.{domain}",
-        )
-        try:
-            deadline = time.monotonic() + SMOKE_TEST_TIMEOUT_SECONDS
-            while True:
-                ctx.check_cancelled()
-                pod = json.loads(_kubectl(executor, f"-n kube-system get pod {name} -o json"))
-                phase = (pod.get("status") or {}).get("phase")
-                if phase in ("Succeeded", "Failed"):
-                    break
-                if time.monotonic() > deadline:
-                    waiting = [
-                        (c.get("state") or {}).get("waiting", {}).get("reason")
-                        for c in (pod.get("status") or {}).get("containerStatuses") or []
-                    ]
-                    raise StepFailedError(
-                        f"Smoke-test pod did not finish within {SMOKE_TEST_TIMEOUT_SECONDS}s "
-                        f"(phase {phase}, {', '.join(w for w in waiting if w) or 'no container status'})",
-                        code="smoke_test_timeout",
-                    )
-                time.sleep(3)
-            node = (pod.get("spec") or {}).get("nodeName")
-            logs = _kubectl(executor, f"-n kube-system logs {name}")
-        finally:
-            from app.modules.infrastructure.host_access import CommandOptions
+        checked: list[str] = []
+        for selected in plan.nodes:
+            ctx.check_cancelled()
+            name = f"kplatform-smoke-{secrets.token_hex(6)}"
+            overrides = {
+                "spec": {
+                    "nodeName": selected.name,
+                    "automountServiceAccountToken": False,
+                    "activeDeadlineSeconds": SMOKE_TEST_TIMEOUT_SECONDS,
+                    "tolerations": [{"operator": "Exists"}],
+                    "restartPolicy": "Never",
+                }
+            }
+            try:
+                _kubectl(
+                    executor,
+                    f"-n kube-system run {name} --image={cfg.SMOKE_TEST_IMAGE} --restart=Never "
+                    f"--labels=app.kubernetes.io/managed-by=kubernetes-platform "
+                    f"--overrides={shlex.quote(json.dumps(overrides))} "
+                    f"--command -- nslookup kubernetes.default.svc.{domain}",
+                )
+                deadline = time.monotonic() + SMOKE_TEST_TIMEOUT_SECONDS
+                while True:
+                    ctx.check_cancelled()
+                    pod = json.loads(_kubectl(executor, f"-n kube-system get pod {name} -o json"))
+                    phase = (pod.get("status") or {}).get("phase")
+                    if phase in ("Succeeded", "Failed"):
+                        break
+                    if time.monotonic() > deadline:
+                        waiting = [
+                            (c.get("state") or {}).get("waiting", {}).get("reason")
+                            for c in (pod.get("status") or {}).get("containerStatuses") or []
+                        ]
+                        raise StepFailedError(
+                            f"Smoke-test pod did not finish within {SMOKE_TEST_TIMEOUT_SECONDS}s "
+                            f"(phase {phase}, {', '.join(w for w in waiting if w) or 'no container status'})",
+                            code="smoke_test_timeout",
+                        )
+                    time.sleep(3)
+                node = (pod.get("spec") or {}).get("nodeName")
+                logs = _kubectl(executor, f"-n kube-system logs {name}")
+            finally:
+                from app.modules.infrastructure.host_access import CommandOptions
 
-            executor.run(
-                f"kubectl --kubeconfig /etc/kubernetes/admin.conf -n kube-system delete pod {name} --wait=false",
-                CommandOptions(sudo=True, timeout_seconds=60),
-            )
-    if phase != "Succeeded" or service_ip not in logs:
-        raise StepFailedError(
-            f"Cluster DNS check failed on {node}: kubernetes.default.svc.{domain} did not resolve to {service_ip}.\n"
-            + logs[-800:],
-            code="smoke_test_failed",
-        )
-    ctx.info(f"Pod scheduled on {node}, image pulled, kubernetes.default.svc.{domain} resolved to {service_ip}")
-    return {"node": node}
+                executor.run(
+                    f"kubectl --kubeconfig /etc/kubernetes/admin.conf -n kube-system delete pod {name} --wait=false",
+                    CommandOptions(sudo=True, timeout_seconds=60),
+                )
+            if node != selected.name or phase != "Succeeded" or service_ip not in logs.split():
+                raise StepFailedError(
+                    f"Cluster DNS check failed on {node}: "
+                    f"kubernetes.default.svc.{domain} did not resolve to {service_ip}.\n" + logs[-800:],
+                    code="smoke_test_failed",
+                )
+            ctx.info(f"Pod started on {node}, image pulled, kubernetes.default.svc.{domain} resolved to {service_ip}")
+            checked.append(selected.name)
+    return {"node": checked[0] if checked else None, "nodes": checked}
 
 
 # --------------------------------------------------------------------------- add nodes
@@ -1163,7 +1408,7 @@ def reset_removed(ctx: StepContext) -> dict[str, Any]:
     _for_nodes(
         ctx,
         plan.nodes,
-        _script_action(ctx, "reset.sh", {"VIP": cfg.vip_of(plan.spec) or ""}, action="kubeadm reset", timeout=600),
+        _reset_and_remove_firewall(ctx),
         parallel=False,
         tolerate_unreachable=plan.force,
     )
@@ -1210,6 +1455,12 @@ def delete_node_objects(ctx: StepContext) -> dict[str, Any]:
 def finalize_remove(ctx: StepContext) -> dict[str, Any]:
     plan = _plan(ctx)
     ids = [n.machine_id for n in plan.nodes]
+    remaining = _existing_firewall_nodes(ctx, set(ids))
+    peers = _firewall_ips(ctx, remaining, tolerate_unreachable=plan.force)
+    if len(peers) == len(remaining):
+        _for_nodes(ctx, remaining, _firewall_action(ctx, peers), parallel=False, tolerate_unreachable=plan.force)
+    else:
+        ctx.warning("Surviving hosts are unreachable; firewall peer cleanup is deferred until they can be reconciled")
     with ctx.db() as session:
         cluster = session.get(Cluster, plan.cluster_id)
         if cluster is not None:

@@ -79,4 +79,8 @@ if [[ " ${components[*]} " == *" kubelet "* ]]; then
   installed="$(kubelet --version | awk '{print $2}')"
   [ "$installed" = "v${upstream}" ] || fail "expected kubelet v${upstream}, found ${installed}"
 fi
+if [[ " ${components[*]} " == *" kubectl "* ]]; then
+  installed="$(kubectl version --client=true --output=yaml | awk '$1 == "gitVersion:" {print $2; exit}')"
+  [ "$installed" = "v${upstream}" ] || fail "expected kubectl v${upstream}, found ${installed}"
+fi
 log "Installed Kubernetes components ${upstream}"

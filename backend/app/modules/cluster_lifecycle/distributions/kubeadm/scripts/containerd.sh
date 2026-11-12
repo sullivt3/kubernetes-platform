@@ -25,9 +25,15 @@ if [ -f /etc/containerd/config.toml ] && ! grep -q "managed by kubernetes-platfo
 fi
 {
   echo "# managed by kubernetes-platform"
-  containerd config default | sed -e 's/SystemdCgroup = false/SystemdCgroup = true/'
+  containerd config default | sed \
+    -e 's/SystemdCgroup = false/SystemdCgroup = true/' \
+    -e 's/image_pull_with_sync_fs = false/image_pull_with_sync_fs = true/' \
+    -e 's/use_local_image_pull = false/use_local_image_pull = true/'
 } > /etc/containerd/config.toml.new
 grep -q "SystemdCgroup = true" /etc/containerd/config.toml.new || fail "could not enable the systemd cgroup driver in containerd config"
+# Sync extracted image files before publishing them as usable. In containerd 2.1+
+# this requires local pull mode; older versions already use the local pull path.
+grep -q "image_pull_with_sync_fs = true" /etc/containerd/config.toml.new || fail "containerd does not expose synchronized image unpacking"
 mv /etc/containerd/config.toml.new /etc/containerd/config.toml
 
 cat > /etc/crictl.yaml <<EOF

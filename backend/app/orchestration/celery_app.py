@@ -32,6 +32,7 @@ celery_app.conf.update(
     beat_schedule={
         "recover-operations": {"task": "operations.recover", "schedule": 30.0},
         "probe-clusters": {"task": "clusters.probe", "schedule": 60.0},
+        "probe-machines": {"task": "machines.probe", "schedule": float(settings.machine_probe_interval_seconds)},
     },
     timezone="UTC",
 )
@@ -87,6 +88,17 @@ def probe_clusters() -> dict[str, int]:
     from app.core.secrets import get_secret_store
     from app.db.session import get_session_factory
     from app.modules.kubernetes.service import probe_clusters as run_probe
+    from app.orchestration.runtime import load_workflows
+
+    load_workflows()
+    return run_probe(get_session_factory(), get_secret_store())
+
+
+@celery_app.task(name="machines.probe")
+def probe_machines() -> dict[str, int]:
+    from app.core.secrets import get_secret_store
+    from app.db.session import get_session_factory
+    from app.modules.infrastructure.health import probe_machines as run_probe
     from app.orchestration.runtime import load_workflows
 
     load_workflows()

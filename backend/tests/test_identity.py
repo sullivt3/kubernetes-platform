@@ -208,6 +208,7 @@ def test_identity_claims_do_not_grant_membership_or_admin(identity: IdentityHarn
         ("POST", "/credentials", {"name": "forbidden", "kind": "ssh_password", "secret_value": "hidden"}),
         ("POST", "/clusters", {}),
         ("POST", "/machines", {}),
+        ("PATCH", "/machines/00000000-0000-0000-0000-000000000001/address", {"host": "10.0.0.21"}),
         ("POST", "/system/self-check", None),
         ("POST", "/operations/00000000-0000-0000-0000-000000000001/cancel", None),
         ("PUT", "/administration/members", {"subject": f"{ISSUER}|alice", "role": "org-admin"}),

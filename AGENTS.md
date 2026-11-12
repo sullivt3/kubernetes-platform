@@ -28,12 +28,78 @@ Target environments include existing physical Linux servers over SSH, local Dock
 - **Domain modules:** `backend/app/modules/` contains organizations/identity, credentials, auditing, providers, infrastructure, cluster lifecycle, Kubernetes access and workloads. Networking/storage functionality currently shares the Kubernetes/workload modules; do not create parallel modules just to match a suggested directory tree.
 - **Orchestration:** `backend/app/orchestration/` uses Celery and Redis with PostgreSQL-backed operations, steps, checkpoints, logs and recovery. API, worker and scheduler are separate process roles from the same backend codebase. SSE supplies operation/log updates; WebSockets bridge pod terminals.
 - **Infrastructure:** provider implementations live in `modules/providers/implementations/`; SSH execution and inventory live in `modules/infrastructure/`. Distribution plans and installers live in `modules/cluster_lifecycle/distributions/`.
-- **Persistence:** Alembic migrations live in `backend/migrations/`. At the context snapshot below, migration head is `0005`, adding identity sessions and memberships.
+- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0006`, adding machine connection observations after the `0005` identity/session schema.
 - **Deployment:** `infrastructure/deployment/docker-compose.yml` supplies PostgreSQL/Redis and optional backend API/worker/scheduler services. The frontend runs separately. `infrastructure/containers/backend.Dockerfile` packages the backend.
 
 Keep infrastructure provisioning, host execution, and Kubernetes distribution installation separate. Add capabilities through the existing provider/distribution contracts and registries instead of scattering provider conditionals through services or UI.
 
 Conventional Fedora 43/44/45 hosts are supported by inspection and the SSH installer.
+Registered SSH machines can change their endpoint through the Machines **Update
+address** action (`PATCH /machines/{id}/address`). This preserves the machine and
+cluster binding and pinned SSH key, audits the change, and queues inspection in
+the same transaction. Active machine/cluster operations block updates. This does
+not migrate Kubernetes node networking, API endpoints or certificates, and is not
+offered for provider-provisioned machines. Tests: `tests/test_machine_addresses.py`.
+Machine connection health is observed separately from preparation and cluster
+membership (`modules/infrastructure/health.py`, task `machines.probe`). Beat
+defaults to 30 seconds, the UI polls at 10 seconds, and observations expire after
+three intervals. Probes require a pinned host key and use an unprivileged SSH
+`true`; they never accept keys or change the target. Offline machines stay in
+inventory and show **Unavailable**; unassigned machines show **Unassigned**.
+Tests: `tests/test_machine_health.py`. Apply migration `0006` and restart API,
+worker and beat when deploying this change.
+Kubeadm creation can opt in to local kubectl access with
+`options.kubectl_username`. The account must exist on the first control plane.
+After node/DNS/smoke checks, `kubectl_config.sh` merges administrator credentials
+as that user into `~/.kube/config` (700 directory, 600 file), retaining the current
+context and a private backup. The option is off by default; old operation plans
+stay unchanged. It grants the shared bootstrap admin identity, not a separate
+person's certificate. See `tests/test_kubectl_config.py` and the cluster integration
+guide. Never merge a user's existing kubeconfig as root or print raw credentials.
+Kubeadm now verifies the exact kubeadm/kubelet/kubectl versions and starts a real,
+short-lived host-network CRI sandbox on every node before init/join. The packaged
+`runtime_check.sh` uses systemd cgroups and cleans up only its own sandbox.
+Containerd enables synchronized image extraction (and local pulls where exposed);
+this prevents publishing undurable new layers but does not repair existing caches.
+The initial CNI step precedes worker joins: its successful rollout alone cannot
+prove worker networking works. `wait-ready` also requires a Ready CNI pod on every
+selected node, reports init/container failures, and allows a 120-second startup
+grace before failing a persistent fatal CNI error. Creation then runs a real DNS
+pod on each selected node, including control planes, with cleanup on failure.
+Tests: `tests/test_installation_verification.py`, `tests/test_linux_installers.py`.
+A live Fedora worker incident exposed empty unpacked pause/Calico executables even
+though compressed image hashes were valid. An explicitly approved cache rebuild
+restored its runtime. Live pod DNS then passed on both nodes after an explicitly
+approved peer-only protocol-4 allowance and pod-CIDR forwarding policy, preserving
+libvirt interface bindings through a normal firewalld reload. Use numeric `4`,
+not the ambiguous protocol name `ipip` (94 on Fedora). Firewalld preparation is now automated by `kubeadm/scripts/firewall.sh`, invoked
+within the existing prepare/reset/release workflow keys. Each cluster owns a
+host-input policy (`kh-<12 UUID hex>`) and pod-forwarding policy (`kp-...`) with
+full UUID ownership metadata. Node add reconciles every joined host's peer list;
+node removal revokes departed peers and reset removes only owned policies.
+The manager uses the host's firewalld Python/D-Bus client, locks across reloads,
+preserves runtime zone/policy settings and VM interface bindings, rolls back on
+failure, and skips reloads when already correct. It refuses ownership collisions
+and runtime-only zones/policies/direct rules that cannot be safely reloaded.
+Inactive firewalls remain untouched; UFW retains the prior port preparation and
+does not receive these firewalld policies. Tests: `tests/test_firewall_policies.py`
+and `bash scripts/check-firewall.sh` (real isolated Fedora daemon, not a VM cluster). Validation of this automation passed 111 installer/lifecycle
+regressions, 24 final policy/node tests, Ruff/mypy, and a real Fedora firewalld
+integration run covering apply, retry without reload, peer replacement, runtime
+bridge/port preservation and owned-policy removal. Subsequent live validation applied the owned policies to both Fedora hosts and
+verified a second apply skipped reloading on each; full zone/bridge preservation
+checks passed. The first attempt hit the preservation guard and rolled back; a
+repeat succeeded without source changes. Control-plane DHCP had returned as .13 while Kubernetes expected .11; the user
+restored a persistent manual .11/24 profile. A subsequent detached worker1 tap
+(vnet0) was reattached to its libvirt-declared br0 bridge with explicit approval.
+Final live validation passed on both hosts: pinned SSH, persistent owned policies,
+repeat runs without reload, Node Ready, healthy Calico/CoreDNS, API /readyz, and a
+real DNS pod per node (all probes cleaned up). Do not silently migrate the app
+endpoint or Kubernetes certificates to follow DHCP. The existing
+failed creation was resumed from its checkpoint and completed successfully with
+real per-node DNS checks and encrypted kubeconfig registration. Validation: 99
+installer/lifecycle tests plus 47 final verification/configuration/plan/API tests
+(overlapping coverage), Ruff and mypy passed; local API/worker were restarted.
 Containerd repositories are selected by OS ID (Fedora/RHEL/CentOS-compatible
 Rocky/Alma/Ubuntu/Debian); DNF5 has separate Kubernetes query/exclude handling.
 Shared swap preparation lives in `distributions/scripts/swap.sh` and masks Fedora's
@@ -59,7 +125,7 @@ These are existing decisions/deviations from the original prompt. Do not replace
 
 ## Current status
 
-Context reviewed **2026-11-11**, at commit `60f9bd8` (`feat: add initial phase 7 authentication and administration`). This is a snapshot, not a permanent assertion about HEAD; check subsequent commits and update this file when milestones change.
+Context reviewed **2026-11-11**. This handoff includes machine address/health management, optional user kubeconfigs, installer verification and automatic firewalld policies. Check current HEAD and update this file when milestones change.
 
 | Phase | Implemented scope / remaining boundary |
 |---|---|
@@ -75,8 +141,8 @@ Context reviewed **2026-11-11**, at commit `60f9bd8` (`feat: add initial phase 7
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
-The latest reviewed commit originally left automated Phase 7 testing and live
-OIDC validation pending. Subsequent uncommitted work adds 35 Phase 7 cases in
+Initial Phase 7 implementation left automated testing and live OIDC validation
+pending. The identity regression suite subsequently added 35 Phase 7 cases in
 `backend/tests/test_identity.py`; the full backend suite passed 305 tests against
 isolated Docker PostgreSQL/Redis. Ruff, Mypy, frontend type checking/lint and 27
 frontend tests passed. The frontend production build passed in the Linux check

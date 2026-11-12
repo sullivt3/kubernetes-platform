@@ -119,7 +119,11 @@ def _ssh_connector(endpoint: HostEndpoint, auth: SshAuth) -> HostExecutor:
 _connector: Connector = _ssh_connector
 
 
-def open_host(endpoint: HostEndpoint, auth: SshAuth) -> HostExecutor:
+def open_host(endpoint: HostEndpoint, auth: SshAuth, *, connect_timeout: float | None = None) -> HostExecutor:
+    if connect_timeout is not None and _connector is _ssh_connector:
+        from app.modules.infrastructure.ssh import SshHostExecutor
+
+        return SshHostExecutor(endpoint, auth, connect_timeout=connect_timeout)
     return _connector(endpoint, auth)
 
 

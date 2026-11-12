@@ -26,6 +26,9 @@ from app.modules.infrastructure.host_access import (
 from app.modules.infrastructure.ssh import SshAuth
 
 SCRIPT_MARKERS = {
+    "Reconcile cluster-owned firewalld": "firewall",
+    "Verify a real CRI sandbox": "runtime_check",
+    "Opt-in administrator access": "kubectl_config",
     "Prepare the operating system": "prepare",
     "Install and configure containerd": "containerd",
     "Configure the pkgs.k8s.io repository": "packages",
@@ -56,6 +59,8 @@ class FakeHost:
     secrets_seen: list[str] = field(default_factory=list)
     kube_vip_manifest: str | None = None
     control_plane: bool = False
+    local_users: set[str] = field(default_factory=lambda: {"root", "ops", "platform", "alice"})
+    runtime_ok: bool = True
 
 
 class FakeCluster:
@@ -69,6 +74,11 @@ class FakeCluster:
         self.deleted_nodes: list[str] = []
         self.drained: list[str] = []
         self.smoke_pods: list[str] = []
+        self.network_failures: dict[str, str] = {}
+        self.dns_failures: set[str] = set()
+        self.smoke_nodes: dict[str, str] = {}
+        self.deleted_smoke_pods: list[str] = []
+        self.smoke_logs: str | None = None
 
     def add(self, address: str, host: FakeHost) -> FakeHost:
         self.hosts[address] = host
@@ -178,7 +188,15 @@ class FakeExecutor(HostExecutor):
         if script is None:
             return self._result("bash -s", err="fake: unknown script", code=2)
         env = _env(stdin)
+        if script == "kubectl_config" and env.get("CHECK_ONLY") == "1":
+            script = "kubectl_account"
         h.calls.append((script, env))
+        if script == "runtime_check" and not h.runtime_ok:
+            return self._result(
+                "bash -s", err="pod sandbox exited immediately; cached pause image may be damaged", code=1
+            )
+        if script in {"kubectl_account", "kubectl_config"} and env["TARGET_USER"] not in h.local_users:
+            return self._result("bash -s", err="kubectl user does not exist", code=1)
         if h.fail_next.get(script, 0) > 0:
             h.fail_next[script] -= 1
             return self._result("bash -s", err=f"{script}: simulated failure", code=1)
@@ -212,6 +230,38 @@ class FakeExecutor(HostExecutor):
         return self._result("bash -s", out="\n".join(out))
 
     def _kubectl(self, command: str) -> CommandResult:
+        if "get pods -l" in command and ("calico-node" in command or "app=flannel" in command):
+            return self._result(
+                command,
+                out=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {"name": "network-" + h.name},
+                                "spec": {"nodeName": h.name},
+                                "status": {
+                                    "phase": "Pending" if h.name in self.cluster.network_failures else "Running",
+                                    "conditions": [
+                                        {
+                                            "type": "Ready",
+                                            "status": "False" if h.name in self.cluster.network_failures else "True",
+                                        }
+                                    ],
+                                    "initContainerStatuses": [
+                                        {
+                                            "name": "install-cni",
+                                            "state": {"waiting": {"reason": self.cluster.network_failures[h.name]}},
+                                        }
+                                    ]
+                                    if h.name in self.cluster.network_failures
+                                    else [],
+                                },
+                            }
+                            for h in self.cluster.members()
+                        ]
+                    }
+                ),
+            )
         if "get nodes -o json" in command:
             items = [
                 {
@@ -233,15 +283,26 @@ class FakeExecutor(HostExecutor):
             return self._result(command, out=json.dumps({"status": {"replicas": 2, "availableReplicas": 2}}))
         words = command.split()
         if " run kplatform-smoke-" in command:
-            self.cluster.smoke_pods.append(words[words.index("run") + 1])
+            name = words[words.index("run") + 1]
+            self.cluster.smoke_pods.append(name)
+            overrides = next(w for w in shlex.split(command) if w.startswith("--overrides="))
+            self.cluster.smoke_nodes[name] = json.loads(overrides.split("=", 1)[1])["spec"]["nodeName"]
             return self._result(command, out="pod created")
         if "get pod kplatform-smoke-" in command:
-            phase = "Succeeded" if self.cluster.dns_works else "Failed"
-            return self._result(
-                command, out=json.dumps({"status": {"phase": phase}, "spec": {"nodeName": self.host.name}})
-            )
+            name = words[words.index("pod") + 1]
+            node = self.cluster.smoke_nodes[name]
+            phase = "Succeeded" if self.cluster.dns_works and node not in self.cluster.dns_failures else "Failed"
+            return self._result(command, out=json.dumps({"status": {"phase": phase}, "spec": {"nodeName": node}}))
+        if "delete pod kplatform-smoke-" in command:
+            self.cluster.deleted_smoke_pods.append(words[words.index("pod") + 1])
+            return self._result(command, out="pod deleted")
         if " logs kplatform-smoke-" in command:
-            if not self.cluster.dns_works:
+            if self.cluster.smoke_logs is not None:
+                return self._result(command, out=self.cluster.smoke_logs)
+            if (
+                not self.cluster.dns_works
+                or self.cluster.smoke_nodes[words[words.index("logs") + 1]] in self.cluster.dns_failures
+            ):
                 return self._result(command, out=";; connection timed out; no servers could be reached")
             return self._result(
                 command,
@@ -281,6 +342,7 @@ class FakeExecutor(HostExecutor):
             return (
                 "apiVersion: v1\nclusters:\n- cluster: {server: https://" + self.host.ip + ":6443}\n  name: lab\n"
                 "contexts:\n- context: {cluster: lab, user: admin}\n  name: admin@lab\n"
+                "current-context: admin@lab\n"
                 "users:\n- name: admin\n  user:\n    client-key-data: SECRETKEYDATA\n"
             ).encode()
         raise FileNotFoundError(remote_path)

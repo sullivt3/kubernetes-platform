@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConfirmationRequiredError, ConflictError, NotFoundError, ValidationFailedError
@@ -13,11 +14,11 @@ from app.core.principal import Principal
 from app.modules.auditing import service as audit
 from app.modules.cluster_lifecycle.models import Cluster, ClusterMachine
 from app.modules.credentials.models import Credential, CredentialKind
-from app.modules.infrastructure.models import Machine, MachineLifecycleState, ProviderConnection
+from app.modules.infrastructure.models import Machine, MachineConnectivity, MachineLifecycleState, ProviderConnection
 from app.modules.infrastructure.workflows import MACHINE_INSPECT
 from app.modules.providers.registry import provider_registry
 from app.modules.providers.types import ProviderType
-from app.orchestration.models import Operation
+from app.orchestration.models import ACTIVE_STATUSES, Operation
 from app.orchestration.service import OperationService
 
 # Machine names become Kubernetes node names: RFC 1123 label.
@@ -112,6 +113,76 @@ class MachineService:
         operation = self.operations.submit(
             principal, MACHINE_INSPECT, {"machine_id": str(machine.id), "machine_name": name}
         )
+        return self.get(principal, machine.id), operation
+
+    def update_address(self, principal: Principal, machine_id: uuid.UUID, *, host: str) -> tuple[Machine, Operation]:
+        machine = self.get(principal, machine_id)
+        connection = self.session.get(ProviderConnection, machine.provider_connection_id)
+        if connection is None or connection.provider_type != ProviderType.SSH or machine.provisioned:
+            raise ValidationFailedError("Only registered SSH machines support address updates")
+        host = host.strip()
+        if not HOST_RE.fullmatch(host) or len(f"{host}:{machine.ssh_port}") > 255:
+            raise ValidationFailedError("Host must be a hostname or IP address")
+
+        cluster_id = self.session.scalar(
+            select(ClusterMachine.cluster_id).where(ClusterMachine.machine_id == machine.id)
+        )
+        targets = [and_(Operation.target_type == "machine", Operation.target_id == str(machine.id))]
+        if cluster_id is not None:
+            targets.append(and_(Operation.target_type == "cluster", Operation.target_id == str(cluster_id)))
+        if self.session.scalar(
+            select(Operation.id)
+            .where(
+                Operation.organization_id == principal.organization_id,
+                Operation.status.in_(ACTIVE_STATUSES),
+                or_(*targets),
+            )
+            .limit(1)
+        ):
+            raise ConflictError("An operation is in progress for this machine or its cluster")
+
+        external_id = f"{host}:{machine.ssh_port}"
+        if self.session.scalar(
+            select(Machine.id).where(
+                Machine.organization_id == principal.organization_id,
+                Machine.id != machine.id,
+                or_(
+                    Machine.external_id == external_id,
+                    and_(Machine.ssh_host == host, Machine.ssh_port == machine.ssh_port),
+                ),
+            )
+        ):
+            raise ConflictError(f"A machine at {external_id} is already registered")
+        previous = machine.ssh_host
+        machine.ssh_host = host
+        machine.connectivity_status = MachineConnectivity.UNKNOWN
+        machine.connectivity_checked_at = None
+        machine.connectivity_error = None
+        machine.external_id = external_id
+        # Observed addresses/readiness belong to the previous inspection. The pinned
+        # identity stays intact, so a different server at the new IP cannot be trusted silently.
+        machine.addresses = []
+        machine.checks = []
+        machine.inspected_at = None
+        machine.lifecycle_state = MachineLifecycleState.REQUESTED
+        machine.last_error = None
+        audit.record(
+            self.session,
+            principal=principal,
+            action="machine.update_address",
+            resource_type="machine",
+            resource_id=machine.id,
+            resource_name=machine.name,
+            details={"previous_host": previous, "host": host, "port": machine.ssh_port},
+        )
+        try:
+            # submit commits the endpoint, audit and inspection together before dispatch.
+            operation = self.operations.submit(
+                principal, MACHINE_INSPECT, {"machine_id": str(machine.id), "machine_name": machine.name}
+            )
+        except IntegrityError as exc:
+            self.session.rollback()
+            raise ConflictError("The address is already registered; refresh the machine inventory") from exc
         return self.get(principal, machine.id), operation
 
     def inspect(

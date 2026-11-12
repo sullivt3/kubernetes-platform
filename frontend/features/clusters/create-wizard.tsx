@@ -87,6 +87,8 @@ export interface WizardState {
   credentialId: string;
   pools: PoolState[];
   allowSwap: boolean;
+  configureKubectl: boolean;
+  kubectlUsername: string;
   cpWorkloads: "auto" | "yes" | "no";
   conntrackZero: boolean;
   ignorePreflight: string;
@@ -131,6 +133,8 @@ export const INITIAL: WizardState = {
   credentialId: "",
   pools: [{ name: "workers", machines: [], newCount: 0, size: DEFAULT_SIZE, labels: [], taints: [] }],
   allowSwap: false,
+  configureKubectl: false,
+  kubectlUsername: "",
   cpWorkloads: "auto",
   conntrackZero: false,
   ignorePreflight: "",
@@ -152,6 +156,7 @@ export function buildSpec(s: WizardState): ClusterSpecInput {
   const provisioning = !managed && !local && newMachines(s) > 0;
   // Only explicit choices are sent: the backend fills in defaults (e.g. for container-based machines).
   const options: Record<string, unknown> = {};
+  if (s.distribution === "kubeadm" && s.configureKubectl) options.kubectl_username = s.kubectlUsername.trim();
   if (["k3s", "rke2", "k3d"].includes(s.distribution)) options.release_revision = s.releaseRevision;
   if (s.allowSwap) options.allow_swap = true;
   if (s.cpWorkloads !== "auto") options.control_plane_workloads = s.cpWorkloads === "yes";
@@ -297,6 +302,7 @@ function MachinePicker({
         const isSelected = selected.includes(m.id);
         const reason =
           m.cluster_name ? `In cluster ${m.cluster_name}`
+          : m.connectivity_status === "unreachable" ? "Unavailable — cannot reach this machine over SSH"
           : m.lifecycle_state !== "ready" ? (m.last_error ?? "Not ready — inspect it on the Machines page")
           : takenElsewhere.has(m.id) ? "Selected in another node pool"
           : requireTwoCpus && (m.hardware.cpu_cores ?? 0) < 2 ? "Control-plane nodes need at least 2 CPUs"
@@ -384,10 +390,13 @@ const STEPS = [
   { key: "review", title: "Review & create" },
 ] as const;
 
-function stepErrors(step: number, s: WizardState, distribution?: DistributionDescriptor): string[] {
+export function stepErrors(step: number, s: WizardState, distribution?: DistributionDescriptor): string[] {
   const errors: string[] = [];
   const managed = distribution?.kind === "managed";
   const local = distribution?.kind === "local";
+  if (step >= 5 && s.distribution === "kubeadm" && s.configureKubectl && !/^[a-z_][a-z0-9_-]{0,31}$/.test(s.kubectlUsername.trim())) {
+    errors.push("Kubectl access needs a Linux username: lowercase letters, digits, '_' or '-' (max 32)");
+  }
   if (step === 0 && !s.provider) errors.push("Choose an infrastructure provider");
   if ((step === 3 || step === 4) && !managed && !local && newMachines(s) > 0 && (!s.connectionId || !s.credentialId)) {
     errors.push("New machines need a provider connection and an SSH key (step 1, Infrastructure)");
@@ -911,6 +920,31 @@ export function CreateClusterWizard() {
                 </div>
                 <div className="space-y-4">
                   <h2 className="font-semibold">Advanced options</h2>
+                  {state.distribution === "kubeadm" && (
+                    <div className="space-y-3 rounded-lg border border-border p-4">
+                      <label className="flex items-start gap-3 text-sm">
+                        <input type="checkbox" className="mt-1" checked={state.configureKubectl}
+                          onChange={(e) => update({
+                            configureKubectl: e.target.checked,
+                            kubectlUsername: state.kubectlUsername || machineList.find((m) => m.id === state.cpMachines[0])?.ssh_username || "platform",
+                          })} />
+                        <span>
+                          <span className="font-medium">Configure kubectl for a Linux user</span>
+                          <span className="block text-muted-foreground">Create or merge ~/.kube/config on the first control-plane machine after cluster checks pass.</span>
+                        </span>
+                      </label>
+                      {state.configureKubectl && <>
+                        <div className="space-y-2">
+                          <Label htmlFor="kubectl-username">Linux username for kubectl</Label>
+                          <Input id="kubectl-username" value={state.kubectlUsername}
+                            onChange={(e) => update({ kubectlUsername: e.target.value })} maxLength={32} placeholder="alice or root" />
+                          <p className="text-xs text-muted-foreground">The account and its home directory must already exist on {machineList.find((m) => m.id === state.cpMachines[0])?.name ?? "the first control-plane machine"}. No Linux account is created.</p>
+                        </div>
+                        <p className="text-sm text-amber-400">Grants this account cluster-administrator access using the cluster&apos;s admin credentials. Choose a trusted account.</p>
+                        <p className="text-xs text-muted-foreground">Existing clusters and the current context are preserved. Changed files are backed up; the config is readable only by its owner.</p>
+                      </>}
+                    </div>
+                  )}
                   {state.distribution === "eks" && <div className="space-y-3 rounded-lg border border-border p-4">
                     <h3 className="font-medium">Amazon EKS settings</h3>
                     <div className="grid gap-3 md:grid-cols-2">
@@ -996,6 +1030,7 @@ export function CreateClusterWizard() {
                           (state.lbMode === "kube-vip" ? ` · kube-vip ${state.cpEndpoint}` : state.lbMode === "external" ? ` behind ${state.cpEndpoint}` : ""),
                       ],
                       ["Workers", `${spec.worker_pools.reduce((n, p) => n + p.count, 0)} node(s) in ${spec.worker_pools.length} pool(s)`],
+                      ["Local kubectl access", state.distribution === "kubeadm" && state.configureKubectl ? `${state.kubectlUsername.trim()} · first control plane · cluster administrator` : "Not configured"],
                     ] as const
                   ).map(([label, value]) => (
                     <div key={label} className="flex justify-between gap-4 border-b border-border/40 pb-1.5">

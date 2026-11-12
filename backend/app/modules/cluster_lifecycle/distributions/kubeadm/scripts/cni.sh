@@ -44,4 +44,4 @@ if ! kubectl -n "$namespace" rollout status "$workload" --timeout=600s; then
   diagnose
   fail "${CNI} did not become ready"
 fi
-log "${CNI} is running"
+log "${CNI} is running on the currently joined nodes; new nodes are verified after joining"

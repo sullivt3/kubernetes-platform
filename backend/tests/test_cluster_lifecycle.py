@@ -233,7 +233,7 @@ class TestClusterLifecycle:
         assert client.get(f"{API}/clusters/{cluster_id}").json()["lifecycle_state"] == "active"
         deleted = client.delete(f"{API}/clusters/{cluster_id}", params={"confirm": "prod"}).json()
         assert deleted["status"] == "succeeded", deleted["error"]
-        assert all(host.calls[-1][0] == "reset" for host in fleet.hosts.values())
+        assert all([name for name, _ in host.calls][-2:] == ["reset", "firewall"] for host in fleet.hosts.values())
 
     def test_create_cluster_end_to_end(self, client: TestClient, machines: dict[str, str], fleet: FakeCluster) -> None:
         response = client.post(f"{API}/clusters", json={"spec": spec(machines)})
@@ -255,8 +255,17 @@ class TestClusterLifecycle:
         }
 
         cp, w1 = fleet.hosts["10.0.0.11:22"], fleet.hosts["10.0.0.12:22"]
-        assert [c[0] for c in cp.calls] == ["prepare", "containerd", "packages", "packages", "init", "cni"]
-        assert [c[0] for c in w1.calls] == ["prepare", "containerd", "packages", "join"]
+        assert [c[0] for c in cp.calls] == [
+            "prepare",
+            "firewall",
+            "containerd",
+            "packages",
+            "packages",
+            "runtime_check",
+            "init",
+            "cni",
+        ]
+        assert [c[0] for c in w1.calls] == ["prepare", "firewall", "containerd", "packages", "runtime_check", "join"]
         assert all(h.installed_version == "1.34.7" for h in fleet.hosts.values())
         assert dict(w1.calls[0][1])["NODE_ROLE"] == "worker"
 
@@ -314,7 +323,7 @@ class TestClusterLifecycle:
         op = client.delete(url, params={"confirm": "prod"}).json()
         assert op["status"] == "succeeded", op["error"]
         assert client.get(url).status_code == 404
-        assert all(h.calls[-1][0] == "reset" for h in fleet.hosts.values())
+        assert all([name for name, _ in h.calls][-2:] == ["reset", "firewall"] for h in fleet.hosts.values())
         assert all(m["cluster_name"] is None for m in client.get(f"{API}/machines").json())
         names = [c["name"] for c in client.get(f"{API}/credentials").json()["items"]]
         assert "cluster-prod-admin" not in names

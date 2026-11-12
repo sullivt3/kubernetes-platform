@@ -58,6 +58,12 @@ class PowerState(StrEnum):
     SUSPENDED = "suspended"
 
 
+class MachineConnectivity(StrEnum):
+    UNKNOWN = "unknown"
+    REACHABLE = "reachable"
+    UNREACHABLE = "unreachable"
+
+
 class Machine(UUIDPrimaryKey, Timestamps, OrganizationScoped, Base):
     """A physical server, VM or cloud instance under platform management."""
 
@@ -103,4 +109,9 @@ class Machine(UUIDPrimaryKey, Timestamps, OrganizationScoped, Base):
     provider_metadata: Mapped[JsonDict] = mapped_column(default=dict, server_default="{}")
     last_error: Mapped[str | None] = mapped_column(Text)
     last_seen_at: Mapped[datetime | None]
+    connectivity_status: Mapped[MachineConnectivity] = mapped_column(
+        str_enum(MachineConnectivity, 16), default=MachineConnectivity.UNKNOWN, server_default="unknown"
+    )
+    connectivity_checked_at: Mapped[datetime | None]
+    connectivity_error: Mapped[str | None] = mapped_column(Text)
     inspected_at: Mapped[datetime | None]

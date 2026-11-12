@@ -6,6 +6,7 @@ import {
   ChevronRight,
   KeyRound,
   MoreHorizontal,
+  Pencil,
   Play,
   Plus,
   Power,
@@ -26,6 +27,7 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { EmptyState, ErrorState, PageHeader, TableSkeleton } from "@/components/common/page";
 import { StatusPill } from "@/components/common/status";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -56,6 +58,7 @@ import {
   useMachines,
   useProviders,
   useRegisterMachine,
+  useUpdateMachineAddress,
 } from "@/lib/api/hooks";
 import { type PowerAction, useDestroyMachine, usePowerMachine } from "@/lib/api/infra";
 import type { Machine, MachineState } from "@/lib/api/types";
@@ -85,6 +88,26 @@ export function MachineStateBadge({ state, provisioned = false }: { state: Machi
 
 export function primaryAddress(machine: Machine): string | undefined {
   return machine.addresses.find((a) => a.type === "primary")?.address;
+}
+
+function MachineConnection({ machine }: { machine: Machine }) {
+  return (
+    <div className="space-y-1">
+      {machine.connectivity_status === "reachable" ? (
+        <StatusPill tone="success" icon={CheckCircle2}>Reachable</StatusPill>
+      ) : machine.connectivity_status === "unreachable" ? (
+        <StatusPill tone="danger" icon={XCircle}>Unavailable</StatusPill>
+      ) : (
+        <StatusPill tone="neutral">Unknown</StatusPill>
+      )}
+      <p className="text-[11px] text-muted-foreground">
+        {machine.connectivity_checked_at ? `Checked ${formatRelative(machine.connectivity_checked_at)}` : "Awaiting connection check"}
+      </p>
+      {machine.connectivity_error && (
+        <p className="max-w-56 text-xs text-muted-foreground">{machine.connectivity_error}</p>
+      )}
+    </div>
+  );
 }
 
 export function RegisterDialog({
@@ -266,6 +289,7 @@ function MachineDetails({ machine }: { machine: Machine }) {
     ["Free disk (/)", machine.hardware.root_disk_free_gb != null ? `${machine.hardware.root_disk_free_gb} GB` : undefined],
     ["Addresses", machine.addresses.map((a) => a.address).join(", ")],
     ["SSH", `${machine.ssh_username ?? "?"}@${machine.ssh_host}:${machine.ssh_port}`],
+    ["Last seen", machine.last_seen_at ? formatRelative(machine.last_seen_at) : "Never"],
     ["Host key", machine.host_key_fingerprint],
     ["Source", machine.connection_name ? `${machine.connection_name}${machine.provisioned ? " (provisioned by the platform)" : ""}` : undefined],
     ["Provider ID", machine.provider_type && machine.provider_type !== "ssh" ? machine.external_id : undefined],
@@ -324,6 +348,62 @@ function MachineDetails({ machine }: { machine: Machine }) {
   );
 }
 
+function UpdateAddressDialog({ machine, onClose }: { machine: Machine; onClose: () => void }) {
+  const router = useRouter();
+  const update = useUpdateMachineAddress();
+  const [host, setHost] = useState(machine.ssh_host ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const trimmed = host.trim();
+  const valid = trimmed.length > 0 && trimmed !== machine.ssh_host
+    && /^[A-Za-z0-9]([A-Za-z0-9.\-:]{0,251}[A-Za-z0-9])?$/.test(trimmed);
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && !update.isPending && onClose()}>
+      <DialogContent>
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          if (!valid || update.isPending) return;
+          setError(null);
+          update.mutate({ id: machine.id, host: trimmed }, {
+            onSuccess: ({ operation }) => {
+              onClose();
+              toast.info(`Address saved. Inspecting ${machine.name}`, {
+                action: { label: "View progress", onClick: () => router.push(`/operations/${operation.id}`) },
+              });
+            },
+            onError: (e) => setError(e.message),
+          });
+        }} className="space-y-4">
+          <DialogHeader>
+            <DialogTitle>Update address for {machine.name}</DialogTitle>
+            <DialogDescription>
+              Enter the new SSH hostname or IP address. The platform will inspect the connection using the existing credentials and trusted host key.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="machine-new-host">Host or IP address</Label>
+            <Input id="machine-new-host" value={host} onChange={(event) => setHost(event.target.value)}
+              maxLength={253} autoFocus disabled={update.isPending} required />
+            <p className="text-xs text-muted-foreground">Current address: {machine.ssh_host}:{machine.ssh_port}</p>
+          </div>
+          {machine.cluster_name && (
+            <p className="text-sm text-amber-400">
+              This machine belongs to {machine.cluster_name}. Updating its SSH address preserves membership, but does not update Kubernetes node networking, API endpoints or certificates.
+            </p>
+          )}
+          {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose} disabled={update.isPending}>Cancel</Button>
+            <Button type="submit" disabled={!valid || update.isPending}>
+              {update.isPending ? "Saving…" : "Save and inspect"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function MachinesPage() {
   const router = useRouter();
   const machines = useMachines();
@@ -332,6 +412,8 @@ export function MachinesPage() {
   const power = usePowerMachine();
   const destroy = useDestroyMachine();
   const providers = useProviders();
+  const canWrite = useCan("infrastructure.write");
+  const [updatingAddress, setUpdatingAddress] = useState<Machine | null>(null);
   const can = (m: Machine, capability: string) =>
     Boolean(providers.data?.find((p) => p.type === m.provider_type)?.capabilities.includes(capability));
   const [registering, setRegistering] = useState(false);
@@ -394,7 +476,7 @@ export function MachinesPage() {
       />
       <Card className="py-0">
         <CardContent className="px-0">
-          {machines.isLoading && <div className="p-4"><TableSkeleton rows={4} columns={6} /></div>}
+          {machines.isLoading && <div className="p-4"><TableSkeleton rows={4} columns={8} /></div>}
           {machines.isError && <div className="p-4"><ErrorState error={machines.error} onRetry={() => machines.refetch()} /></div>}
           {machines.data?.length === 0 && (
             <EmptyState
@@ -416,7 +498,8 @@ export function MachinesPage() {
                 <TableRow>
                   <TableHead className="w-8" />
                   <TableHead>Machine</TableHead>
-                  <TableHead>State</TableHead>
+                  <TableHead>Preparation</TableHead>
+                  <TableHead>Connection</TableHead>
                   <TableHead>Operating system</TableHead>
                   <TableHead>Resources</TableHead>
                   <TableHead>Cluster</TableHead>
@@ -455,6 +538,7 @@ export function MachinesPage() {
                             <p className="mt-1 max-w-64 truncate text-xs text-red-300" title={m.last_error}>{m.last_error}</p>
                           )}
                         </TableCell>
+                        <TableCell><MachineConnection machine={m} /></TableCell>
                         <TableCell className="text-sm">{m.os_info.pretty_name ?? <span className="text-muted-foreground">—</span>}</TableCell>
                         <TableCell className="text-sm tabular-nums text-muted-foreground">
                           {m.provider_type === "local" && m.requested_spec.cpu_cores ? (
@@ -472,7 +556,7 @@ export function MachinesPage() {
                           {m.cluster_name ? (
                             <span>{m.cluster_name} <span className="text-xs text-muted-foreground">({m.cluster_role === "control_plane" ? "control plane" : "worker"})</span></span>
                           ) : (
-                            <span className="text-muted-foreground">Available</span>
+                            <span className="text-muted-foreground">Unassigned</span>
                           )}
                         </TableCell>
                         <TableCell onClick={(e) => e.stopPropagation()}>
@@ -483,6 +567,11 @@ export function MachinesPage() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
+                              {canWrite && m.provider_type === "ssh" && !m.provisioned && (
+                                <DropdownMenuItem onSelect={() => setUpdatingAddress(m)}>
+                                  <Pencil /> Update address…
+                                </DropdownMenuItem>
+                              )}
                               <DropdownMenuItem onSelect={() => startInspect(m)}>
                                 <RefreshCw /> Inspect again
                               </DropdownMenuItem>
@@ -527,7 +616,7 @@ export function MachinesPage() {
                       </TableRow>
                       {isOpen && (
                         <TableRow className="hover:bg-transparent">
-                          <TableCell colSpan={7} className="p-0 whitespace-normal">
+                          <TableCell colSpan={8} className="p-0 whitespace-normal">
                             <MachineDetails machine={m} />
                           </TableCell>
                         </TableRow>
@@ -543,6 +632,7 @@ export function MachinesPage() {
 
       <RegisterDialog open={registering} onOpenChange={setRegistering} />
       {networking && <MachineNetwork key={networking.id} machine={networking} onClose={() => setNetworking(null)} />}
+      {updatingAddress && <UpdateAddressDialog key={updatingAddress.id} machine={updatingAddress} onClose={() => setUpdatingAddress(null)} />}
       <ConfirmDialog
         open={destroying !== null}
         onOpenChange={(open) => !open && setDestroying(null)}

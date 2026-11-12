@@ -135,7 +135,7 @@ class Kubeadm(KubernetesDistribution):
             ),
             StepDefinition(
                 "packages",
-                "Install kubeadm, kubelet and kubectl",
+                "Install Kubernetes packages and verify each node's runtime",
                 steps.install_packages,
                 max_attempts=3,
                 retry_backoff_seconds=15,
@@ -148,7 +148,11 @@ class Kubeadm(KubernetesDistribution):
                 retry_backoff_seconds=15,
             ),
             StepDefinition(
-                "cni", f"Install {cni} pod network", steps.install_cni, max_attempts=2, retry_backoff_seconds=15
+                "cni",
+                f"Install {cni} on the initial control plane",
+                steps.install_cni,
+                max_attempts=2,
+                retry_backoff_seconds=15,
             ),
         ]
         for node in plan.control_planes[1:]:
@@ -179,10 +183,10 @@ class Kubeadm(KubernetesDistribution):
                 max_attempts=2,
                 retry_backoff_seconds=10,
             ),
-            StepDefinition("wait-ready", "Wait for nodes and cluster DNS", steps.wait_ready),
+            StepDefinition("wait-ready", "Verify all nodes, pod networking and cluster DNS", steps.wait_ready),
             StepDefinition(
                 "smoke-test",
-                "Smoke test: schedule a pod and resolve cluster DNS",
+                "Smoke test: resolve cluster DNS from a pod on every node",
                 steps.smoke_test,
                 max_attempts=2,
                 retry_backoff_seconds=15,
@@ -195,6 +199,17 @@ class Kubeadm(KubernetesDistribution):
                 retry_backoff_seconds=5,
             ),
         ]
+        if self.options_model.model_validate(plan.spec.options).kubectl_username:
+            result.insert(
+                -1,
+                StepDefinition(
+                    "kubectl-config",
+                    "Configure kubectl for the selected Linux user",
+                    steps.configure_kubectl,
+                    max_attempts=2,
+                    retry_backoff_seconds=5,
+                ),
+            )
         return result
 
     def plan_delete(self, plan: ClusterPlanInput) -> list[StepDefinition]:

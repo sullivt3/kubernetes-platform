@@ -15,6 +15,7 @@ from app.api.routes.operations import OperationDetail
 from app.api.schemas import ApiModel
 from app.core.principal import Principal
 from app.modules.infrastructure.connections import ProviderConnectionService
+from app.modules.infrastructure.health import observed_connectivity
 from app.modules.infrastructure.models import Machine
 from app.modules.infrastructure.service import MachineService
 from app.modules.providers.types import NetworkConfigRequest, PowerAction
@@ -33,6 +34,10 @@ class MachineRegister(BaseModel):
 
 class MachineInspect(BaseModel):
     accept_new_host_key: bool = False
+
+
+class MachineAddressUpdate(BaseModel):
+    host: str = Field(min_length=1, max_length=253, description="New SSH hostname or IP address")
 
 
 class MachinePower(BaseModel):
@@ -55,6 +60,10 @@ class MachineOut(ApiModel):
     labels: dict[str, str]
     last_error: str | None
     inspected_at: datetime | None
+    connectivity_status: str
+    connectivity_checked_at: datetime | None
+    connectivity_error: str | None
+    last_seen_at: datetime | None
     created_at: datetime
     provider_connection_id: uuid.UUID
     external_id: str
@@ -77,6 +86,7 @@ def _out(
     machine: Machine, cluster: str | None, role: str | None, connections: dict[uuid.UUID, tuple[str, str]] | None = None
 ) -> MachineOut:
     out = MachineOut.model_validate(machine)
+    out.connectivity_status = observed_connectivity(machine).value
     out.cluster_name, out.cluster_role = cluster, role
     if connections and machine.provider_connection_id in connections:
         out.connection_name, out.provider_type = connections[machine.provider_connection_id]
@@ -130,6 +140,21 @@ def inspect_machine(
 ) -> OperationDetail:
     operation = service.inspect(principal, machine_id, accept_new_host_key=body.accept_new_host_key, confirm=confirm)
     return OperationDetail.model_validate(operation)
+
+
+@router.patch("/{machine_id}/address", response_model=MachineRegistered)
+def update_machine_address(
+    machine_id: uuid.UUID,
+    body: MachineAddressUpdate,
+    principal: Principal = Depends(get_principal),
+    service: MachineService = Depends(get_machine_service),
+) -> MachineRegistered:
+    """Update a registered SSH machine's endpoint and inspect it with its existing host key."""
+    machine, operation = service.update_address(principal, machine_id, host=body.host)
+    return MachineRegistered(
+        machine=_out(machine, *service.assignment(machine.id), service.connections(principal)),
+        operation=OperationDetail.model_validate(operation),
+    )
 
 
 @router.delete("/{machine_id}", status_code=204, response_class=Response)

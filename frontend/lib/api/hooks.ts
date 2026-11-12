@@ -272,6 +272,21 @@ export function useRegisterMachine() {
   });
 }
 
+export function useUpdateMachineAddress() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, host }: { id: string; host: string }) =>
+      apiRequest<{ machine: Machine; operation: OperationDetail }>(`/machines/${id}/address`, {
+        method: "PATCH",
+        body: { host },
+      }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.machines });
+      void client.invalidateQueries({ queryKey: queryKeys.operations });
+    },
+  });
+}
+
 export function useInspectMachine() {
   const client = useQueryClient();
   return useMutation({

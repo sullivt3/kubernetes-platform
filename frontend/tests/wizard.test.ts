@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSpec, INITIAL } from "@/features/clusters/create-wizard";
+import { buildSpec, INITIAL, stepErrors } from "@/features/clusters/create-wizard";
 
 describe("cluster wizard spec", () => {
+  it("only grants local kubectl access when explicitly enabled for kubeadm", () => {
+    expect(buildSpec({ ...INITIAL, distribution: "kubeadm", kubectlUsername: "alice" }).options).not.toHaveProperty("kubectl_username");
+    expect(buildSpec({ ...INITIAL, distribution: "kubeadm", configureKubectl: true, kubectlUsername: " alice " }).options).toHaveProperty("kubectl_username", "alice");
+    expect(buildSpec({ ...INITIAL, distribution: "k3s", configureKubectl: true, kubectlUsername: "alice" }).options).not.toHaveProperty("kubectl_username");
+  });
+  it("requires a valid Linux username before review and submission", () => {
+    for (const kubectlUsername of ["", "../root", "alice;id", "a".repeat(33)]) {
+      const state = { ...INITIAL, distribution: "kubeadm", configureKubectl: true, kubectlUsername };
+      expect(stepErrors(5, state)).toContain("Kubectl access needs a Linux username: lowercase letters, digits, '_' or '-' (max 32)");
+      expect(stepErrors(6, state)).toContain("Kubectl access needs a Linux username: lowercase letters, digits, '_' or '-' (max 32)");
+    }
+    expect(stepErrors(5, { ...INITIAL, distribution: "kubeadm", configureKubectl: true, kubectlUsername: "root" })).toEqual([]);
+  });
   it("maps local clusters without SSH machine provisioning", () => {
     const spec = buildSpec({ ...INITIAL, distribution: "kind", provider: "local", version: "1.34.2", cni: "provider-default", connectionId: "docker", cpNew: 3 });
     expect(spec.provider_connection_id).toBe("docker");

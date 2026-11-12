@@ -63,9 +63,7 @@ case "${CNI:-}" in
   flannel) ports="$ports 8472/udp" ;;
 esac
 if systemctl is-active --quiet firewalld 2>/dev/null; then
-  log "Opening Kubernetes ports in firewalld: $ports"
-  for p in $ports; do firewall-cmd -q --permanent --add-port="$p"; done
-  firewall-cmd -q --reload
+  log "Cluster-owned firewalld policies will be reconciled after OS preparation"
 elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   log "Opening Kubernetes ports in ufw: $ports"
   for p in $ports; do ufw allow "${p/-/:}" >/dev/null; done

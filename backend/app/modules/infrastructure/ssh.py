@@ -116,6 +116,7 @@ class SshHostExecutor(HostExecutor):
                 look_for_keys=False,
             )
         except paramiko.BadHostKeyException as exc:
+            self._client.close()
             raise HostKeyMismatchError(
                 f"Host key for {endpoint.host}:{endpoint.port} changed: expected "
                 f"{endpoint.host_key.fingerprint if endpoint.host_key else '?'}, got "
@@ -124,8 +125,10 @@ class SshHostExecutor(HostExecutor):
                 observed=host_key_from(exc.key),
             ) from exc
         except paramiko.AuthenticationException as exc:
+            self._client.close()
             raise HostAccessError(f"Authentication failed for {auth.username}@{endpoint.host}: {exc}") from exc
         except (TimeoutError, OSError, paramiko.SSHException) as exc:
+            self._client.close()
             raise HostUnreachableError(f"Cannot connect to {endpoint.host}:{endpoint.port}: {exc}") from exc
 
         transport = self._client.get_transport()
@@ -162,7 +165,7 @@ class SshHostExecutor(HostExecutor):
         transport = self._client.get_transport()
         if transport is None or not transport.is_active():
             raise HostUnreachableError(f"SSH connection to {self.endpoint.host} was lost")
-        channel = transport.open_session()
+        channel = transport.open_session(timeout=options.timeout_seconds)
         channel.settimeout(1.0)
         channel.exec_command(full_command)
         stdin_data = stdin_prefix + (options.stdin or "")

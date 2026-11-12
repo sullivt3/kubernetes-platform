@@ -319,6 +319,10 @@ export interface Machine {
   id: string;
   name: string;
   lifecycle_state: MachineState;
+  connectivity_status: "unknown" | "reachable" | "unreachable";
+  connectivity_checked_at: string | null;
+  connectivity_error: string | null;
+  last_seen_at: string | null;
   ssh_host: string | null;
   ssh_port: number;
   ssh_username: string | null;

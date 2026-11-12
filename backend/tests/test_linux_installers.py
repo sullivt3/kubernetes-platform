@@ -62,7 +62,16 @@ elif command == 'dpkg':
     print('amd64')
 elif command == 'containerd':
     if args == ['config', 'default']:
-        print('version = ' + os.environ.get('CONTAINERD_CONFIG_VERSION', '3'))
+        version=os.environ.get('CONTAINERD_CONFIG_VERSION', '3')
+        print('version = ' + version)
+        if version=='3':
+            print('[plugins."io.containerd.cri.v1.images"]')
+        else:
+            print('[plugins."io.containerd.grpc.v1.cri"]')
+        print('image_pull_with_sync_fs = false')
+        if version=='3':
+            print('use_local_image_pull = false')
+        print('[plugins."runtime-options"]')
         print('SystemdCgroup = false')
     elif args == ['--version']:
         print('containerd containerd.io v2.1.0 test')
@@ -73,11 +82,28 @@ elif command == 'kubeadm':
     print('v1.34.2')
 elif command == 'kubelet':
     print('Kubernetes v1.34.2')
+elif command == 'kubectl':
+    print('clientVersion:\n  gitVersion: ' + ('v1.33.0' if os.environ.get('KUBECTL_BAD') else 'v1.34.2'))
+elif command == 'crictl':
+    mode=os.environ.get('SANDBOX_FAILURE','')
+    if 'runp' in args:
+        config=json.loads(pathlib.Path(args[-1]).read_text())
+        (root/'probe-config.json').write_text(json.dumps(config))
+        if mode=='create':
+            print('exec /pause: exec format error',file=sys.stderr);sys.exit(1)
+        print('--all' if mode=='bad-id' else 'a'*64)
+    elif 'inspectp' in args:
+        count=root/'probe-inspections'
+        n=int(count.read_text())+1 if count.exists() else 1
+        count.write_text(str(n))
+        if mode=='inspect': sys.exit(1)
+        ready=not(mode=='exit' or (mode=='later' and n>1))
+        print(json.dumps({'status':{'state':'SANDBOX_READY' if ready else 'SANDBOX_NOTREADY'}}))
 elif command == 'systemctl':
     if 'list-units' in args:
         print('dev-zram0.swap loaded active active /dev/zram0')
     elif 'is-active' in args:
-        sys.exit(0 if args[-1] == 'firewalld' else 1)
+        sys.exit(0 if args[-1] == 'firewalld' and not os.environ.get('FIREWALL_INACTIVE') else 1)
 elif command == 'swapon':
     if os.environ.get('SWAP_STUCK'):
         print('/dev/zram0 partition 1G 0B 100')
@@ -136,6 +162,8 @@ class ShellHost:
             "ctr",
             "kubeadm",
             "kubelet",
+            "kubectl",
+            "crictl",
             "systemctl",
             "swapon",
             "swapoff",
@@ -244,10 +272,48 @@ def test_containerd_installer_uses_os_repository_and_systemd_cgroups(
     assert any(f"https://download.docker.com/linux/{repository}/" in arg for args in host.calls("curl") for arg in args)
     config = (tmp_path / "etc/containerd/config.toml").read_text()
     assert f"version = {config_version}" in config and "SystemdCgroup = true" in config
+    assert "image_pull_with_sync_fs = true" in config
+    if config_version == "3":
+        assert "use_local_image_pull = true" in config
     assert ["restart", "containerd"] in host.calls("systemctl")
     assert not any(arg == "docker-ce" for args in host.calls("dnf5") for arg in args)
     if repository in {"fedora", "rhel", "centos"}:
         assert any("containerd.io" in args for args in host.calls("dnf5"))
+
+
+def test_runtime_check_uses_host_network_and_cleans_its_sandbox(tmp_path: Path) -> None:
+    host = ShellHost(tmp_path)
+    result = host.run(_script("runtime_check.sh"))
+    assert result.returncode == 0, result.stderr
+    config = json.loads((tmp_path / "probe-config.json").read_text())
+    assert config["linux"]["security_context"]["namespace_options"]["network"] == 2
+    assert config["linux"]["cgroup_parent"] == "system.slice"
+    assert config["metadata"]["namespace"] == "kplatform-diagnostics"
+    calls = host.calls("crictl")
+    assert len([c for c in calls if "inspectp" in c]) == 3
+    assert any("stopp" in c and c[-1] == "a" * 64 for c in calls)
+    assert any("rmp" in c and c[-1] == "a" * 64 for c in calls)
+
+
+@pytest.mark.parametrize("failure", ["create", "exit", "later", "inspect", "bad-id"])
+def test_runtime_check_rejects_broken_sandboxes_and_limits_cleanup(tmp_path: Path, failure: str) -> None:
+    host = ShellHost(tmp_path)
+    result = host.run(_script("runtime_check.sh"), SANDBOX_FAILURE=failure)
+    assert result.returncode != 0
+    calls = host.calls("crictl")
+    cleanup = [c for c in calls if "stopp" in c or "rmp" in c]
+    if failure in {"create", "bad-id"}:
+        assert cleanup == []
+    else:
+        assert len(cleanup) == 2 and all(c[-1] == "a" * 64 for c in cleanup)
+    assert not any("--all" in c for c in cleanup)
+
+
+def test_package_check_rejects_wrong_kubectl_version(tmp_path: Path) -> None:
+    host = ShellHost(tmp_path)
+    result = host.run(_script("packages.sh"), K8S_MINOR="1.34", K8S_VERSION="1.34.2", KUBECTL_BAD="1")
+    assert result.returncode != 0
+    assert "expected kubectl v1.34.2" in result.stderr
 
 
 def test_repository_download_failure_stops_before_install(tmp_path: Path) -> None:
@@ -337,8 +403,7 @@ def test_fedora_preparation_persists_swap_policy_and_reconciles_selinux(
     else:
         assert host.calls("swapoff") == []
     assert any("iptables-nft" in args for args in host.calls("dnf5"))
-    assert ["-q", "--permanent", "--add-port=6443/tcp"] in host.calls("firewall-cmd")
-    assert ["-q", "--permanent", "--add-port=8472/udp"] in host.calls("firewall-cmd")
+    assert host.calls("firewall-cmd") == []  # Separate owned-policy reconciliation handles firewalld.
 
 
 def test_swap_failure_is_fatal_for_every_installer(tmp_path: Path) -> None:
@@ -391,3 +456,11 @@ def test_native_fedora_preparation_and_selinux_policy_requirement(
     assert (tmp_path / "etc/systemd/system-generators/zram-generator").is_symlink()
     assert host.calls("setenforce") == []
     assert any("iptables-nft" in args for args in host.calls("dnf"))
+
+
+def test_inactive_firewalld_is_not_started_or_changed(tmp_path: Path) -> None:
+    host = ShellHost(tmp_path)
+    result = host.run(_script("firewall.sh"), FIREWALL_INACTIVE="1")
+    assert result.returncode == 0 and "inactive" in result.stdout
+    assert host.calls("firewall-cmd") == []
+    assert host.calls("systemctl") == [["is-active", "--quiet", "firewalld"]]
