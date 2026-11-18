@@ -741,6 +741,36 @@ class TestWorkloadApi:
             assert client.delete(url, params={"confirm": name}).status_code == 422
         assert all(method == "GET" and path.startswith(f"/apis/{group}/") for method, path, _ in store.requests)
 
+    def test_velero_backup_and_confirmed_restore(self, client: TestClient, store: FakeStore, cluster_id: str) -> None:
+        path = f"{API}/clusters/{cluster_id}"
+        store.put(
+            {
+                "apiVersion": "velero.io/v1",
+                "kind": "BackupStorageLocation",
+                "metadata": {"name": "store", "namespace": "velero"},
+                "status": {"phase": "Available"},
+            }
+        )
+        params = {"name": "nightly", "location": "store"}
+        assert client.post(path + "/backups", json=params).status_code == 202
+        assert client.post(path + "/backups", json=params).status_code == 409
+        restore = {"name": "recover", "backup": "nightly", "confirm": "wrong"}
+        assert client.post(path + "/restores", json=restore).status_code == 428
+        restore["confirm"] = "prod"
+        assert client.post(path + "/restores", json=restore).status_code == 409
+        base = "/apis/velero.io/v1/namespaces/velero"
+        store.objects[base + "/backups/nightly"]["status"] = {"phase": "Completed"}
+        assert client.post(path + "/restores", json=restore).status_code == 202
+        assert store.objects[base + "/restores/recover"]["spec"] == {
+            "backupName": "nightly",
+            "existingResourcePolicy": "none",
+        }
+        inventory = client.get(path + "/backups").json()
+        assert inventory["backups"][0]["phase"] == "Completed"
+        assert inventory["restores"][0]["phase"] == "New"
+        store.objects[base + "/backupstoragelocations/store"]["spec"] = {"accessMode": "ReadOnly"}
+        assert client.post(path + "/backups", json=params).status_code == 409
+
     def test_security_report_uses_scoped_rbac_and_declared_configuration(
         self, client: TestClient, store: FakeStore, cluster_id: str
     ) -> None:

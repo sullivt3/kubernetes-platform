@@ -17,6 +17,7 @@ from app.core.errors import ConfirmationRequiredError, ConflictError, InvalidSta
 from app.core.principal import Principal
 from app.db.base import OrganizationScoped
 from app.modules.auditing import service as audit
+from app.modules.organizations.policy import require
 from app.orchestration.dispatch import OperationDispatcher
 from app.orchestration.events import ChangeKind, EventPublisher
 from app.orchestration.executor import utcnow
@@ -70,6 +71,8 @@ class OperationService:
         parent_operation_id: uuid.UUID | None = None,
         confirm: str | None = None,
     ) -> Operation:
+        if workflow_type in {"platform.backup", "platform.restore"}:
+            require(principal, "platform.manage")
         workflow = self.registry.get(workflow_type)
         validated = workflow.validate_params(params)
         target = workflow.target(validated)
@@ -354,6 +357,8 @@ class OperationService:
         )
         if op is None:
             raise NotFoundError("Operation not found")
+        if op.type in {"platform.backup", "platform.restore"}:
+            require(principal, "platform.manage")
         return op
 
     def _log(self, operation_id: uuid.UUID, message: str, level: LogLevel = LogLevel.INFO) -> None:

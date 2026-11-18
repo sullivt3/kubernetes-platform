@@ -190,6 +190,17 @@ Live Fedora reports passed for Keycloak viewer and operator sessions, including
 resource details, refresh and JSON download. Browser fixtures also covered
 incomplete coverage, severity filters, pagination and a failed refresh.
 
+Platform backup and restore now uses age-encrypted PostgreSQL archives with credential key recovery,
+an offline recovery CLI, and optional administrator-triggered recovery into a fresh database.
+The cluster workflow uses Velero v1 resources and reports actual controller phases and storage readiness.
+Setup, coverage and cutover are documented in [Backup and restore](documentation/backup-restore.md).
+The recovery drill uses PostgreSQL and age with disposable databases. It covers credential
+key recovery, interrupted operation handling, encrypted downloads and a retried restore.
+The local Keycloak browser check verified administrator backup and download on the real worker,
+plus operator and viewer access boundaries. The Fedora test cluster currently has no Velero
+controller. Automated tests exercise Velero request submission and status retrieval using the
+simulated Kubernetes API.
+
 ## Remaining work and priorities
 
 Default recommendation, subject to the user's chosen task: validate the current baseline and finish Phase 7 before expanding Phase 8.
@@ -199,7 +210,7 @@ Default recommendation, subject to the user's chosen task: validate the current 
 - Authentication/session tests: OIDC login/callback/logout, token validation, expiry/revocation, CSRF and browser behavior, plus live identity-provider validation.
 - Expand authorization/isolation coverage for organization/project selection, memberships, read/write roles, detail lookups, linked resources, workers, streams, secret reveals and terminal access. The original suite predominantly uses the development administrator; the new identity suite uses real OIDC authentication with a simulated provider transport.
 - Further platform audit log filtering/reporting, credential access review and any selected external secrets-store integration.
-- Platform/cluster backup and restore, including encryption-key recovery.
+- Validate Velero recovery against the deployment’s storage provider and application volumes.
 - General API rate limiting and production TLS/reverse-proxy deployment guidance. Login-start rate limiting already exists.
 
 ### Requirements not fully represented by “completed” earlier phases

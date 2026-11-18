@@ -33,6 +33,11 @@ RESOURCES = {
         ("resourcequotas", "ResourceQuota", True),
         ("limitranges", "LimitRange", True),
     ],
+    "velero.io/v1": [
+        ("backups", "Backup", True),
+        ("restores", "Restore", True),
+        ("backupstoragelocations", "BackupStorageLocation", True),
+    ],
     "apps/v1": [
         ("deployments", "Deployment", True),
         ("replicasets", "ReplicaSet", True),

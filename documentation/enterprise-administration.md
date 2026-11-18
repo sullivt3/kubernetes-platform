@@ -227,13 +227,17 @@ refuses projects with resource references; the default project cannot be deleted
 At least one active OIDC platform administrator and one existing organization
 administrator must remain when their administrative privileges are removed.
 
-## Remaining Phase 7 work
+## Backup and recovery
+
+Platform administrators can create encrypted archives, recover a verified database copy and recover the credential keyring offline. Cluster operators can submit Velero backups and restores. [Backup and restore guide](backup-restore.md)
+
+## Remaining hardening and validation
 
 - Extend authentication, membership, isolation and permission regression coverage,
   including identity-provider outages, key rotation and concurrent administration;
   verify OIDC behavior against the intended deployment's identity provider.
 - Further platform audit log filtering and reporting.
-- Backup and restore workflows for platform and cluster state, including key recovery.
+
 - General API rate limiting and production TLS/reverse-proxy deployment guidance.
 - Credential access review and any additional secrets-store integration selected
   for this phase; a Vault adapter is not implemented.

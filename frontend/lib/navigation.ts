@@ -152,7 +152,7 @@ export const NAVIGATION: NavSection[] = [
       { title: "Logs", href: "/ops/logs", description: "Application logs (Loki).", phase: 8 },
       { title: "Events", href: "/ops/events", description: "Recent Kubernetes events for the selected cluster." },
       { title: "Alerts", href: "/ops/alerts", description: "Alert rules and active alerts.", phase: 8 },
-      { title: "Backup & restore", href: "/ops/backup", description: "Cluster and platform backups.", phase: 7 },
+      { title: "Backup & restore", href: "/ops/backup", description: "Cluster and platform backups." },
       { title: "Command center", href: "/ops/command-center", description: "Embedded terminal with kubectl and Helm.", phase: 8, keywords: ["terminal", "kubectl", "helm", "yaml"] },
     ],
   },

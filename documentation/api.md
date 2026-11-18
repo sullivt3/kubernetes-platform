@@ -268,3 +268,16 @@ A missing endpoint returns `404 not_found_in_cluster`; an available endpoint wit
 | Method | Path | Description |
 |---|---|---|
 | GET | `/audit-events` | Audit trail. Filters: `resource_type`, `resource_id`, `action`. |
+
+### Backup and restore
+
+Platform administrators can list archive metadata (`GET /backups`), start an encrypted
+backup (`POST /backups`), download ciphertext (`GET /backups/{backup_id}/archive`), and
+stage a recovered database (`POST /backups/{backup_id}/restore` with `confirm` set to
+the archive UUID). Both writes return a tracked platform operation.
+
+`GET /clusters/{id}/backups` returns Velero backups, restores, storage locations and
+list truncation indicators. `POST /clusters/{id}/backups` accepts `name` and `location`.
+`POST /clusters/{id}/restores` accepts `name`, `backup` and the exact cluster name
+as `confirm`. A 202 response means Velero accepted a request. Read its phase to
+determine the outcome. [Recovery guide](backup-restore.md)

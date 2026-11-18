@@ -87,6 +87,29 @@ def _grant_admin(args: argparse.Namespace) -> int:
     return 0
 
 
+def _restore_backup(args: argparse.Namespace) -> int:
+    import os
+    from pathlib import Path
+
+    from app.modules.backups.platform import restore
+
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        print("Set DATABASE_URL for the recovery PostgreSQL server.", file=sys.stderr)
+        return 1
+    try:
+        restore(Path(args.archive), database_url, args.database, Path(args.identity), Path(args.key_output))
+    except Exception as exc:
+        print(
+            f"Recovery failed ({type(exc).__name__}). Check the archive, identity, database privileges, "
+            "tool versions and whether the destination database or key file already exists.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Verified recovery database {args.database}. Recovered credential keys are in {args.key_output}.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -99,6 +122,12 @@ def main(argv: list[str] | None = None) -> int:
     admin = sub.add_parser("grant-admin", help="Recover platform administrator access for an existing OIDC identity")
     admin.add_argument("--subject", required=True)
     admin.set_defaults(func=_grant_admin)
+    restore = sub.add_parser("restore-backup", help="Recover a platform archive into a new database")
+    restore.add_argument("archive")
+    restore.add_argument("--database", required=True)
+    restore.add_argument("--identity", required=True)
+    restore.add_argument("--key-output", required=True)
+    restore.set_defaults(func=_restore_backup)
     args = parser.parse_args(argv)
     return int(args.func(args))
 

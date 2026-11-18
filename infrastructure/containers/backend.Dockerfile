@@ -1,6 +1,7 @@
 # Backend image: API (uvicorn), orchestration worker (celery worker) and scheduler (celery beat)
 # all run from this image with different commands. Build context: ./backend
-FROM python:3.13-slim AS base
+FROM python:3.13-slim-trixie AS base
+RUN apt-get update && apt-get install -y --no-install-recommends age postgresql-client-17 && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -19,7 +20,7 @@ COPY alembic.ini ./
 RUN pip install --no-deps .
 
 # Never run as root.
-RUN useradd --system --uid 10001 --home /app platform && chown -R platform /app
+RUN useradd --system --uid 10001 --home /app platform && mkdir -p /var/lib/kplatform/backups && chmod 700 /var/lib/kplatform/backups && chown -R platform /app /var/lib/kplatform
 USER platform
 
 EXPOSE 8000

@@ -17,6 +17,7 @@ from app.api.routes import (
     administration,
     audit,
     authentication,
+    backups,
     catalog,
     cluster_live,
     clusters,
@@ -98,6 +99,7 @@ def create_app() -> FastAPI:
 
     protected = APIRouter(dependencies=[Depends(get_principal)])
     for module in (
+        backups,
         administration,
         system,
         catalog,

@@ -183,7 +183,8 @@ function Facts({ operation }: { operation: Operation }) {
 }
 
 export function OperationDetailView({ params }: { params: Promise<{ id: string }> }) {
-  const canWrite = useCan("operations.write");
+  const operationsWrite = useCan("operations.write");
+  const platformManage = useCan("platform.manage");
   const { id } = use(params);
   const operation = useOperation(id);
   const [generation, setGeneration] = useState(0);
@@ -216,6 +217,7 @@ export function OperationDetailView({ params }: { params: Promise<{ id: string }
 
   const op = operation.data;
   const active = ACTIVE.has(op.status);
+  const canWrite = operationsWrite && (platformManage || !["platform.backup", "platform.restore"].includes(op.type));
   const canCancel = canWrite && active && op.status !== "cancelling";
   const canRetry = canWrite && (op.status === "failed" || op.status === "cancelled");
   const onError = (title: string) => (error: unknown) =>

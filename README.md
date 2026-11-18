@@ -32,7 +32,7 @@ installation, cluster administration, workload management and monitoring from a 
   default StorageClass. ResourceQuotas and LimitRanges have dedicated views and YAML management.
 * **Enterprise administration (Phase 7 in progress):** OIDC login and server-side sessions, organization/project
   memberships, application permission enforcement and administration pages. New users require explicit access
-  grants. Further Phase 7 validation, security reporting and backup/restore remain pending; see
+  grants. Security posture reports and platform/Velero backup and restore are implemented. For the remaining hardening work see
   [enterprise administration](documentation/enterprise-administration.md).
 * **Not implemented yet:** dedicated installers for CSI vendors other
   than NFS (their manifests can be applied through the YAML editor). "Preview" integrations follow documented APIs and
@@ -131,6 +131,7 @@ npm run build
 * [Architecture](documentation/architecture.md): module boundaries, orchestration engine, security model, structure decisions
 * [Configuration](documentation/configuration.md): every environment variable, key rotation
 * [API](documentation/api.md): endpoints and conventions (OpenAPI at `/api/v1/docs`)
+* [Backup and restore](documentation/backup-restore.md) covers platform archives, key recovery, and cluster recovery.
 * [Cluster integrations](documentation/cluster-integrations.md): local/native distributions, managed lifecycle, vSphere, VM inputs and creation-time storage
 * [Fedora hosts](documentation/fedora.md): Fedora 43–45, per-distribution containerd repositories, DNF5, swap/SELinux behavior and validation
 
@@ -145,5 +146,5 @@ npm run build
 | 2 | Kubernetes workload management: resources, YAML apply with dry-run diff, logs, terminal ✅ |
 | 5 | kubeadm upgrades, cloud VM provisioning, autoscaling policies, AWS load balancers, managed EKS/AKS/GKE create/delete/scale/upgrade; overdue Kind/k3d, K3s/RKE2 and vSphere paths implemented as preview; creation wizard VM, CNI and storage wiring |
 | 6 | Networking and storage ✅: resource management, live DNS diagnostics, PV/PVC, StorageClasses, CSI inventory and NFS CSI install/reconcile/remove (preview); ResourceQuotas and LimitRanges |
-| 7 | In progress: OIDC/session authentication, organization/project memberships, administration UI and application RBAC foundations implemented; testing, Kubernetes security views, reporting, backup/restore and remaining hardening pending |
+| 7 | In progress: OIDC/session authentication, organization/project memberships, administration UI and application RBAC foundations implemented; Kubernetes security views, reporting, platform recovery and Velero integration implemented. Deployment hardening and provider validation remain |
 | 8 | Advanced operations (Prometheus, Grafana, Loki, Helm, GitOps, CRDs) |

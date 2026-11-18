@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     # decrypted during key rotation.
     secret_encryption_keys: SecretStr | None = None
 
+    # Platform archives are enabled when a shared private directory and an age recipient are configured.
+    backup_directory: str | None = None
+    backup_recipient: str | None = None
+    backup_identity_file: str | None = None
+    recovery_key_directory: str | None = None
+
     # --- Infrastructure --------------------------------------------------------
     # Network discovery only scans private, loopback and link-local ranges unless enabled.
     discovery_allow_public_ranges: bool = False

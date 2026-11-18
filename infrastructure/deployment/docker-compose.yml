@@ -50,6 +50,8 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://kplatform:${POSTGRES_PASSWORD:-kplatform-dev-only}@postgres:5432/kplatform
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - platform-backups:/var/lib/kplatform/backups:ro
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     ports:
       - "8000:8000"
@@ -66,6 +68,8 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://kplatform:${POSTGRES_PASSWORD:-kplatform-dev-only}@postgres:5432/kplatform
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - platform-backups:/var/lib/kplatform/backups
     command: ["celery", "-A", "app.orchestration.celery_app", "worker", "--loglevel=INFO", "--concurrency=4"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -88,3 +92,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  platform-backups:
