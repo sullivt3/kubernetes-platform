@@ -147,4 +147,4 @@ npm run build
 | 5 | kubeadm upgrades, cloud VM provisioning, autoscaling policies, AWS load balancers, managed EKS/AKS/GKE create/delete/scale/upgrade; overdue Kind/k3d, K3s/RKE2 and vSphere paths implemented as preview; creation wizard VM, CNI and storage wiring |
 | 6 | Networking and storage ✅: resource management, live DNS diagnostics, PV/PVC, StorageClasses, CSI inventory and NFS CSI install/reconcile/remove (preview); ResourceQuotas and LimitRanges |
 | 7 | In progress: OIDC/session authentication, organization/project memberships, administration UI and application RBAC foundations implemented; Kubernetes security views, reporting, platform recovery and Velero integration implemented. Deployment hardening and provider validation remain |
-| 8 | Advanced operations (Prometheus, Grafana, Loki, Helm, GitOps, CRDs) |
+| 8 | In progress. Prometheus node and pod history is available under Operations → Monitoring. [Setup guide](documentation/monitoring.md) |

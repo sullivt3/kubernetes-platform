@@ -28,7 +28,7 @@ Target environments include existing physical Linux servers over SSH, local Dock
 - **Domain modules:** `backend/app/modules/` contains organizations/identity, credentials, auditing, providers, infrastructure, cluster lifecycle, Kubernetes access and workloads. Networking/storage functionality currently shares the Kubernetes/workload modules; do not create parallel modules just to match a suggested directory tree.
 - **Orchestration:** `backend/app/orchestration/` uses Celery and Redis with PostgreSQL-backed operations, steps, checkpoints, logs and recovery. API, worker and scheduler are separate process roles from the same backend codebase. SSE supplies operation/log updates; WebSockets bridge pod terminals.
 - **Infrastructure:** provider implementations live in `modules/providers/implementations/`; SSH execution and inventory live in `modules/infrastructure/`. Distribution plans and installers live in `modules/cluster_lifecycle/distributions/`.
-- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0006`, adding machine connection observations after the `0005` identity/session schema.
+- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0007`, adding a per-cluster Prometheus Service connection.
 - **Deployment:** `infrastructure/deployment/docker-compose.yml` supplies PostgreSQL/Redis and optional backend API/worker/scheduler services. The frontend runs separately. `infrastructure/containers/backend.Dockerfile` packages the backend.
 
 Keep infrastructure provisioning, host execution, and Kubernetes distribution installation separate. Add capabilities through the existing provider/distribution contracts and registries instead of scattering provider conditionals through services or UI.
@@ -137,7 +137,7 @@ Context reviewed **2026-11-11**. This handoff includes machine address/health ma
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | Mostly planned: Prometheus/Grafana/Loki, alerts, remediation, Helm releases, GitOps, dynamic CRD management, command center and custom workflows. |
+| 8 — Advanced operations | **In progress.** Prometheus connection and historical node and pod CPU/memory charts implemented. Grafana, Loki, alerts, remediation, Helm releases, GitOps, dynamic CRD management, command center and custom workflows remain planned. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -201,6 +201,15 @@ plus operator and viewer access boundaries. The Fedora test cluster currently ha
 controller. Automated tests exercise Velero request submission and status retrieval using the
 simulated Kubernetes API.
 
+Phase 8's first slice adds cluster-scoped Prometheus connections and historical
+node and pod CPU and memory charts under **Operations → Monitoring**. Migration
+`0007` stores the selected Service. The dashboard uses fixed range queries
+through the Kubernetes API Service proxy. The local Fedora cluster has four
+healthy scrape targets with TLS verification for both kubelets. Live Keycloak
+operator and viewer browser checks passed. The 104 targeted backend tests,
+29 frontend tests, and Docker frontend build passed.
+[Monitoring setup](documentation/monitoring.md)
+
 ## Remaining work and priorities
 
 Default recommendation, subject to the user's chosen task: validate the current baseline and finish Phase 7 before expanding Phase 8.
@@ -218,7 +227,7 @@ Default recommendation, subject to the user's chosen task: validate the current 
 - Global search currently covers pages and recent operations, not live clusters/nodes/pods/deployments/namespaces/services/infrastructure.
 - YAML apply uses discovery, but generic discovery-driven resource lists/details/forms, CRD exploration and schema assistance remain incomplete.
 - Deployment creation has a dedicated form; other workload creation primarily uses YAML/templates. Advanced scheduling and broader graphical creation need requirement-by-requirement review.
-- Disk/network utilization, historical monitoring, broad alerting and troubleshooting recommendations remain unfinished.
+- Disk/network utilization, broad alerting and troubleshooting recommendations remain unfinished.
 - Creation-time storage is centered on the NFS CSI integration, not a broad CSI vendor catalog.
 - Some UI descriptions are stale: the Cloud Resources page still describes managed Kubernetes as planned. Follow code and current integration/auth documentation when resolving inconsistencies. The backend example environment now includes the implemented OIDC settings.
 
