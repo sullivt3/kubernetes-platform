@@ -31,7 +31,7 @@ from app.modules.credentials.models import Credential, CredentialKind
 from app.modules.credentials.service import CredentialService
 from app.modules.infrastructure.models import ProviderConnection
 from app.modules.kubernetes import client as kclient
-from app.modules.kubernetes import kubeconfig, reads, views
+from app.modules.kubernetes import kubeconfig, reads, security_report, views
 from app.modules.providers.registry import provider_registry
 from app.orchestration.models import Operation
 from app.orchestration.service import OperationService
@@ -358,6 +358,10 @@ class KubernetesService:
         rows = [views.pod_security_view(ns) for ns in namespaces]
         rows.sort(key=lambda row: row["namespace"])
         return {"items": rows, "truncated": truncated}
+
+    def security_report(self, principal: Principal, cluster_id: uuid.UUID) -> security_report.SecurityReport:
+        cluster, api = self.api(principal, cluster_id)
+        return security_report.collect(api, cluster.id, cluster.name)
 
     def pods(
         self,

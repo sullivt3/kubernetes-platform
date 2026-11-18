@@ -181,6 +181,35 @@ page uses the same cluster and project permissions as the access inventory.
   the v1 API, stable since Kubernetes 1.30, and report when it is unavailable.
   [Validating Admission Policy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/)
 
+## Kubernetes security reporting
+
+Select a cluster and open **Security → Security reporting**. Refresh the report
+to read current configuration or download the full timestamped result as JSON.
+Findings include the affected resource, observed evidence, and guidance.
+
+- **RBAC** checks for wildcard rules on bound roles, sensitive rules such as
+  Secret reads granted to broad groups, and role references missing from a
+  complete role list. A RoleBinding resolves a namespaced Role in its own
+  namespace. The standard `cluster-admin` binding to only `system:masters`
+  is marked informational for membership review.
+  [Kubernetes RBAC good practices](https://kubernetes.io/docs/concepts/security/rbac-good-practices/)
+- **Pod Security** flags explicit `privileged` enforce levels and reports unset
+  enforce labels as informational. Defaults and exemptions are configured on the
+  control plane. [Pod Security Admission](https://kubernetes.io/docs/concepts/security/pod-security-admission/)
+- **Service accounts and admission policies** highlight default accounts that
+  allow token automount and Kubernetes-reported CEL type warnings. Pods can
+  override an account's automount setting.
+  [Service accounts](https://kubernetes.io/docs/concepts/security/service-accounts/),
+  [Validating Admission Policy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/)
+
+Coverage shows how many resources were read per source and identifies
+permission errors, unavailable APIs, failed reads, and lists capped at 1,000
+objects. The report checks declared configuration. Effective user permissions,
+Pod Security defaults and exemptions, and workload or image scans are outside
+its scope. It reads no Secret objects and changes no cluster resources. Access
+requires `clusters.read` in the selected organization and project, and the
+platform's Kubernetes credential needs list access to the reported sources.
+
 ## API additions
 
 - `GET /auth/session`: public session state, available contexts and effective access.
@@ -203,7 +232,7 @@ administrator must remain when their administrative privileges are removed.
 - Extend authentication, membership, isolation and permission regression coverage,
   including identity-provider outages, key rotation and concurrent administration;
   verify OIDC behavior against the intended deployment's identity provider.
-- Security posture reporting and further audit filtering/reporting.
+- Further platform audit log filtering and reporting.
 - Backup and restore workflows for platform and cluster state, including key recovery.
 - General API rate limiting and production TLS/reverse-proxy deployment guidance.
 - Credential access review and any additional secrets-store integration selected

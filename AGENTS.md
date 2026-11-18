@@ -179,6 +179,17 @@ or infer cluster admission defaults or exemptions. The 68 targeted backend tests
 verified Fedora namespace labels and admission inventory. Browser fixtures
 verified policy details, binding actions, type warnings, and the unavailable API state.
 
+The **Security → Security reporting** page generates a timestamped, read-only
+Kubernetes posture report with severity filters, resource details, per-source
+coverage, and JSON export. Checks examine declared RBAC grants, Pod Security
+enforce labels, default service account token automount, and admission policy
+type warnings. Sources are capped at 1,000 objects each. The API uses
+`clusters.read` and the selected project scope, and reads no Secrets.
+The 110 backend regression tests, 29 frontend tests and Docker build passed.
+Live Fedora reports passed for Keycloak viewer and operator sessions, including
+resource details, refresh and JSON download. Browser fixtures also covered
+incomplete coverage, severity filters, pagination and a failed refresh.
+
 ## Remaining work and priorities
 
 Default recommendation, subject to the user's chosen task: validate the current baseline and finish Phase 7 before expanding Phase 8.
@@ -187,7 +198,7 @@ Default recommendation, subject to the user's chosen task: validate the current 
 
 - Authentication/session tests: OIDC login/callback/logout, token validation, expiry/revocation, CSRF and browser behavior, plus live identity-provider validation.
 - Expand authorization/isolation coverage for organization/project selection, memberships, read/write roles, detail lookups, linked resources, workers, streams, secret reveals and terminal access. The original suite predominantly uses the development administrator; the new identity suite uses real OIDC authentication with a simulated provider transport.
-- Security posture reports, further audit filtering/reporting, credential access review and any selected external secrets-store integration.
+- Further platform audit log filtering/reporting, credential access review and any selected external secrets-store integration.
 - Platform/cluster backup and restore, including encryption-key recovery.
 - General API rate limiting and production TLS/reverse-proxy deployment guidance. Login-start rate limiting already exists.
 

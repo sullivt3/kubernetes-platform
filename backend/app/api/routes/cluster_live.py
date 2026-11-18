@@ -19,6 +19,7 @@ from app.api.deps import get_kubernetes_service
 from app.api.routes.operations import OperationDetail
 from app.core.principal import Principal
 from app.modules.kubernetes.nodes import DrainOptions, TaintIn
+from app.modules.kubernetes.security_report import SecurityReport
 from app.modules.kubernetes.service import KubernetesService
 
 router = APIRouter(prefix="/clusters", tags=["cluster connectivity"])
@@ -252,6 +253,18 @@ def pod_security(
 ) -> dict[str, Any]:
     """Show explicit Pod Security Admission namespace labels."""
     return service.pod_security(principal, cluster_id)
+
+
+@router.get("/{cluster_id}/security/report")
+def security_report(
+    cluster_id: uuid.UUID,
+    response: Response,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+) -> SecurityReport:
+    """Review the selected cluster's declared security configuration."""
+    response.headers["Cache-Control"] = "no-store"
+    return service.security_report(principal, cluster_id)
 
 
 @router.get("/{cluster_id}/pods")

@@ -189,6 +189,7 @@ See [Cluster integrations](cluster-integrations.md) for configuration, ownership
 | GET | `/clusters/{id}/nodes/{name}/logs?unit=kubelet\|containerd&lines=` | Journal of the node as text (platform-installed clusters). |
 | GET | `/clusters/{id}/namespaces` | Namespaces with pod counts and failing pods. |
 | GET | `/clusters/{id}/security/pod-security` | Explicit namespace Pod Security Admission labels. Returns `{items, truncated}`. Each item has `namespace` and `modes.enforce\|audit\|warn` with nullable `level` and `version`. Requires `clusters.read`. |
+| GET | `/clusters/{id}/security/report` | On-demand configuration report for the selected cluster. Returns `cluster_id`, `cluster_name`, `observed_at`, `coverage`, and severity-ordered `findings`. Requires `clusters.read`. |
 | GET | `/clusters/{id}/pods?namespace=&node=&problems=` | Pods with kubectl-style status, readiness, restarts, owner. |
 | GET | `/clusters/{id}/events?namespace=&warnings=&limit=` | Recent events, newest first. |
 | GET | `/clusters/{id}/topology` | Nodes with their pods (and unscheduled pods). |

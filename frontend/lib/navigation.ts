@@ -140,7 +140,7 @@ export const NAVIGATION: NavSection[] = [
       { title: "Roles & bindings", href: "/security/rbac", description: "Kubernetes Roles, ClusterRoles and their bindings.", keywords: ["rbac"] },
       { title: "Service accounts", href: "/security/service-accounts", description: "Kubernetes workload identities and token mount settings." },
       { title: "Security policies", href: "/security/policies", description: "Namespace Pod Security Admission labels and validating admission policies." },
-      { title: "Security auditing", href: "/security/auditing", description: "Security posture reports and findings.", phase: 7 },
+      { title: "Security reporting", href: "/security/auditing", description: "Review and export Kubernetes security findings.", keywords: ["audit", "posture"] },
     ],
   },
   {

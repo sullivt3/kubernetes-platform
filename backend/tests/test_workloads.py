@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.modules.kubernetes import apply as kapply
 from app.modules.kubernetes import client as kclient
+from app.modules.kubernetes import security_report
 from app.modules.workloads import summaries, terminal
 from tests.fake_kube import kubeconfig_text
 from tests.fake_store import FakeStore
@@ -739,6 +740,133 @@ class TestWorkloadApi:
             assert not detail["capabilities"]["delete"]
             assert client.delete(url, params={"confirm": name}).status_code == 422
         assert all(method == "GET" and path.startswith(f"/apis/{group}/") for method, path, _ in store.requests)
+
+    def test_security_report_uses_scoped_rbac_and_declared_configuration(
+        self, client: TestClient, store: FakeStore, cluster_id: str
+    ) -> None:
+        rbac = "rbac.authorization.k8s.io/v1"
+        enforce = "pod-security.kubernetes.io/enforce"
+        for namespace, level in [("app", "restricted"), ("system-tools", "privileged")]:
+            store.put(
+                {
+                    "apiVersion": "v1",
+                    "kind": "Namespace",
+                    "metadata": {"name": namespace, "labels": {enforce: level}},
+                }
+            )
+        for namespace, automount in [("default", False), ("app", True)]:
+            store.put(
+                {
+                    "apiVersion": "v1",
+                    "kind": "ServiceAccount",
+                    "metadata": {"name": "default", "namespace": namespace},
+                    "automountServiceAccountToken": automount,
+                    "secrets": [{"name": "private-reference"}],
+                }
+            )
+        for kind, name, namespace, rules in [
+            ("Role", "reader", "default", [{"apiGroups": [""], "resources": ["secrets"], "verbs": ["get"]}]),
+            ("Role", "reader", "app", [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get"]}]),
+            ("ClusterRole", "cluster-admin", None, [{"apiGroups": ["*"], "resources": ["*"], "verbs": ["*"]}]),
+            ("ClusterRole", "public-discovery", None, [{"nonResourceURLs": ["/api/*"], "verbs": ["get"]}]),
+        ]:
+            meta = {"name": name, **({"namespace": namespace} if namespace else {})}
+            store.put({"apiVersion": rbac, "kind": kind, "metadata": meta, "rules": rules})
+        for binding, name, namespace, kind, role, group in [
+            ("RoleBinding", "broad", "default", "Role", "reader", "system:authenticated"),
+            ("RoleBinding", "broad", "app", "Role", "reader", "system:authenticated"),
+            ("RoleBinding", "team", "app", "ClusterRole", "cluster-admin", "team"),
+            ("RoleBinding", "orphan", "app", "Role", "missing", "team"),
+            ("ClusterRoleBinding", "cluster-admin", None, "ClusterRole", "cluster-admin", "system:masters"),
+            ("ClusterRoleBinding", "custom-admin", None, "ClusterRole", "cluster-admin", "operators"),
+            ("ClusterRoleBinding", "discovery", None, "ClusterRole", "public-discovery", "system:unauthenticated"),
+        ]:
+            meta = {"name": name, **({"namespace": namespace} if namespace else {})}
+            store.put(
+                {
+                    "apiVersion": rbac,
+                    "kind": binding,
+                    "metadata": meta,
+                    "roleRef": {"kind": kind, "name": role, "apiGroup": "rbac.authorization.k8s.io"},
+                    "subjects": [{"kind": "Group", "name": group, "apiGroup": "rbac.authorization.k8s.io"}],
+                }
+            )
+        store.put(
+            {
+                "apiVersion": "admissionregistration.k8s.io/v1",
+                "kind": "ValidatingAdmissionPolicy",
+                "metadata": {"name": "policy"},
+                "status": {"typeChecking": {"expressionWarnings": [{"warning": "private warning text"}]}},
+            }
+        )
+        store.requests.clear()
+        response = client.get(f"{API}/clusters/{cluster_id}/security/report")
+        assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "no-store"
+        result = response.json()
+        assert result["cluster_id"] == cluster_id
+        assert result["cluster_name"] == "prod"
+        assert result["observed_at"].endswith("Z")
+        assert all(row["status"] == "complete" for row in result["coverage"])
+        assert [(f["severity"], f["check"], f["namespace"], f["name"]) for f in result["findings"]] == [
+            ("high", "rbac.broad-sensitive-binding", "default", "broad"),
+            ("high", "rbac.wildcard-binding", None, "custom-admin"),
+            ("medium", "admission.expression-warnings", None, "policy"),
+            ("medium", "pod-security.enforce-privileged", None, "system-tools"),
+            ("medium", "rbac.wildcard-binding", "app", "team"),
+            ("info", "pod-security.enforce-unset", None, "default"),
+            ("info", "rbac.role-reference-missing", "app", "orphan"),
+            ("info", "rbac.wildcard-binding", None, "cluster-admin"),
+            ("info", "service-account.default-automount", "app", "default"),
+        ]
+        assert "private-reference" not in response.text and "private warning text" not in response.text
+        assert len(store.requests) == len(security_report.SOURCES)
+        assert all(method == "GET" and "/secrets" not in path for method, path, _ in store.requests)
+
+    def test_security_report_keeps_findings_when_coverage_is_incomplete(
+        self, client: TestClient, store: FakeStore, cluster_id: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        request = store.request
+        rbac = "rbac.authorization.k8s.io/v1"
+        store.put(
+            {
+                "apiVersion": rbac,
+                "kind": "RoleBinding",
+                "metadata": {"name": "unresolved"},
+                "roleRef": {"kind": "Role", "name": "unread", "apiGroup": "rbac.authorization.k8s.io"},
+                "subjects": [{"kind": "User", "name": "user"}],
+            }
+        )
+        monkeypatch.setattr(security_report, "MAX_ITEMS", 1)
+
+        def partial(method: str, path: str, **kwargs: Any) -> tuple[int, bytes]:
+            if path.endswith("/roles"):
+                raise kclient.ClusterAuthError("forbidden")
+            if path.endswith("/validatingadmissionpolicies"):
+                return 404, b"{}"
+            if path.endswith("/serviceaccounts"):
+                return 500, b'{"message":"private failure"}'
+            if path == "/api/v1/namespaces":
+                row = store.objects[path + "/default"]
+                return 200, json.dumps({"items": [row], "metadata": {"continue": "next"}}).encode()
+            return request(method, path, **kwargs)
+
+        monkeypatch.setattr(store, "request", partial)
+        response = client.get(f"{API}/clusters/{cluster_id}/security/report")
+        assert response.status_code == 200, response.text
+        report = response.json()
+        coverage = {row["source"]: (row["status"], row["scanned"]) for row in report["coverage"]}
+        assert coverage == {
+            "namespaces": ("truncated", 1),
+            "serviceaccounts": ("error", 0),
+            "roles": ("denied", 0),
+            "clusterroles": ("complete", 0),
+            "rolebindings": ("complete", 1),
+            "clusterrolebindings": ("complete", 0),
+            "validatingadmissionpolicies": ("unavailable", 0),
+        }
+        assert [f["check"] for f in report["findings"]] == ["pod-security.enforce-unset"]
+        assert "private failure" not in response.text
 
     def test_secrets_redacted_and_reveal_audited(self, client: TestClient, store: FakeStore, cluster_id: str) -> None:
         store.put(

@@ -343,6 +343,45 @@ def test_project_lists_details_and_counts_are_isolated(identity: IdentityHarness
     assert identity.client.get(f"{API}/credentials", headers=headers).json()["total"] == 3
 
 
+def test_security_report_uses_cluster_read_and_project_scope(identity: IdentityHarness) -> None:
+    from app.modules.kubernetes import client as kclient
+    from tests.fake_kube import kubeconfig_text
+    from tests.fake_store import FakeStore
+
+    with get_session_factory()() as session:
+        sibling = Project(organization_id=identity.organization_id, slug="sibling", name="Sibling")
+        session.add(sibling)
+        session.commit()
+        sibling_id = sibling.id
+    allowed_headers = {**identity.bearer(), "X-Project-ID": str(identity.project_id)}
+    sibling_headers = {**identity.bearer(), "X-Project-ID": str(sibling_id)}
+    paths = []
+    for name, headers in [("allowed", allowed_headers), ("hidden", sibling_headers)]:
+        response = identity.client.post(
+            f"{API}/clusters/import", headers=headers, json={"name": name, "kubeconfig": kubeconfig_text()}
+        )
+        assert response.status_code == 202, response.text
+        paths.append(f"{API}/clusters/{response.json()['cluster_id']}/security/report")
+
+    store = FakeStore()
+    kclient.set_client_factory(store.factory)
+    try:
+        identity.role("viewer")
+        assert identity.client.get(paths[0]).status_code == 401
+        assert identity.client.get(paths[1], headers=allowed_headers).status_code == 404
+        assert not store.requests
+        allowed = identity.client.get(paths[0], headers=allowed_headers)
+        assert allowed.status_code == 200, allowed.text
+        assert allowed.json()["cluster_name"] == "allowed"
+        assert store.requests
+        store.requests.clear()
+        identity.role("member")
+        assert identity.client.get(paths[0], headers=identity.bearer()).status_code == 403
+        assert not store.requests
+    finally:
+        kclient.set_client_factory(None)
+
+
 def test_organization_isolation_and_project_credential_links(identity: IdentityHarness) -> None:
     from app.core.errors import PermissionDeniedError
     from app.modules.infrastructure.models import ProviderConnection
