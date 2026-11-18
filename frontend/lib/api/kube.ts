@@ -162,6 +162,23 @@ export function useClusterNode(id: string | null, name: string | null) {
   });
 }
 
+export type PodSecurityMode = "enforce" | "audit" | "warn";
+
+export interface PodSecurityNamespace {
+  namespace: string;
+  modes: Record<PodSecurityMode, { level: string | null; version: string | null }>;
+}
+
+export function usePodSecurity(clusterId: string) {
+  return useQuery({
+    queryKey: live("pod-security", clusterId),
+    queryFn: () => api.get<{ items: PodSecurityNamespace[]; truncated: boolean }>(
+      `/clusters/${clusterId}/security/pod-security`
+    ),
+    ...LIVE_OPTIONS,
+  });
+}
+
 export function useClusterNamespaces(id: string | null) {
   return useQuery({
     queryKey: live("namespaces", id ?? ""),

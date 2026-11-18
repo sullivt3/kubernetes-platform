@@ -42,6 +42,7 @@ export function pagePermission(path: string): string {
   if (path === "/workloads/deployments/new") return "clusters.write";
   if (path.startsWith("/infrastructure")) return "infrastructure.read";
   if (path.startsWith("/security/credentials")) return "credentials.read";
+  if (["/security/rbac", "/security/service-accounts", "/security/policies"].includes(path)) return "clusters.read";
   if (path.startsWith("/operations")) return "operations.read";
   if (path.startsWith("/kubernetes") || path.startsWith("/workloads") || path.startsWith("/configuration") || path.startsWith("/networking") || path.startsWith("/storage")) return "clusters.read";
   return "system.read";

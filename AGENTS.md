@@ -161,6 +161,24 @@ operator controls, search, the deployment form and provider discovery. Live
 Fedora node and DNS views passed for both roles. The Docker frontend build,
 29 frontend tests and 36 backend identity tests passed.
 
+Phase 7 now has read-only Kubernetes Roles & bindings and Service accounts pages.
+They use the scoped cluster resource APIs and support built-in RBAC names such
+as `system:kube-proxy`. Details show permission rules, grant scope, binding
+subjects, token automount, and Secret references without retrieving Secret values.
+These pages inspect Kubernetes RBAC declarations and do not calculate effective access.
+The 67 targeted backend tests, 29 frontend tests and Docker build passed. Live
+Keycloak viewer and operator browser sessions verified both pages against the
+Fedora cluster.
+
+The read-only Security policies page shows explicit Pod Security Admission
+namespace labels and v1 ValidatingAdmissionPolicy objects and bindings. It
+distinguishes unlabeled modes, empty policy inventory, and an unavailable API.
+It uses cluster read access and does not evaluate CEL, resolve parameter objects,
+or infer cluster admission defaults or exemptions. The 68 targeted backend tests,
+29 frontend tests, and Docker build passed. Live viewer and operator sessions
+verified Fedora namespace labels and admission inventory. Browser fixtures
+verified policy details, binding actions, type warnings, and the unavailable API state.
+
 ## Remaining work and priorities
 
 Default recommendation, subject to the user's chosen task: validate the current baseline and finish Phase 7 before expanding Phase 8.
@@ -169,7 +187,6 @@ Default recommendation, subject to the user's chosen task: validate the current 
 
 - Authentication/session tests: OIDC login/callback/logout, token validation, expiry/revocation, CSRF and browser behavior, plus live identity-provider validation.
 - Expand authorization/isolation coverage for organization/project selection, memberships, read/write roles, detail lookups, linked resources, workers, streams, secret reveals and terminal access. The original suite predominantly uses the development administrator; the new identity suite uses real OIDC authentication with a simulated provider transport.
-- Kubernetes Roles/ClusterRoles/RoleBindings/ClusterRoleBindings, ServiceAccounts and security-policy views. Application RBAC and Kubernetes RBAC are separate layers.
 - Security posture reports, further audit filtering/reporting, credential access review and any selected external secrets-store integration.
 - Platform/cluster backup and restore, including encryption-key recovery.
 - General API rate limiting and production TLS/reverse-proxy deployment guidance. Login-start rate limiting already exists.

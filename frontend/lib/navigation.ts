@@ -137,9 +137,9 @@ export const NAVIGATION: NavSection[] = [
     icon: ShieldCheck,
     items: [
       { title: "Credentials", href: "/security/credentials", description: "Encrypted SSH keys, kubeconfigs and cloud credentials.", keywords: ["ssh", "kubeconfig", "secret", "key"] },
-      { title: "Roles & bindings", href: "/security/rbac", description: "Kubernetes Roles, ClusterRoles and their bindings.", phase: 7, keywords: ["rbac"] },
-      { title: "Service accounts", href: "/security/service-accounts", description: "Workload identities.", phase: 7 },
-      { title: "Security policies", href: "/security/policies", description: "Pod security standards and admission policies.", phase: 7 },
+      { title: "Roles & bindings", href: "/security/rbac", description: "Kubernetes Roles, ClusterRoles and their bindings.", keywords: ["rbac"] },
+      { title: "Service accounts", href: "/security/service-accounts", description: "Kubernetes workload identities and token mount settings." },
+      { title: "Security policies", href: "/security/policies", description: "Namespace Pod Security Admission labels and validating admission policies." },
       { title: "Security auditing", href: "/security/auditing", description: "Security posture reports and findings.", phase: 7 },
     ],
   },

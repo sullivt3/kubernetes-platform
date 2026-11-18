@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -528,6 +529,216 @@ class TestWorkloadApi:
             params={"confirm": "csi.example.test"},
         )
         assert blocked.status_code == 422
+
+    def test_security_resource_inspection_is_scoped_and_read_only(
+        self, client: TestClient, store: FakeStore, cluster_id: str
+    ) -> None:
+        rbac = "rbac.authorization.k8s.io/v1"
+        rules = [{"apiGroups": [""], "resources": ["pods/log"], "verbs": ["get"], "resourceNames": ["web"]}]
+        role_ref = {"kind": "ClusterRole", "name": "system:example", "apiGroup": "rbac.authorization.k8s.io"}
+        subjects = [{"kind": "ServiceAccount", "name": "web", "namespace": "workloads"}]
+        for obj in [
+            {
+                "apiVersion": rbac,
+                "kind": "Role",
+                "metadata": {"namespace": "default", "name": "web"},
+                "rules": rules,
+            },
+            {
+                "apiVersion": rbac,
+                "kind": "Role",
+                "metadata": {"namespace": "other", "name": "outside"},
+                "rules": [],
+            },
+            {
+                "apiVersion": rbac,
+                "kind": "ClusterRole",
+                "metadata": {
+                    "name": role_ref["name"],
+                    "annotations": {
+                        "kubectl.kubernetes.io/last-applied-configuration": "previous private configuration",
+                    },
+                },
+                "rules": [{"nonResourceURLs": ["/healthz"], "verbs": ["get"]}],
+                "aggregationRule": {"clusterRoleSelectors": [{"matchLabels": {"aggregate": "true"}}]},
+            },
+            {
+                "apiVersion": rbac,
+                "kind": "RoleBinding",
+                "metadata": {"namespace": "default", "name": "web"},
+                "roleRef": role_ref,
+                "subjects": subjects,
+            },
+            {
+                "apiVersion": rbac,
+                "kind": "ClusterRoleBinding",
+                "metadata": {"name": "system:example"},
+                "roleRef": role_ref,
+                "subjects": subjects,
+            },
+            {
+                "apiVersion": "v1",
+                "kind": "ServiceAccount",
+                "metadata": {"namespace": "workloads", "name": "web"},
+                "automountServiceAccountToken": False,
+                "imagePullSecrets": [{"name": "registry"}],
+                "secrets": [{"name": "web-token"}],
+            },
+            {
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "metadata": {"namespace": "workloads", "name": "web-token"},
+                "data": {"token": "cHJpdmF0ZQ=="},
+            },
+        ]:
+            store.put(obj)
+
+        base = f"{API}/clusters/{cluster_id}/resources"
+        store.requests.clear()
+        roles = client.get(f"{base}/roles", params={"namespace": "default"}).json()
+        assert [(row["namespace"], row["name"], row["rule_count"]) for row in roles["items"]] == [("default", "web", 1)]
+        for kind, namespace, name in [
+            ("roles", "default", "web"),
+            ("clusterroles", "cluster", "system:example"),
+            ("rolebindings", "default", "web"),
+            ("clusterrolebindings", "cluster", "system:example"),
+            ("serviceaccounts", "workloads", "web"),
+        ]:
+            response = client.get(f"{base}/{kind}")
+            assert response.status_code == 200
+            assert any(row["name"] == name for row in response.json()["items"])
+            url = f"{base}/{kind}/{namespace}/{quote(name, safe='')}"
+            response = client.get(url)
+            assert response.status_code == 200, response.text
+            detail = response.json()
+            assert not detail["capabilities"]["delete"]
+            assert detail["summary"]["namespace"] == (None if namespace == "cluster" else namespace)
+            if kind.endswith("bindings"):
+                assert detail["summary"]["role_kind"] == "ClusterRole"
+                assert detail["summary"]["role_name"] == "system:example"
+                assert detail["summary"]["subject_count"] == 1
+                assert detail["object"]["subjects"] == subjects
+            if kind == "clusterroles":
+                assert detail["summary"]["aggregated"]
+                assert detail["object"]["rules"][0]["nonResourceURLs"] == ["/healthz"]
+                assert "previous private configuration" not in response.text
+            if kind == "roles":
+                assert detail["object"]["rules"] == rules
+            if kind == "serviceaccounts":
+                assert detail["summary"]["automount_token"] is False
+                assert detail["summary"]["image_pull_secrets"] == ["registry"]
+                assert "web-token" in detail["yaml"] and "cHJpdmF0ZQ==" not in response.text
+            assert client.delete(url, params={"confirm": name}).status_code == 422
+        assert ("GET", f"/apis/{rbac}/clusterroles/system%3Aexample", {}) in store.requests
+        assert all(
+            method == "GET" and "/secrets" not in path and "/events" not in path for method, path, _ in store.requests
+        )
+
+        previous_requests = list(store.requests)
+        assert client.get(f"{base}/clusterroles/cluster/bad%25name").status_code == 422
+        assert store.requests == previous_requests
+
+    def test_security_policy_inventory_reports_labels_and_configuration(
+        self, client: TestClient, store: FakeStore, cluster_id: str
+    ) -> None:
+        store.put(
+            {
+                "apiVersion": "v1",
+                "kind": "Namespace",
+                "metadata": {
+                    "name": "restricted-apps",
+                    "labels": {
+                        "pod-security.kubernetes.io/enforce": "restricted",
+                        "pod-security.kubernetes.io/enforce-version": "v1.30",
+                        "pod-security.kubernetes.io/warn-version": "latest",
+                        "pod-security.kubernetes.io/audit": "baseline",
+                        "unrelated": "not-returned",
+                    },
+                },
+            }
+        )
+        api = f"{API}/clusters/{cluster_id}"
+        store.requests.clear()
+        response = client.get(api + "/security/pod-security")
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "items": [
+                {
+                    "namespace": "default",
+                    "modes": {mode: {"level": None, "version": None} for mode in ("enforce", "audit", "warn")},
+                },
+                {
+                    "namespace": "restricted-apps",
+                    "modes": {
+                        "enforce": {"level": "restricted", "version": "v1.30"},
+                        "audit": {"level": "baseline", "version": None},
+                        "warn": {"level": None, "version": "latest"},
+                    },
+                },
+            ],
+            "truncated": False,
+        }
+        assert [(method, path) for method, path, _ in store.requests] == [("GET", "/api/v1/namespaces")]
+
+        group = "admissionregistration.k8s.io/v1"
+        policy = store.put(
+            {
+                "apiVersion": group,
+                "kind": "ValidatingAdmissionPolicy",
+                "metadata": {"name": "require-label"},
+                "spec": {"validations": [{"expression": "has(object.metadata.labels)"}]},
+                "status": {
+                    "typeChecking": {
+                        "expressionWarnings": [
+                            {"fieldRef": "spec.validations[0].expression", "warning": "Example type warning"},
+                        ]
+                    }
+                },
+            }
+        )
+        binding = store.put(
+            {
+                "apiVersion": group,
+                "kind": "ValidatingAdmissionPolicyBinding",
+                "metadata": {"name": "check-apps"},
+                "spec": {
+                    "policyName": "require-label",
+                    "validationActions": ["Warn", "Audit"],
+                    "paramRef": {"name": "params", "parameterNotFoundAction": "Deny"},
+                },
+            }
+        )
+        checks = [
+            (
+                "validatingadmissionpolicies",
+                policy,
+                {"failure_policy": "Fail", "validation_count": 1, "warning_count": 1},
+            ),
+            (
+                "validatingadmissionpolicybindings",
+                binding,
+                {
+                    "policy_name": "require-label",
+                    "validation_actions": ["Warn", "Audit"],
+                },
+            ),
+        ]
+        store.requests.clear()
+        for kind, obj, expected in checks:
+            reply = client.get(f"{api}/resources/{kind}")
+            assert reply.status_code == 200, reply.text
+            (row,) = reply.json()["items"]
+            assert {key: row[key] for key in expected} == expected
+            name = obj["metadata"]["name"]
+            url = f"{api}/resources/{kind}/cluster/{name}"
+            reply = client.get(url)
+            assert reply.status_code == 200, reply.text
+            detail = reply.json()
+            assert detail["object"]["spec"] == obj["spec"]
+            assert "status:" not in detail["yaml"]
+            assert not detail["capabilities"]["delete"]
+            assert client.delete(url, params={"confirm": name}).status_code == 422
+        assert all(method == "GET" and path.startswith(f"/apis/{group}/") for method, path, _ in store.requests)
 
     def test_secrets_redacted_and_reveal_audited(self, client: TestClient, store: FakeStore, cluster_id: str) -> None:
         store.put(

@@ -311,6 +311,31 @@ def summarize(key: str, obj: Obj) -> Obj:
             limit_types=[item.get("type") for item in limits],
             limit_count=len(limits),
         )
+    elif key in ("roles", "clusterroles"):
+        row.update(rule_count=len(obj.get("rules") or []), aggregated=bool(obj.get("aggregationRule")))
+    elif key in ("rolebindings", "clusterrolebindings"):
+        role_ref = obj.get("roleRef") or {}
+        row.update(
+            role_kind=role_ref.get("kind"),
+            role_name=role_ref.get("name"),
+            subject_count=len(obj.get("subjects") or []),
+        )
+    elif key == "validatingadmissionpolicies":
+        row.update(
+            failure_policy=spec.get("failurePolicy") or "Fail",
+            validation_count=len(spec.get("validations") or []),
+            warning_count=len((status.get("typeChecking") or {}).get("expressionWarnings") or []),
+        )
+    elif key == "validatingadmissionpolicybindings":
+        row.update(
+            policy_name=spec.get("policyName"),
+            validation_actions=spec.get("validationActions") or [],
+        )
+    elif key == "serviceaccounts":
+        row.update(
+            automount_token=obj.get("automountServiceAccountToken"),
+            image_pull_secrets=[ref["name"] for ref in obj.get("imagePullSecrets") or [] if ref.get("name")],
+        )
     elif key == "configmaps":
         keys = sorted([*(obj.get("data") or {}), *(obj.get("binaryData") or {})])
         row.update(keys=keys)

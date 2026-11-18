@@ -139,6 +139,48 @@ with the platform's Kubernetes credentials; namespace-level isolation requires
 separate Kubernetes policies. Application roles and Kubernetes RoleBindings are
 different layers of authorization.
 
+## Kubernetes access inventory
+
+Select a connected cluster, then open **Security → Roles & bindings** or
+**Security → Service accounts**. Both pages require `clusters.read` for the
+selected organization and project. The cluster credentials also need `list`
+and `get` on the resource kinds being inspected.
+
+- **Roles & bindings** shows Role and ClusterRole rules, including resource
+  names, subresources, non-resource URLs and the rules Kubernetes reports for
+  aggregated ClusterRoles. The binding tabs show the role reference and each
+  subject. A RoleBinding grants access in its own namespace even when it refers
+  to a ClusterRole. A ClusterRoleBinding grants access across the cluster.
+- **Service accounts** shows the account identity, token automount setting and
+  Secret references by name. Kubernetes pods can override the account's token
+  automount setting. The platform does not fetch referenced Secrets or issue
+  service account tokens from this view.
+
+These inventory pages show the declared objects and their YAML. They do not
+calculate a subject's effective permissions. Dedicated mutation controls are
+disabled for these kinds. Operators can still use the existing YAML apply
+workflow under its usual authorization checks.
+
+See [Kubernetes RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)
+and [Service Accounts](https://kubernetes.io/docs/concepts/security/service-accounts/).
+
+## Kubernetes security policies
+
+Open **Security → Security policies** for the selected cluster. This read-only
+page uses the same cluster and project permissions as the access inventory.
+
+- **Pod security** displays the explicit `enforce`, `audit`, and `warn` level and
+  version labels for each namespace. Unset labels are shown separately from
+  explicit levels. Effective defaults and exemptions depend on the cluster's
+  admission controller configuration. [Pod Security Admission](https://kubernetes.io/docs/concepts/security/pod-security-admission/)
+- **Admission policies** lists `ValidatingAdmissionPolicy` objects and shows CEL
+  expressions, failure policy, and any type warnings reported by Kubernetes.
+- **Policy bindings** shows which policy each binding references, its validation
+  actions, and the declared match and parameter settings in read-only YAML. The
+  platform does not resolve parameter objects or evaluate CEL. These two tabs use
+  the v1 API, stable since Kubernetes 1.30, and report when it is unavailable.
+  [Validating Admission Policy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/)
+
 ## API additions
 
 - `GET /auth/session`: public session state, available contexts and effective access.
@@ -161,7 +203,6 @@ administrator must remain when their administrative privileges are removed.
 - Extend authentication, membership, isolation and permission regression coverage,
   including identity-provider outages, key rotation and concurrent administration;
   verify OIDC behavior against the intended deployment's identity provider.
-- Kubernetes Roles/ClusterRoles/bindings, ServiceAccounts and security-policy views.
 - Security posture reporting and further audit filtering/reporting.
 - Backup and restore workflows for platform and cluster state, including key recovery.
 - General API rate limiting and production TLS/reverse-proxy deployment guidance.

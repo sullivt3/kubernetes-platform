@@ -20,6 +20,8 @@ export interface KindConfig {
   eyebrow: string;
   description: string;
   scope?: "namespace" | "cluster";
+  inspectOnly?: boolean;
+  unavailableMessage?: string;
   columns: Column[];
 }
 
@@ -27,6 +29,18 @@ const s = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : S
 const mono = (v: unknown) => <span className="font-mono text-xs">{s(v)}</span>;
 const list = (v: unknown) => (Array.isArray(v) && v.length ? <span className="font-mono text-xs">{v.join(", ")}</span> : "—");
 const age: Column = { header: "Age", cell: (r) => formatAge(r.created), className: "text-right text-muted-foreground" };
+
+export function tokenMountSetting(value: unknown) {
+  return value === true ? "Enabled" : value === false ? "Disabled" : "Default";
+}
+
+const ruleCount: Column = { header: "Rules", cell: (r) => s(r.rule_count) };
+const bindingColumns: Column[] = [
+  { header: "Role kind", cell: (r) => s(r.role_kind) },
+  { header: "Role name", cell: (r) => mono(r.role_name) },
+  { header: "Subjects", cell: (r) => s(r.subject_count) },
+  age,
+];
 
 export function RolloutBadge({ rollout }: { rollout?: Rollout }) {
   if (!rollout) return <>—</>;
@@ -257,6 +271,58 @@ export const KIND_CONFIG: Record<ResourceKind, KindConfig> = {
     columns: [
       { header: "From rules", cell: (r) => s(r.from_count), className: "text-right" },
       { header: "To rules", cell: (r) => s(r.to_count), className: "text-right" },
+      age,
+    ],
+  },
+  roles: {
+    kind: "roles", title: "Roles", singular: "Role", eyebrow: "Security", inspectOnly: true,
+    description: "Permission rules defined within each namespace.",
+    columns: [ruleCount, age],
+  },
+  clusterroles: {
+    kind: "clusterroles", title: "ClusterRoles", singular: "ClusterRole", eyebrow: "Security", scope: "cluster", inspectOnly: true,
+    description: "Reusable permission rules that can be granted within a namespace or across the cluster.",
+    columns: [ruleCount, { header: "Aggregated", cell: (r) => r.aggregated ? "Yes" : "No" }, age],
+  },
+  rolebindings: {
+    kind: "rolebindings", title: "RoleBindings", singular: "RoleBinding", eyebrow: "Security", inspectOnly: true,
+    description: "Grants of a Role or ClusterRole within each binding’s namespace.",
+    columns: bindingColumns,
+  },
+  clusterrolebindings: {
+    kind: "clusterrolebindings", title: "ClusterRoleBindings", singular: "ClusterRoleBinding", eyebrow: "Security", scope: "cluster", inspectOnly: true,
+    description: "Cluster-wide grants of a ClusterRole to users, groups, or service accounts.",
+    columns: bindingColumns,
+  },
+  validatingadmissionpolicies: {
+    kind: "validatingadmissionpolicies", title: "Validating admission policies", singular: "ValidatingAdmissionPolicy",
+    eyebrow: "Security", scope: "cluster", inspectOnly: true,
+    description: "CEL validation rules and how Kubernetes handles evaluation errors.",
+    unavailableMessage: "This cluster does not expose the v1 ValidatingAdmissionPolicy API.",
+    columns: [
+      { header: "Validation rules", cell: (r) => s(r.validation_count) },
+      { header: "Failure policy", cell: (r) => s(r.failure_policy) },
+      { header: "Type warnings", cell: (r) => s(r.warning_count) },
+      age,
+    ],
+  },
+  validatingadmissionpolicybindings: {
+    kind: "validatingadmissionpolicybindings", title: "Admission policy bindings", singular: "ValidatingAdmissionPolicyBinding",
+    eyebrow: "Security", scope: "cluster", inspectOnly: true,
+    description: "Bindings select which requests a policy checks and which actions to take on a validation failure.",
+    unavailableMessage: "This cluster does not expose the v1 ValidatingAdmissionPolicyBinding API.",
+    columns: [
+      { header: "Policy", cell: (r) => mono(r.policy_name) },
+      { header: "Validation actions", cell: (r) => list(r.validation_actions) },
+      age,
+    ],
+  },
+  serviceaccounts: {
+    kind: "serviceaccounts", title: "Service accounts", singular: "ServiceAccount", eyebrow: "Security", inspectOnly: true,
+    description: "Workload identities, token automount settings, and image pull Secret references by namespace.",
+    columns: [
+      { header: "Token automount", cell: (r) => tokenMountSetting(r.automount_token) },
+      { header: "Image pull Secrets", cell: (r) => list(r.image_pull_secrets), className: "whitespace-normal" },
       age,
     ],
   },

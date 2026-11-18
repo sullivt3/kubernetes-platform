@@ -30,6 +30,13 @@ export type ResourceKind =
   | "referencegrants"
   | "resourcequotas"
   | "limitranges"
+  | "roles"
+  | "clusterroles"
+  | "rolebindings"
+  | "clusterrolebindings"
+  | "serviceaccounts"
+  | "validatingadmissionpolicies"
+  | "validatingadmissionpolicybindings"
   | "configmaps"
   | "secrets";
 
@@ -103,7 +110,7 @@ export function useResources(clusterId: string, kind: ResourceKind, namespace: s
 export function useResource(clusterId: string, kind: ResourceKind, namespace: string | null, name: string | null) {
   return useQuery({
     queryKey: keys.item(clusterId, kind, namespace ?? "", name ?? ""),
-    queryFn: () => api.get<ResourceDetail>(`${base(clusterId)}/resources/${kind}/${namespace}/${name}`),
+    queryFn: () => api.get<ResourceDetail>(`${base(clusterId)}/resources/${kind}/${namespace}/${encodeURIComponent(name ?? "")}`),
     enabled: Boolean(namespace && name),
     refetchInterval: 5_000,
     retry: false,

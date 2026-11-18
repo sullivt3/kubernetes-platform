@@ -207,6 +207,19 @@ def namespace_view(ns: Obj, pods: list[Obj]) -> Obj:
     }
 
 
+def pod_security_view(ns: Obj) -> Obj:
+    meta = _meta(ns)
+    labels = meta.get("labels") or {}
+    prefix = "pod-security.kubernetes.io/"
+    return {
+        "namespace": meta.get("name"),
+        "modes": {
+            mode: {"level": labels.get(prefix + mode), "version": labels.get(f"{prefix}{mode}-version")}
+            for mode in ("enforce", "audit", "warn")
+        },
+    }
+
+
 def event_view(event: Obj) -> Obj:
     meta, involved = _meta(event), event.get("involvedObject") or event.get("regarding") or {}
     return {

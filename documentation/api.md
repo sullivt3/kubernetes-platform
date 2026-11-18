@@ -188,6 +188,7 @@ See [Cluster integrations](cluster-integrations.md) for configuration, ownership
 | POST | `/clusters/{id}/nodes/{name}/drain` | `{force, delete_emptydir_data, grace_period_seconds?, timeout_seconds}` → `cluster.node.drain` (202). |
 | GET | `/clusters/{id}/nodes/{name}/logs?unit=kubelet\|containerd&lines=` | Journal of the node as text (platform-installed clusters). |
 | GET | `/clusters/{id}/namespaces` | Namespaces with pod counts and failing pods. |
+| GET | `/clusters/{id}/security/pod-security` | Explicit namespace Pod Security Admission labels. Returns `{items, truncated}`. Each item has `namespace` and `modes.enforce\|audit\|warn` with nullable `level` and `version`. Requires `clusters.read`. |
 | GET | `/clusters/{id}/pods?namespace=&node=&problems=` | Pods with kubectl-style status, readiness, restarts, owner. |
 | GET | `/clusters/{id}/events?namespace=&warnings=&limit=` | Recent events, newest first. |
 | GET | `/clusters/{id}/topology` | Nodes with their pods (and unscheduled pods). |
@@ -233,9 +234,15 @@ PVCs or NFS files. It does not require an upstream download and can clean up a p
 `{kind}` is one of `pods`, `deployments`, `replicasets`, `statefulsets`, `daemonsets`, `jobs`, `cronjobs`,
 `services`, `ingresses`, `networkpolicies`, `endpointslices`, `persistentvolumes`, `persistentvolumeclaims`,
 `storageclasses`, `csidrivers`, `volumeattachments`, `gatewayclasses`, `gateways`, `httproutes`,
-`referencegrants`, `resourcequotas`, `limitranges`, `configmaps`, `secrets`. All paths are under `/clusters/{id}`. For cluster-scoped kinds, pass
-`cluster` in the `{namespace}` path segment; Kubernetes requests omit the namespace. Gateway API resources require
-their CRDs and controller to be installed. Deleting controller-managed CSIDriver and VolumeAttachment objects through this API is disabled.
+`referencegrants`, `resourcequotas`, `limitranges`, `configmaps`, `secrets`, `roles`, `clusterroles`,
+`rolebindings`, `clusterrolebindings`, `serviceaccounts`, `validatingadmissionpolicies`, and
+`validatingadmissionpolicybindings`. All paths are under `/clusters/{id}`. For cluster-scoped kinds, pass
+`cluster` in the `{namespace}` path segment. Gateway API resources require their CRDs and controller.
+The direct delete endpoint is disabled for CSIDrivers, VolumeAttachments, RBAC objects, ServiceAccounts,
+and validating admission policies and bindings. These security resource details omit event lookups and
+use `clusters.read`. ServiceAccount Secret references are names only. Encode resource names as path segments,
+including names such as `system:kube-proxy`. Admission inventory uses `admissionregistration.k8s.io/v1`.
+A missing endpoint returns `404 not_found_in_cluster`; an available endpoint with no objects returns an empty list.
 
 | Method | Path | Description |
 |---|---|---|

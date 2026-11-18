@@ -28,7 +28,7 @@ from app.modules.kubernetes import client as kclient
 from app.modules.kubernetes import reads
 from app.modules.kubernetes.service import KubernetesService
 from app.modules.workloads import summaries
-from app.modules.workloads.kinds import KINDS, get_kind
+from app.modules.workloads.kinds import ADMISSION_API_VERSION, KINDS, RBAC_API_VERSION, get_kind
 
 Obj = dict[str, Any]
 NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")
@@ -89,16 +89,24 @@ class WorkloadService:
     def get(self, principal: Principal, cluster_id: uuid.UUID, key: str, namespace: str | None, name: str) -> Obj:
         kind = get_kind(key)
         _check_name(namespace, "namespace")
-        _check_name(name, "name")
+        if kind.api_version == RBAC_API_VERSION:
+            # Kubernetes RBAC names are path segments, including built-ins such as system:kube-proxy.
+            if not name or name in {".", ".."} or any(c in "/%" or ord(c) < 32 or ord(c) == 127 for c in name):
+                raise ValidationFailedError("Invalid RBAC resource name")
+        else:
+            _check_name(name, "name")
         _, api = self._api(principal, cluster_id)
         obj = kclient.get_json(api, kind.item(namespace, name))
         safe = summaries.redact_secret(obj)
+        security_inspection = kind.api_version in {RBAC_API_VERSION, ADMISSION_API_VERSION} or key == "serviceaccounts"
         result: Obj = {
             "kind": kind.kind,
             "summary": summaries.summarize(key, obj),
             "object": summaries.clean_for_view(safe),
             "yaml": yaml.safe_dump(summaries.clean_for_edit(safe), sort_keys=False),
-            "events": reads.events(
+            "events": []
+            if security_inspection
+            else reads.events(
                 api,
                 namespace if kind.namespaced else None,
                 f"involvedObject.kind={kind.kind},involvedObject.name={name}",

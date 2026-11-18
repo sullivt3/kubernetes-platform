@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ClusterScope, LiveError } from "@/features/kubernetes/shared";
+import { ApiError } from "@/lib/api/client";
 import { useClusters } from "@/lib/api/hooks";
 import { useClusterNamespaces } from "@/lib/api/kube";
 import { useResources, type ResourceKind } from "@/lib/api/workloads";
@@ -25,7 +26,7 @@ export function ResourceTable({ clusterId, kind }: { clusterId: string; kind: Re
   const [namespace, setNamespace] = useState("");
   const [filter, setFilter] = useState("");
   const [open, setOpen] = useState<{ namespace: string; name: string } | null>(null);
-  const namespaces = useClusterNamespaces(clusterId);
+  const namespaces = useClusterNamespaces(clusterScoped ? null : clusterId);
   const resources = useResources(clusterId, kind, clusterScoped ? "" : namespace);
   const rows = (resources.data?.items ?? []).filter((r) => !filter || r.name.includes(filter));
 
@@ -43,7 +44,12 @@ export function ResourceTable({ clusterId, kind }: { clusterId: string; kind: Re
         {resources.data && <span className="ml-auto text-sm text-muted-foreground">{rows.length} {config.title.toLowerCase()}{resources.data.truncated ? " (truncated)" : ""}</span>}
       </div>
       {resources.isLoading && <TableSkeleton rows={5} columns={config.columns.length + 1} />}
-      {resources.isError && <LiveError error={resources.error} clusterId={clusterId} onRetry={() => resources.refetch()} />}
+      {resources.isError && (
+        config.unavailableMessage && resources.error instanceof ApiError && resources.error.code === "not_found_in_cluster"
+          ? <EmptyState title="API unavailable" description={config.unavailableMessage}
+              action={<Button size="sm" variant="outline" onClick={() => resources.refetch()}>Retry</Button>} />
+          : <LiveError error={resources.error} clusterId={clusterId} onRetry={() => resources.refetch()} />
+      )}
       {resources.data && rows.length === 0 && (
         <EmptyState title={`No ${config.title.toLowerCase()}`} description={namespace ? `Nothing in namespace ${namespace}.` : "Nothing in this cluster yet."} />
       )}
@@ -61,7 +67,7 @@ export function ResourceTable({ clusterId, kind }: { clusterId: string; kind: Re
                 {rows.map((row) => (
                   <TableRow key={`${row.namespace ?? "cluster"}/${row.name}`} className="cursor-pointer" onClick={() => setOpen({ namespace: row.namespace ?? "cluster", name: row.name })}>
                     <TableCell className="max-w-80">
-                      <p className="truncate font-medium" title={row.name}>{row.name}</p>
+                      <button type="button" className="max-w-full truncate text-left font-medium hover:underline" title={row.name}>{row.name}</button>
                       <p className="text-xs text-muted-foreground">{row.namespace ?? "Cluster-scoped"}</p>
                     </TableCell>
                     {config.columns.map((c) => <TableCell key={c.header} className={cn("text-sm", c.className)}>{c.cell(row)}</TableCell>)}
@@ -86,7 +92,7 @@ function ScopedTitle({ clusterId, kind }: { clusterId: string; kind: ResourceKin
       eyebrow={config.eyebrow}
       title={name ? `${config.title} · ${name}` : config.title}
       description={config.description}
-      actions={canWrite && (
+      actions={canWrite && !config.inspectOnly && (
         <>
           <Button asChild size="sm" variant="outline"><Link href="/kubernetes/apply"><FileCode /> Apply YAML</Link></Button>
           {kind === "deployments" && <Button asChild size="sm"><Link href="/workloads/deployments/new"><Plus /> New deployment</Link></Button>}

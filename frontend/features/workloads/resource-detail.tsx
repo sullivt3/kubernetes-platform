@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SecurityResourceOverview } from "@/features/security/resource-overview";
 import { LiveError, PodStatusBadge } from "@/features/kubernetes/shared";
 import {
   useCronJobSuspend,
@@ -292,9 +293,12 @@ export function ResourceDetailDialog({
                 {d.jobs && <TabsTrigger value="jobs">Jobs ({d.jobs.length})</TabsTrigger>}
                 {(kind === "configmaps" || kind === "secrets") && <TabsTrigger value="data">Data</TabsTrigger>}
                 <TabsTrigger value="yaml">YAML</TabsTrigger>
-                <TabsTrigger value="events">Events ({d.events.length})</TabsTrigger>
+                {!config.inspectOnly && <TabsTrigger value="events">Events ({d.events.length})</TabsTrigger>}
               </TabsList>
-              <TabsContent value="overview" className="pt-4"><Overview detail={d} /></TabsContent>
+              <TabsContent value="overview" className="space-y-5 pt-4">
+                {config.inspectOnly && <SecurityResourceOverview detail={d} />}
+                <Overview detail={d} />
+              </TabsContent>
               {isPod && <TabsContent value="logs" className="pt-4"><PodLogs clusterId={clusterId} namespace={target.namespace} pod={target.name} containers={containers} /></TabsContent>}
               {canExec && isPod && <TabsContent value="terminal" className="pt-4"><PodTerminal clusterId={clusterId} namespace={target.namespace} pod={target.name} containers={d.containers ?? []} /></TabsContent>}
               {d.pods && <TabsContent value="pods" className="pt-4"><PodsTable detail={d} /></TabsContent>}
@@ -309,9 +313,13 @@ export function ResourceDetailDialog({
               )}
               {(kind === "configmaps" || kind === "secrets") && <TabsContent value="data" className="pt-4"><DataView clusterId={clusterId} detail={d} /></TabsContent>}
               <TabsContent value="yaml" className="pt-4">
-                <YamlApplyPanel key={`${target.namespace}/${target.name}`} clusterId={clusterId} initial={d.yaml} defaultNamespace={config.scope === "cluster" ? "default" : target.namespace} allowNamespace={false} allowFiles={false} height="420px" />
+                {config.inspectOnly ? (
+                  <pre className="max-h-[420px] overflow-auto rounded-lg border bg-muted/40 p-3 text-xs" tabIndex={0} aria-label="Resource YAML">{d.yaml}</pre>
+                ) : (
+                  <YamlApplyPanel key={`${target.namespace}/${target.name}`} clusterId={clusterId} initial={d.yaml} defaultNamespace={config.scope === "cluster" ? "default" : target.namespace} allowNamespace={false} allowFiles={false} height="420px" />
+                )}
               </TabsContent>
-              <TabsContent value="events" className="pt-4"><Events detail={d} /></TabsContent>
+              {!config.inspectOnly && <TabsContent value="events" className="pt-4"><Events detail={d} /></TabsContent>}
             </Tabs>
             {canWrite && d.capabilities.scale && scaling && <ScaleDialog open={scaling} onOpenChange={setScaling} clusterId={clusterId} kind={kind} detail={d} />}
             {canWrite && kind === "deployments" && policyDialog && <ScalingPolicyDialog open={policyDialog} onOpenChange={setPolicyDialog} clusterId={clusterId} detail={d} />}

@@ -7,8 +7,12 @@ this registry covers the kinds that get dedicated list/detail views and actions.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import quote
 
 from app.core.errors import ValidationFailedError
+
+ADMISSION_API_VERSION = "admissionregistration.k8s.io/v1"
+RBAC_API_VERSION = "rbac.authorization.k8s.io/v1"
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,7 @@ class Kind:
         return f"{self.base()}/{self.plural}"
 
     def item(self, namespace: str | None, name: str) -> str:
+        name = quote(name, safe="")
         if self.namespaced:
             if not namespace:
                 raise ValidationFailedError(f"{self.kind} is namespaced; a namespace is required")
@@ -74,6 +79,34 @@ KINDS: dict[str, Kind] = {
         Kind("gateways", "Gateway", "gateway.networking.k8s.io/v1", "gateways"),
         Kind("httproutes", "HTTPRoute", "gateway.networking.k8s.io/v1", "httproutes"),
         Kind("referencegrants", "ReferenceGrant", "gateway.networking.k8s.io/v1", "referencegrants"),
+        Kind("roles", "Role", RBAC_API_VERSION, "roles", deletable=False),
+        Kind("clusterroles", "ClusterRole", RBAC_API_VERSION, "clusterroles", namespaced=False, deletable=False),
+        Kind("rolebindings", "RoleBinding", RBAC_API_VERSION, "rolebindings", deletable=False),
+        Kind(
+            "clusterrolebindings",
+            "ClusterRoleBinding",
+            RBAC_API_VERSION,
+            "clusterrolebindings",
+            namespaced=False,
+            deletable=False,
+        ),
+        Kind(
+            "validatingadmissionpolicies",
+            "ValidatingAdmissionPolicy",
+            ADMISSION_API_VERSION,
+            "validatingadmissionpolicies",
+            namespaced=False,
+            deletable=False,
+        ),
+        Kind(
+            "validatingadmissionpolicybindings",
+            "ValidatingAdmissionPolicyBinding",
+            ADMISSION_API_VERSION,
+            "validatingadmissionpolicybindings",
+            namespaced=False,
+            deletable=False,
+        ),
+        Kind("serviceaccounts", "ServiceAccount", "v1", "serviceaccounts", deletable=False),
         Kind("configmaps", "ConfigMap", "v1", "configmaps"),
         Kind("secrets", "Secret", "v1", "secrets"),
         Kind("resourcequotas", "ResourceQuota", "v1", "resourcequotas"),

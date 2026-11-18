@@ -352,6 +352,13 @@ class KubernetesService:
             by_ns.setdefault(pod["metadata"]["namespace"], []).append(pod)
         return [views.namespace_view(ns, by_ns.get(ns["metadata"]["name"], [])) for ns in ns_list]
 
+    def pod_security(self, principal: Principal, cluster_id: uuid.UUID) -> dict[str, Any]:
+        _, api = self.api(principal, cluster_id)
+        namespaces, truncated = kclient.list_items(api, "/api/v1/namespaces")
+        rows = [views.pod_security_view(ns) for ns in namespaces]
+        rows.sort(key=lambda row: row["namespace"])
+        return {"items": rows, "truncated": truncated}
+
     def pods(
         self,
         principal: Principal,

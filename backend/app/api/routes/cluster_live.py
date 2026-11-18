@@ -244,6 +244,16 @@ def namespaces(
     return service.namespaces(principal, cluster_id)
 
 
+@router.get("/{cluster_id}/security/pod-security")
+def pod_security(
+    cluster_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+) -> dict[str, Any]:
+    """Show explicit Pod Security Admission namespace labels."""
+    return service.pod_security(principal, cluster_id)
+
+
 @router.get("/{cluster_id}/pods")
 def pods(
     cluster_id: uuid.UUID,

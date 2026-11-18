@@ -14,6 +14,7 @@ import json
 import re
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import unquote
 
 from app.modules.kubernetes.client import ConnectionTarget
 
@@ -50,7 +51,13 @@ RESOURCES = {
         ("csidrivers", "CSIDriver", False),
         ("volumeattachments", "VolumeAttachment", False),
     ],
+    "admissionregistration.k8s.io/v1": [
+        ("validatingadmissionpolicies", "ValidatingAdmissionPolicy", False),
+        ("validatingadmissionpolicybindings", "ValidatingAdmissionPolicyBinding", False),
+    ],
     "rbac.authorization.k8s.io/v1": [
+        ("roles", "Role", True),
+        ("rolebindings", "RoleBinding", True),
         ("clusterroles", "ClusterRole", False),
         ("clusterrolebindings", "ClusterRoleBinding", False),
     ],
@@ -168,6 +175,7 @@ class FakeStore:
         params = params or {}
         payload = json.loads(body) if isinstance(body, bytes) else body
         self.requests.append((method, path, params))
+        path = unquote(path)
         if path == "/api/v1" or (path.startswith("/apis/") and path[len("/apis/") :] in RESOURCES):
             group = "v1" if path == "/api/v1" else path[len("/apis/") :]
             return self._ok({"resources": [{"name": p, "kind": k, "namespaced": n} for p, k, n in RESOURCES[group]]})
