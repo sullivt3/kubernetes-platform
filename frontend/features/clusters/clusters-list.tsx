@@ -4,6 +4,7 @@ import { Boxes, Plus, Upload } from "lucide-react";
 import Link from "next/link";
 
 import { EmptyState, ErrorState, PageHeader, TableSkeleton } from "@/components/common/page";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -13,13 +14,15 @@ import { ClusterStateBadge } from "./cluster-state";
 
 export function ClustersList() {
   const clusters = useClusters();
+  const canWrite = useCan("clusters.write");
+  const canRegister = useCan("infrastructure.write");
   return (
     <div className="space-y-6">
       <PageHeader
         eyebrow="Kubernetes"
         title="Clusters"
         description="Clusters created by the platform or imported with a kubeconfig. Health is observed every minute."
-        actions={
+        actions={canWrite && (
           <>
             <Button asChild size="sm" variant="outline">
               <Link href="/kubernetes/import"><Upload /> Import cluster</Link>
@@ -28,7 +31,7 @@ export function ClustersList() {
               <Link href="/kubernetes/create"><Plus /> Create cluster</Link>
             </Button>
           </>
-        }
+        )}
       />
       <Card className="py-0">
         <CardContent className="px-0">
@@ -40,12 +43,12 @@ export function ClustersList() {
               icon={Boxes}
               title="No clusters yet"
               description="Register Linux machines, then let the platform install Kubernetes on them with kubeadm."
-              action={
+              action={(canWrite || canRegister) && (
                 <div className="flex gap-2">
-                  <Button asChild variant="outline" size="sm"><Link href="/infrastructure/machines">Register machines</Link></Button>
-                  <Button asChild size="sm"><Link href="/kubernetes/create"><Plus /> Create cluster</Link></Button>
+                  {canRegister && <Button asChild variant="outline" size="sm"><Link href="/infrastructure/machines">Register machines</Link></Button>}
+                  {canWrite && <Button asChild size="sm"><Link href="/kubernetes/create"><Plus /> Create cluster</Link></Button>}
                 </div>
-              }
+              )}
             />
           )}
           {clusters.data && clusters.data.length > 0 && (

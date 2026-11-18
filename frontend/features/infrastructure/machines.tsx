@@ -463,7 +463,7 @@ export function MachinesPage() {
         eyebrow="Infrastructure"
         title="Machines"
         description="Linux servers the platform can install Kubernetes on: existing servers you register and machines it provisions. Each is reached over SSH with a pinned host key and checked against Kubernetes requirements."
-        actions={
+        actions={canWrite && (
           <>
             <Button asChild size="sm" variant="outline">
               <Link href="/infrastructure/provisioning"><Rocket /> Provision machines</Link>
@@ -472,7 +472,7 @@ export function MachinesPage() {
               <Plus /> Register machine
             </Button>
           </>
-        }
+        )}
       />
       <Card className="py-0">
         <CardContent className="px-0">
@@ -484,12 +484,12 @@ export function MachinesPage() {
               icon={Server}
               title="No machines yet"
               description="Register the Linux servers (physical or virtual) that will become Kubernetes nodes, or provision new ones locally or on Proxmox. Supported: Ubuntu 22.04/24.04, Debian 12/13, RHEL/Rocky/AlmaLinux 8/9, Fedora 43/44/45 (conventional Server/Workstation installations) with 2+ CPUs and 2 GB+ RAM."
-              action={
+              action={canWrite && (
                 <div className="flex gap-2">
                   <Button variant="outline" size="sm" onClick={() => setRegistering(true)}><Plus /> Register machine</Button>
                   <Button asChild variant="outline" size="sm"><Link href="/infrastructure/provisioning"><Rocket /> Provision machines</Link></Button>
                 </div>
-              }
+              )}
             />
           )}
           {machines.data && machines.data.length > 0 && (
@@ -560,14 +560,14 @@ export function MachinesPage() {
                           )}
                         </TableCell>
                         <TableCell onClick={(e) => e.stopPropagation()}>
-                          <DropdownMenu>
+                          {canWrite && <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button variant="ghost" size="icon" aria-label={`Actions for ${m.name}`}>
                                 <MoreHorizontal />
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              {canWrite && m.provider_type === "ssh" && !m.provisioned && (
+                              {m.provider_type === "ssh" && !m.provisioned && (
                                 <DropdownMenuItem onSelect={() => setUpdatingAddress(m)}>
                                   <Pencil /> Update address…
                                 </DropdownMenuItem>
@@ -611,7 +611,7 @@ export function MachinesPage() {
                                 <Trash2 /> {m.cluster_name ? "In use by a cluster" : "Remove from inventory"}
                               </DropdownMenuItem>
                             </DropdownMenuContent>
-                          </DropdownMenu>
+                          </DropdownMenu>}
                         </TableCell>
                       </TableRow>
                       {isOpen && (
@@ -630,11 +630,11 @@ export function MachinesPage() {
         </CardContent>
       </Card>
 
-      <RegisterDialog open={registering} onOpenChange={setRegistering} />
-      {networking && <MachineNetwork key={networking.id} machine={networking} onClose={() => setNetworking(null)} />}
-      {updatingAddress && <UpdateAddressDialog key={updatingAddress.id} machine={updatingAddress} onClose={() => setUpdatingAddress(null)} />}
+      <RegisterDialog open={canWrite && registering} onOpenChange={setRegistering} />
+      {canWrite && networking && <MachineNetwork key={networking.id} machine={networking} onClose={() => setNetworking(null)} />}
+      {canWrite && updatingAddress && <UpdateAddressDialog key={updatingAddress.id} machine={updatingAddress} onClose={() => setUpdatingAddress(null)} />}
       <ConfirmDialog
-        open={destroying !== null}
+        open={canWrite && destroying !== null}
         onOpenChange={(open) => !open && setDestroying(null)}
         title={`Destroy ${destroying?.name}?`}
         description={
@@ -663,7 +663,7 @@ export function MachinesPage() {
         }
       />
       <ConfirmDialog
-        open={powering !== null}
+        open={canWrite && powering !== null}
         onOpenChange={(open) => !open && setPowering(null)}
         title={`${powering?.action === "stop" ? "Stop" : "Reboot"} ${powering?.machine.name}?`}
         description={
@@ -678,7 +678,7 @@ export function MachinesPage() {
         onConfirm={() => powering && startPower(powering.machine, powering.action, true)}
       />
       <ConfirmDialog
-        open={deleting !== null}
+        open={canWrite && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={`Remove ${deleting?.name} from the inventory?`}
         description={<p>The platform forgets this machine and its pinned host key. Nothing is changed on the server itself.</p>}
@@ -700,7 +700,7 @@ export function MachinesPage() {
         }
       />
       <ConfirmDialog
-        open={retrusting !== null}
+        open={canWrite && retrusting !== null}
         onOpenChange={(open) => !open && setRetrusting(null)}
         title={`Accept a new host key for ${retrusting?.name}?`}
         description={

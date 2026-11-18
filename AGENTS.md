@@ -152,6 +152,15 @@ The real local Keycloak browser harness also passed administrator/viewer/operato
 login, role checks, cookie assertions, UI logout and the real worker self-check.
 Do not confuse these local checks with production or live provider validation.
 
+The Phase 7 permissions pass aligns viewer controls with the existing API
+permissions. Resource list actions and mutation dialogs use the session's write
+grants, page search follows the same permission mapping as the sidebar, and
+viewing provider inventory cannot queue discovery without infrastructure write
+access. On 2026-11-18, the local Keycloak browser checks passed for viewer and
+operator controls, search, the deployment form and provider discovery. Live
+Fedora node and DNS views passed for both roles. The Docker frontend build,
+29 frontend tests and 36 backend identity tests passed.
+
 ## Remaining work and priorities
 
 Default recommendation, subject to the user's chosen task: validate the current baseline and finish Phase 7 before expanding Phase 8.
@@ -160,7 +169,6 @@ Default recommendation, subject to the user's chosen task: validate the current 
 
 - Authentication/session tests: OIDC login/callback/logout, token validation, expiry/revocation, CSRF and browser behavior, plus live identity-provider validation.
 - Expand authorization/isolation coverage for organization/project selection, memberships, read/write roles, detail lookups, linked resources, workers, streams, secret reveals and terminal access. The original suite predominantly uses the development administrator; the new identity suite uses real OIDC authentication with a simulated provider transport.
-- Finish hiding/disabling individual mutation controls for restricted roles; keep independent backend enforcement.
 - Kubernetes Roles/ClusterRoles/RoleBindings/ClusterRoleBindings, ServiceAccounts and security-policy views. Application RBAC and Kubernetes RBAC are separate layers.
 - Security posture reports, further audit filtering/reporting, credential access review and any selected external secrets-store integration.
 - Platform/cluster backup and restore, including encryption-key recovery.

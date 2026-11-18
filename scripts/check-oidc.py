@@ -8,10 +8,11 @@ credential. It never touches infrastructure or managed Kubernetes clusters.
 from __future__ import annotations
 
 import os
+import re
 import time
 import uuid
 
-from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Page, Route, expect, sync_playwright
 
 BASE = "http://localhost:3000"
 API = BASE + "/api/v1"
@@ -41,6 +42,98 @@ def login(
 def mutation_headers(context: BrowserContext) -> dict[str, str]:
     cookies = {cookie["name"]: cookie["value"] for cookie in context.cookies(BASE)}
     return {"X-CSRF-Token": cookies["kplatform_csrf"], "Origin": BASE}
+
+
+def check_resource_actions(page: Page, *, can_write: bool) -> None:
+    pages = (
+        (
+            "/infrastructure/machines",
+            "Machines",
+            (("button", "Register machine"), ("link", "Provision machines")),
+        ),
+        (
+            "/kubernetes/clusters",
+            "Clusters",
+            (("link", "Create cluster"), ("link", "Import cluster")),
+        ),
+        (
+            "/infrastructure/providers",
+            "Infrastructure providers",
+            (("button", "Add connection"),),
+        ),
+    )
+    for path, title, actions in pages:
+        page.goto(BASE + path)
+        main = page.get_by_role("main")
+        expect(main.get_by_role("heading", name=title, exact=True)).to_be_visible()
+        for role, label in actions:
+            control = main.get_by_role(role, name=label, exact=True)
+            if can_write:
+                expect(control.first).to_be_visible()
+            else:
+                expect(control).to_have_count(0)
+
+    page.get_by_role("button", name=re.compile("Search pages and operations")).click()
+    search = page.get_by_role("dialog", name="Search")
+    expect(search).to_be_visible()
+    create = search.get_by_role("option", name="Create cluster", exact=True)
+    if can_write:
+        expect(create).to_be_visible()
+    else:
+        expect(create).to_have_count(0)
+
+    page.goto(BASE + "/workloads/deployments/new")
+    heading = "New deployment" if can_write else "Access restricted"
+    expect(page.get_by_role("heading", name=heading, exact=True)).to_be_visible()
+
+
+def check_inventory_discovery(page: Page, *, can_write: bool) -> None:
+    # Use a fixture in the browser so this check never triggers discovery on a real provider.
+    identifier = str(uuid.uuid4())
+    connection = {
+        "id": identifier,
+        "name": "Browser check provider",
+        "provider_type": "local",
+        "provider_name": "Local Docker",
+        "category": "local",
+        "status": "connected",
+        "capabilities": ["discover"],
+    }
+    discovery = API + f"/provider-connections/{identifier}/discover"
+    history = re.compile(re.escape(API) + r"/operations\?.*\btype=provider\.discover(?:&|$)")
+    discovery_calls: list[str] = []
+
+    def handle_discovery(route: Route) -> None:
+        discovery_calls.append(route.request.method)
+        route.fulfill(status=202, json={"id": identifier})
+
+    page.route(API + "/provider-connections", lambda route: route.fulfill(json=[connection]))
+    page.route(
+        history,
+        lambda route: route.fulfill(json={"items": [], "total": 0, "limit": 100, "offset": 0}),
+    )
+    page.route(discovery, handle_discovery)
+    page.route(
+        API + f"/operations/{identifier}",
+        lambda route: route.fulfill(
+            json={"id": identifier, "status": "succeeded", "result": {"machines": []}},
+        ),
+    )
+
+    with page.expect_response(history) as loaded_history:
+        page.goto(BASE + "/infrastructure/virtual-machines")
+    assert loaded_history.value.ok
+    expect(page.get_by_text(connection["name"], exact=True)).to_be_visible()
+    if can_write:
+        expect(page.get_by_text("No machines found", exact=True)).to_be_visible()
+        assert discovery_calls == ["POST"], discovery_calls
+        expect(page.get_by_role("button", name="Discover again", exact=True)).to_be_enabled()
+    else:
+        expect(page.get_by_text("Not discovered yet.", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name=re.compile(r"^Discover( again)?$"))).to_have_count(0)
+        assert not discovery_calls, discovery_calls
+        response = page.context.request.post(discovery, headers=mutation_headers(page.context), data={})
+        assert response.status == 403, response.status
 
 
 def main() -> None:
@@ -115,6 +208,8 @@ def main() -> None:
                         params={"confirm": name},
                     )
                     assert deleted.status == 204
+                check_resource_actions(page, can_write=role == "operator")
+                check_inventory_discovery(page, can_write=role == "operator")
                 context.close()
                 print(f"Real OIDC login and {role} access checks passed")
             admin_page.get_by_role("button", name="Account", exact=True).click()

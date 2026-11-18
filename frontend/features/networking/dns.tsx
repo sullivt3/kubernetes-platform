@@ -4,6 +4,7 @@ import { FileCode } from "lucide-react";
 import Link from "next/link";
 
 import { EmptyState, PageHeader, TableSkeleton } from "@/components/common/page";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -15,6 +16,7 @@ import { useResources } from "@/lib/api/workloads";
 type Resource = Record<string, unknown> & { name: string; namespace: string | null };
 
 function DnsInventory({ clusterId }: { clusterId: string }) {
+  const canWrite = useCan("clusters.write");
   const cluster = useCluster(clusterId);
   const services = useResources(clusterId, "services", "");
   const slices = useResources(clusterId, "endpointslices", "");
@@ -40,10 +42,10 @@ function DnsInventory({ clusterId }: { clusterId: string }) {
       <PageHeader
         eyebrow="Networking"
         title={name ? `DNS & service discovery · ${name}` : "DNS & service discovery"}
-        description={`Service DNS names and published endpoints using the cluster domain ${domain}. Test actual DNS resolution with an in-cluster lookup below.`}
-        actions={<Button asChild size="sm" variant="outline"><Link href="/kubernetes/apply"><FileCode /> Apply YAML</Link></Button>}
+        description={`Service DNS names and published endpoints using the cluster domain ${domain}. ${canWrite ? " Test resolution with an in-cluster lookup below." : ""}`}
+        actions={canWrite && <Button asChild size="sm" variant="outline"><Link href="/kubernetes/apply"><FileCode /> Apply YAML</Link></Button>}
       />
-      <DnsLookupPanel clusterId={clusterId} key={clusterId} />
+      {canWrite && <DnsLookupPanel clusterId={clusterId} key={clusterId} />}
       <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-3 text-sm text-muted-foreground">
         Normal Services resolve to their ClusterIP. Headless Services publish ready EndpointSlice addresses. DNS resolution itself is provided by the cluster&apos;s DNS add-on.
       </div>

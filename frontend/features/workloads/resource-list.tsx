@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { EmptyState, PageHeader, TableSkeleton } from "@/components/common/page";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -78,18 +79,19 @@ export function ResourceTable({ clusterId, kind }: { clusterId: string; kind: Re
 
 function ScopedTitle({ clusterId, kind }: { clusterId: string; kind: ResourceKind }) {
   const config = KIND_CONFIG[kind];
+  const canWrite = useCan("clusters.write");
   const name = useClusters().data?.find((c) => c.id === clusterId)?.name;
   return (
     <PageHeader
       eyebrow={config.eyebrow}
       title={name ? `${config.title} · ${name}` : config.title}
       description={config.description}
-      actions={
+      actions={canWrite && (
         <>
           <Button asChild size="sm" variant="outline"><Link href="/kubernetes/apply"><FileCode /> Apply YAML</Link></Button>
           {kind === "deployments" && <Button asChild size="sm"><Link href="/workloads/deployments/new"><Plus /> New deployment</Link></Button>}
         </>
-      }
+      )}
     />
   );
 }

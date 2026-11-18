@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { EmptyState, ErrorState } from "@/components/common/page";
 import { StatusPill } from "@/components/common/status";
 import { useSelectedCluster } from "@/components/layout/cluster-context";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ClusterStateBadge } from "@/features/clusters/cluster-state";
@@ -93,6 +94,7 @@ export function PodStatusBadge({ status, problem, phase }: { status: string; pro
  */
 export function ClusterScope({ children }: { children: (clusterId: string) => ReactNode }) {
   const clusters = useClusters();
+  const canWrite = useCan("clusters.write");
   const { clusterId, setClusterId } = useSelectedCluster();
   if (clusters.isLoading) return <Skeleton className="h-64" />;
   if (clusters.isError) return <ErrorState error={clusters.error} onRetry={() => clusters.refetch()} />;
@@ -105,12 +107,12 @@ export function ClusterScope({ children }: { children: (clusterId: string) => Re
         icon={Boxes}
         title="No connected clusters"
         description="Import an existing cluster with a kubeconfig, or create one on registered machines."
-        action={
+        action={canWrite && (
           <div className="flex gap-2">
             <Button asChild variant="outline" size="sm"><Link href="/kubernetes/import"><Upload /> Import cluster</Link></Button>
             <Button asChild size="sm"><Link href="/kubernetes/create"><Plus /> Create cluster</Link></Button>
           </div>
-        }
+        )}
       />
     );
   }

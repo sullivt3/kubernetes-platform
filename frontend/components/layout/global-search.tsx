@@ -13,8 +13,10 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { useAuth } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { useOperations } from "@/lib/api/hooks";
+import { pagePermission } from "@/lib/api/identity";
 import { NAVIGATION } from "@/lib/navigation";
 
 /**
@@ -25,6 +27,11 @@ export function GlobalSearch() {
   const [open, setOpen] = useState(false);
   const router = useRouter();
   const operations = useOperations({ limit: 20 });
+  const permissions = useAuth()?.context?.permissions ?? [];
+  const sections = NAVIGATION.map((section) => ({
+    ...section,
+    items: section.items.filter((item) => permissions.includes(pagePermission(item.href))),
+  })).filter((section) => section.items.length > 0);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -70,7 +77,7 @@ export function GlobalSearch() {
               No results. Cluster resources become searchable once clusters are
               connected.
             </CommandEmpty>
-            {NAVIGATION.map((section) => (
+            {sections.map((section) => (
               <CommandGroup key={section.title} heading={section.title}>
                 {section.items.map((item) => (
                   <CommandItem

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { PageHeader } from "@/components/common/page";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClusterScope } from "@/features/kubernetes/shared";
@@ -20,6 +21,7 @@ const resources: { kind: ResourceKind; label: string }[] = [
 ];
 
 function GatewayResources({ clusterId }: { clusterId: string }) {
+  const canWrite = useCan("clusters.write");
   const [kind, setKind] = useState<ResourceKind>("gatewayclasses");
   const name = useClusters().data?.find((cluster) => cluster.id === clusterId)?.name;
   return (
@@ -28,7 +30,7 @@ function GatewayResources({ clusterId }: { clusterId: string }) {
         eyebrow="Networking"
         title={name ? `Gateway API · ${name}` : "Gateway API"}
         description="Inspect GatewayClasses, Gateways, HTTPRoutes and ReferenceGrants. The Gateway API CRDs and a compatible controller must be installed in the cluster."
-        actions={<Button asChild size="sm" variant="outline"><Link href="/kubernetes/apply"><FileCode /> Apply YAML</Link></Button>}
+        actions={canWrite && <Button asChild size="sm" variant="outline"><Link href="/kubernetes/apply"><FileCode /> Apply YAML</Link></Button>}
       />
       <Tabs value={kind} onValueChange={(value) => setKind(value as ResourceKind)}>
         <TabsList className="flex-wrap">

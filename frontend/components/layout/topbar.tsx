@@ -23,10 +23,11 @@ import { useClusters, useOperations, useSystemInfo } from "@/lib/api/hooks";
 import { useSelectedCluster } from "./cluster-context";
 import { GlobalSearch } from "./global-search";
 import { SidebarContent } from "./sidebar";
-import { ContextSelector, signOut, useAuth } from "@/components/providers/auth";
+import { ContextSelector, signOut, useAuth, useCan } from "@/components/providers/auth";
 
 function ClusterSelector() {
   const clusters = useClusters();
+  const canWrite = useCan("clusters.write");
   const { clusterId, setClusterId } = useSelectedCluster();
   const items = clusters.data ?? [];
   const selected = items.find((c) => c.id === clusterId);
@@ -51,9 +52,7 @@ function ClusterSelector() {
         {!clusters.isError && items.length === 0 && (
           <div className="space-y-2 px-2 py-2 text-xs text-muted-foreground">
             <p>No clusters yet.</p>
-            <Link href="/kubernetes/create" className="text-sky-400 hover:underline">
-              Create a cluster
-            </Link>
+            {canWrite && <Link href="/kubernetes/create" className="text-sky-400 hover:underline">Create a cluster</Link>}
           </div>
         )}
         {items.map((cluster) => (

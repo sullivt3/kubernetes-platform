@@ -133,9 +133,11 @@ python scripts/check-oidc.py
 ```
 
 This signs in all three fixture users, runs the real worker self-check, grants the local operator/viewer their
-documented memberships, verifies cookie flags and role boundaries (including the
-credential UI), creates/deletes one disposable operator credential, and signs the
-administrator out through the UI. It does not touch infrastructure or clusters.
+documented memberships, verifies cookie flags and role boundaries, creates/deletes
+one disposable operator credential, and signs the administrator out through the
+UI. It also checks visible actions on machines and clusters, search results, direct
+navigation to the deployment form, and automatic provider discovery. The discovery
+check uses isolated browser fixtures. No live infrastructure actions run.
 
 ## Stop services
 

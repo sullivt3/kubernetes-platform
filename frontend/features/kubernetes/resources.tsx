@@ -7,6 +7,7 @@ import { WorkerPools } from "@/features/clusters/worker-pools";
 import { EmptyState, TableSkeleton } from "@/components/common/page";
 import { StatusPill } from "@/components/common/status";
 import { Badge } from "@/components/ui/badge";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -134,6 +135,7 @@ function NodeDialog({ clusterId, name, onClose }: { clusterId: string; name: str
 export function NodesTable({ clusterId }: { clusterId: string }) {
   const nodes = useClusterNodes(clusterId);
   const cluster = useCluster(clusterId);
+  const canWrite = useCan("clusters.write");
   const [open, setOpen] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   if (nodes.isLoading) return <TableSkeleton rows={3} columns={7} />;
@@ -148,9 +150,9 @@ export function NodesTable({ clusterId }: { clusterId: string }) {
         <div className="mb-3 flex items-center justify-between gap-3">
           <p className="text-sm text-muted-foreground">
             {c.nodes.filter((m) => m.membership_state !== "joined").map((m) => `${m.node_name ?? m.machine_name}: ${m.membership_state}`).join(" · ") ||
-              "Click a node to cordon, drain, label, taint, read its logs or remove it."}
+              (canWrite ? "Click a node to manage scheduling, labels and taints, or read system logs." : "Click a node to view its details and system logs.")}
           </p>
-          <Button size="sm" onClick={() => setAdding(true)} disabled={!canAdd}><Plus /> Add nodes</Button>
+          {canWrite && <Button size="sm" onClick={() => setAdding(true)} disabled={!canAdd}><Plus /> Add nodes</Button>}
         </div>
       )}
       <Frame>
@@ -195,7 +197,7 @@ export function NodesTable({ clusterId }: { clusterId: string }) {
         </Table>
       </Frame>
       <NodeDialog clusterId={clusterId} name={open} onClose={() => setOpen(null)} />
-      {adding && c && <AddNodesDialog cluster={c} open onClose={() => setAdding(false)} />}
+      {canWrite && adding && c && <AddNodesDialog cluster={c} open onClose={() => setAdding(false)} />}
     </>
   );
 }

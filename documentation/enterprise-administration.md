@@ -28,10 +28,12 @@ compatibility with every production identity provider.
   periodically; already accepted asynchronous jobs continue under their recorded
   identity and scope. Membership removal does not implicitly cancel those jobs.
 - Administration pages for users, tenant records, role assignments and effective
-  permissions. Navigation and write-only routes reflect permissions. Viewer pages
-  display a read-only notice; the API independently rejects every write, Secret
-  reveal and terminal attempt. Existing resource action menus still need the
-  remaining control-by-control visibility pass.
+  permissions. The sidebar, page search, and write-only routes share the same
+  permission mapping. Viewer pages keep read actions available and hide or
+  disable controls that change resources, reveal Secrets, or start terminals.
+  Provider inventory shows existing discovery results to viewers and only queues
+  discovery for sessions with infrastructure write permission. The API enforces
+  its own permissions for direct requests.
 - Membership changes, user changes, administrative recovery and permission denials
   are audited. Existing encrypted credential storage and rotation remain in use.
 
@@ -159,7 +161,6 @@ administrator must remain when their administrative privileges are removed.
 - Extend authentication, membership, isolation and permission regression coverage,
   including identity-provider outages, key rotation and concurrent administration;
   verify OIDC behavior against the intended deployment's identity provider.
-- Finish hiding or disabling individual mutation controls for restricted roles.
 - Kubernetes Roles/ClusterRoles/bindings, ServiceAccounts and security-policy views.
 - Security posture reporting and further audit filtering/reporting.
 - Backup and restore workflows for platform and cluster state, including key recovery.

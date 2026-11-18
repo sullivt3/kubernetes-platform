@@ -449,8 +449,8 @@ migrations. Validation happens in the application.
   * Restricted CORS.
   * Structured errors that never leak internals.
 * **Containers:** the backend runs as a non-root user.
-* **Phase 7 remains in progress:** authentication/isolation tests and live OIDC validation, individual UI action
-  visibility, Kubernetes security views/reporting, general API rate limiting, TLS deployment guidance and backup/restore.
+* **Phase 7 remains in progress:** authentication/isolation tests and live OIDC validation,
+  Kubernetes security views/reporting, general API rate limiting, TLS deployment guidance and backup/restore.
 
 ## Frontend architecture
 

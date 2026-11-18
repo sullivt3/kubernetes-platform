@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { ErrorState, PageHeader, Section } from "@/components/common/page";
 import { StatusPill } from "@/components/common/status";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -97,6 +98,7 @@ export function ClusterDetailView({ params }: { params: Promise<{ id: string }> 
   const [tab, setTab] = useState<Tab>(requested && TABS.includes(requested) ? requested : "overview");
   const cluster = useCluster(id);
   const remove = useDeleteCluster();
+  const canWrite = useCan("clusters.write");
   const [deleting, setDeleting] = useState(false);
   const [force, setForce] = useState(false);
   const [destroyMachines, setDestroyMachines] = useState(false);
@@ -179,7 +181,7 @@ export function ClusterDetailView({ params }: { params: Promise<{ id: string }> 
       </Tabs>
 
       <ConfirmDialog
-        open={deleting}
+        open={canWrite && deleting}
         onOpenChange={(open) => {
           setDeleting(open);
           if (!open) {

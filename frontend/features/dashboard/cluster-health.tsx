@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { EmptyState, ErrorState, Section } from "@/components/common/page";
 import { StatusPill } from "@/components/common/status";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -68,6 +69,7 @@ function ClusterCard({ cluster }: { cluster: ClusterSummary }) {
 
 export function ClusterHealthSection() {
   const clusters = useClusters();
+  const canWrite = useCan("clusters.write");
   const list = clusters.data ?? [];
   const alerts = list.flatMap((c) => [
     ...(c.health?.alerts ?? []).map((a) => ({ ...a, cluster: c })),
@@ -87,12 +89,12 @@ export function ClusterHealthSection() {
             icon={Boxes}
             title="No clusters yet"
             description="Create a cluster on registered Linux machines, or import an existing one with its kubeconfig."
-            action={
+            action={canWrite && (
               <div className="flex gap-2">
                 <Button asChild variant="outline" size="sm"><Link href="/kubernetes/import"><Upload /> Import cluster</Link></Button>
                 <Button asChild size="sm"><Link href="/kubernetes/create"><Plus /> Create cluster</Link></Button>
               </div>
-            }
+            )}
           />
         )}
         {list.length > 0 && (

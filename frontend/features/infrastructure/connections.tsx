@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
@@ -29,6 +29,7 @@ import {
   type SchemaValues,
 } from "@/components/common/schema-form";
 import { ImplementationBadge, StatusPill } from "@/components/common/status";
+import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -245,6 +246,7 @@ export function ConnectionsSection({ categories, providers }: { categories?: str
   const connections = useConnections();
   const validate = useValidateConnection();
   const remove = useDeleteConnection();
+  const canWrite = useCan("infrastructure.write");
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<ProviderConnection | null>(null);
   const [discovering, setDiscovering] = useState<ProviderConnection | null>(null);
@@ -259,7 +261,7 @@ export function ConnectionsSection({ categories, providers }: { categories?: str
           <h2 className="font-semibold">Connections</h2>
           <p className="text-sm text-muted-foreground">Configured provider accounts and hosts the platform can use.</p>
         </div>
-        <Button size="sm" onClick={() => setAdding(true)}><Plus /> Add connection</Button>
+        {canWrite && <Button size="sm" onClick={() => setAdding(true)}><Plus /> Add connection</Button>}
       </div>
       <Card className="py-0">
         <CardContent className="px-0">
@@ -271,7 +273,7 @@ export function ConnectionsSection({ categories, providers }: { categories?: str
               icon={Plug}
               title="No provider connections"
               description="Add a connection to provision machines locally (Docker) or on Proxmox, or to inventory cloud accounts. Existing Linux servers do not need one: register them under Machines."
-              action={<Button variant="outline" size="sm" onClick={() => setAdding(true)}><Plus /> Add connection</Button>}
+              action={canWrite && <Button variant="outline" size="sm" onClick={() => setAdding(true)}><Plus /> Add connection</Button>}
             />
           )}
           {rows.length > 0 && (
@@ -311,7 +313,7 @@ export function ConnectionsSection({ categories, providers }: { categories?: str
                         {c.last_validated_at ? formatRelative(c.last_validated_at) : "—"}
                       </TableCell>
                       <TableCell>
-                        <DropdownMenu>
+                        {canWrite && <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" aria-label={`Actions for ${c.name}`}><MoreHorizontal /></Button>
                           </DropdownMenuTrigger>
@@ -351,7 +353,7 @@ export function ConnectionsSection({ categories, providers }: { categories?: str
                               <Trash2 /> {c.machine_count > 0 ? "Has machines" : "Delete connection"}
                             </DropdownMenuItem>
                           </DropdownMenuContent>
-                        </DropdownMenu>
+                        </DropdownMenu>}
                       </TableCell>
                     </TableRow>
                   );
@@ -362,10 +364,10 @@ export function ConnectionsSection({ categories, providers }: { categories?: str
         </CardContent>
       </Card>
 
-      <AddConnectionDialog open={adding} onOpenChange={setAdding} />
-      <DiscoveryDialog connection={discovering} onClose={() => setDiscovering(null)} />
+      <AddConnectionDialog open={canWrite && adding} onOpenChange={setAdding} />
+      <DiscoveryDialog connection={canWrite ? discovering : null} onClose={() => setDiscovering(null)} />
       <ConfirmDialog
-        open={deleting !== null}
+        open={canWrite && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={`Delete connection ${deleting?.name}?`}
         description={<p>The platform forgets this connection. Nothing changes at the provider.</p>}
@@ -409,7 +411,8 @@ function DiscoveryDialog({ connection, onClose }: { connection: ProviderConnecti
 /** Latest discovery result for a connection, with a button to refresh it. */
 export function ConnectionInventory({ connection, autoStart = false }: { connection: ProviderConnection; autoStart?: boolean }) {
   const recent = useOperations({ type: "provider.discover", limit: 100 });
-  const discover = useDiscoverMachines();
+  const { mutate: discover, isPending } = useDiscoverMachines();
+  const canWrite = useCan("infrastructure.write");
   const [started, setStarted] = useState<string | null>(null);
   const latest = useMemo(
     () => recent.data?.items.find((op) => op.target_id === connection.id)?.id ?? null,
@@ -417,16 +420,21 @@ export function ConnectionInventory({ connection, autoStart = false }: { connect
   );
   const opId = started ?? latest;
   const op = useOperationResult(opId);
-  const [autoStarted, setAutoStarted] = useState(false);
-  const run = () =>
-    discover.mutate(connection.id, {
-      onSuccess: (o) => setStarted(o.id),
-      onError: (e) => toast.error("Discovery failed to start", { description: e.message }),
+  const autoStarted = useRef(false);
+  const canDiscover = canWrite && connection.capabilities.includes("discover");
+  const run = useCallback(() => {
+    if (!canDiscover) return;
+    discover(connection.id, {
+      onSuccess: (operation) => setStarted(operation.id),
+      onError: (error) => toast.error("Discovery failed to start", { description: error.message }),
     });
-  if (autoStart && !autoStarted && recent.isSuccess && !discover.isPending) {
-    setAutoStarted(true);
-    if (!latest) run();
-  }
+  }, [canDiscover, connection.id, discover]);
+
+  useEffect(() => {
+    if (!canDiscover || !autoStart || autoStarted.current || !recent.isSuccess || isPending) return;
+    autoStarted.current = true;
+    if (!opId) run();
+  }, [autoStart, canDiscover, isPending, opId, recent.isSuccess, run]);
 
   const machines = (op.data?.result?.machines as DiscoveredMachine[] | undefined) ?? [];
   const running = op.data && !["succeeded", "failed", "cancelled"].includes(op.data.status);
@@ -436,13 +444,15 @@ export function ConnectionInventory({ connection, autoStart = false }: { connect
         <span>
           {op.data?.status === "succeeded" && op.data.finished_at && `Discovered ${formatRelative(op.data.finished_at)}`}
           {running && "Discovering…"}
-          {!opId && !discover.isPending && "Not discovered yet."}
+          {!opId && !isPending && "Not discovered yet."}
         </span>
-        <Button size="sm" variant="outline" onClick={run} disabled={discover.isPending || Boolean(running)}>
-          <Radar /> {opId ? "Discover again" : "Discover"}
-        </Button>
+        {canDiscover && (
+          <Button size="sm" variant="outline" onClick={run} disabled={isPending || Boolean(running)}>
+            <Radar /> {opId ? "Discover again" : "Discover"}
+          </Button>
+        )}
       </div>
-      {(running || discover.isPending) && <TableSkeleton rows={3} columns={5} />}
+      {(running || isPending) && <TableSkeleton rows={3} columns={5} />}
       {op.data?.status === "failed" && (
         <p className="rounded border border-red-500/30 bg-red-500/5 p-2 text-sm text-red-300">
           {String(op.data.error?.message ?? "Discovery failed")}
@@ -458,7 +468,7 @@ export function ConnectionInventory({ connection, autoStart = false }: { connect
 
 function DiscoveredTable({ connection, machines }: { connection: ProviderConnection; machines: DiscoveredMachine[] }) {
   const [importing, setImporting] = useState<DiscoveredMachine | null>(null);
-  const readOnly = connection.category === "cloud";
+  const canImport = useCan("infrastructure.write") && connection.category !== "cloud";
   return (
     <>
       <Table>
@@ -498,7 +508,7 @@ function DiscoveredTable({ connection, machines }: { connection: ProviderConnect
               <TableCell className="text-right">
                 {m.inventory_machine ? (
                   <StatusPill tone="success">{m.inventory_machine}</StatusPill>
-                ) : readOnly || !m.importable ? (
+                ) : !canImport || !m.importable ? (
                   <span className="text-xs text-muted-foreground">Read-only</span>
                 ) : (
                   <Button size="xs" variant="outline" onClick={() => setImporting(m)}><Download /> Import</Button>
@@ -508,13 +518,13 @@ function DiscoveredTable({ connection, machines }: { connection: ProviderConnect
           ))}
         </TableBody>
       </Table>
-      {readOnly && (
+      {connection.category === "cloud" && (
         <p className="text-xs text-muted-foreground">
           Discovered cloud instances are read-only. Provision machines through the platform to manage their lifecycle;
           register existing servers as SSH machines.
         </p>
       )}
-      <ImportDialog connection={connection} machine={importing} onClose={() => setImporting(null)} />
+      <ImportDialog connection={connection} machine={canImport ? importing : null} onClose={() => setImporting(null)} />
     </>
   );
 }
@@ -624,6 +634,7 @@ function ImportDialog({
 /** Inventory pages: one card per connection of the given categories. */
 export function ProviderInventory({ categories, emptyHint }: { categories: string[]; emptyHint: string }) {
   const connections = useConnections();
+  const canWrite = useCan("infrastructure.write");
   const rows = (connections.data ?? []).filter((c) => categories.includes(c.category));
   if (connections.isLoading) return <TableSkeleton rows={3} columns={4} />;
   if (connections.isError) return <ErrorState error={connections.error} onRetry={() => connections.refetch()} />;
@@ -633,7 +644,7 @@ export function ProviderInventory({ categories, emptyHint }: { categories: strin
         icon={Plug}
         title="No connections"
         description={emptyHint}
-        action={<Button asChild variant="outline" size="sm"><Link href="/infrastructure/providers"><Plus /> Add a connection</Link></Button>}
+        action={canWrite && <Button asChild variant="outline" size="sm"><Link href="/infrastructure/providers"><Plus /> Add a connection</Link></Button>}
       />
     );
   return (
