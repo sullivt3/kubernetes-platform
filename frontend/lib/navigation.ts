@@ -149,7 +149,7 @@ export const NAVIGATION: NavSection[] = [
     items: [
       { title: "Operations", href: "/operations", description: "Active and historical operations with live execution logs.", keywords: ["jobs", "history", "tasks"] },
       { title: "Monitoring", href: "/ops/monitoring", description: "Historical node and pod metrics and Grafana dashboards." },
-      { title: "Logs", href: "/ops/logs", description: "Application logs (Loki).", phase: 8 },
+      { title: "Logs", href: "/ops/logs", description: "Search historical Kubernetes pod logs collected by Loki." },
       { title: "Events", href: "/ops/events", description: "Recent Kubernetes events for the selected cluster." },
       { title: "Alerts", href: "/ops/alerts", description: "Alert rules and active alerts.", phase: 8 },
       { title: "Backup & restore", href: "/ops/backup", description: "Cluster and platform backups." },

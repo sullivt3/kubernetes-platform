@@ -28,7 +28,7 @@ Target environments include existing physical Linux servers over SSH, local Dock
 - **Domain modules:** `backend/app/modules/` contains organizations/identity, credentials, auditing, providers, infrastructure, cluster lifecycle, Kubernetes access and workloads. Networking/storage functionality currently shares the Kubernetes/workload modules; do not create parallel modules just to match a suggested directory tree.
 - **Orchestration:** `backend/app/orchestration/` uses Celery and Redis with PostgreSQL-backed operations, steps, checkpoints, logs and recovery. API, worker and scheduler are separate process roles from the same backend codebase. SSE supplies operation/log updates; WebSockets bridge pod terminals.
 - **Infrastructure:** provider implementations live in `modules/providers/implementations/`; SSH execution and inventory live in `modules/infrastructure/`. Distribution plans and installers live in `modules/cluster_lifecycle/distributions/`.
-- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0007`, adding a per-cluster Prometheus Service connection.
+- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0008`, adding a per-cluster Loki Service connection.
 - **Deployment:** `infrastructure/deployment/docker-compose.yml` supplies PostgreSQL/Redis and optional backend API/worker/scheduler services. The frontend runs separately. `infrastructure/containers/backend.Dockerfile` packages the backend.
 
 Keep infrastructure provisioning, host execution, and Kubernetes distribution installation separate. Add capabilities through the existing provider/distribution contracts and registries instead of scattering provider conditionals through services or UI.
@@ -137,7 +137,7 @@ Context reviewed **2026-11-11**. This handoff includes machine address/health ma
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Prometheus history and Grafana node and pod dashboards implemented. Loki, alerts, remediation, Helm releases, GitOps, dynamic CRD management, command center and custom workflows remain planned. |
+| 8 — Advanced operations | **In progress.** Prometheus history, Grafana dashboards, and Loki pod log search implemented. Alerts, remediation, Helm releases, GitOps, dynamic CRD management, command center and custom workflows remain planned. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -216,6 +216,15 @@ Kubernetes provisioning manifests ship node and pod dashboards backed by the
 existing Prometheus Service. Live Fedora browser checks verified operator and
 viewer links, Grafana sign-in, and matching samples across all four panels.
 The 81 targeted backend tests, 29 frontend tests, and Docker frontend build passed.
+
+Loki log search under **Operations → Logs** uses a cluster-scoped Service
+connection stored by migration `0008`. The Fedora lab runs Loki and Alloy in
+`kplatform-monitoring`. The shipped collector covers that namespace. The
+live lab also includes `default/loki-log-test` through a pod-scoped Role.
+The Namespace dropdown queries the selected Loki Service for the selected
+lookback and preselects a sole result. Live operator and viewer checks found logs from both UIDs of a
+disposable, replaced pod. The 83 backend tests, 29 frontend tests and Docker
+frontend build passed. [Logging setup](documentation/logging.md)
 
 ## Remaining work and priorities
 

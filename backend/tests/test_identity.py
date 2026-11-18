@@ -216,6 +216,7 @@ def test_identity_claims_do_not_grant_membership_or_admin(identity: IdentityHarn
         ("GET", "/audit-events", None),
         ("GET", "/backups", None),
         ("PUT", "/clusters/00000000-0000-0000-0000-000000000001/monitoring/connection", {}),
+        ("PUT", "/clusters/00000000-0000-0000-0000-000000000001/logs/connection", {}),
         ("POST", "/backups", {}),
         ("POST", "/clusters/00000000-0000-0000-0000-000000000001/restores", {}),
         ("POST", "/clusters/00000000-0000-0000-0000-000000000001/secrets/default/password/reveal", None),

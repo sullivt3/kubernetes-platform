@@ -4,37 +4,24 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, HttpUrl, StringConstraints, field_validator
+from pydantic import BaseModel, HttpUrl, field_validator
 
 from app.core.errors import PlatformError
 from app.modules.kubernetes.client import ClusterAPI, KubernetesAPIError, get_json
+from app.modules.kubernetes.service_proxy import ServiceEndpoint
 
-DNSLabel = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)]
 Window = Literal["1h", "6h", "24h"]
 Metric = Literal["node_cpu", "node_memory", "pod_cpu", "pod_memory"]
 WINDOWS: dict[Window, tuple[int, int]] = {"1h": (3600, 30), "6h": (21600, 120), "24h": (86400, 300)}
 SERIES_LIMIT = 8
 
 
-class PrometheusService(BaseModel):
-    namespace: DNSLabel
-    service: DNSLabel
-    port: str
+class PrometheusService(ServiceEndpoint):
     grafana_url: HttpUrl | None = None
-
-    @field_validator("port")
-    @classmethod
-    def validate_port(cls, value: str) -> str:
-        if re.fullmatch(r"[0-9]{1,5}", value) and 1 <= int(value) <= 65535:
-            return str(int(value))
-        if re.fullmatch(r"[a-z0-9]([-a-z0-9]{0,13}[a-z0-9])?", value) and re.search(r"[a-z]", value):
-            return value
-        raise ValueError("Enter a Service port number or a Kubernetes port name")
 
     @field_validator("grafana_url")
     @classmethod
@@ -46,10 +33,6 @@ class PrometheusService(BaseModel):
         if any(part is not None for part in (value.username, value.password, value.query, value.fragment)):
             raise ValueError("Enter the Grafana base URL without credentials, query parameters, or a fragment")
         return value
-
-    @property
-    def proxy_path(self) -> str:
-        return f"/api/v1/namespaces/{self.namespace}/services/{self.service}:{self.port}/proxy/api/v1/query_range"
 
 
 class PrometheusUnavailableError(PlatformError):
@@ -124,7 +107,7 @@ def _query(
         "timeout": "8s",
     }
     try:
-        payload = get_json(api, connection.proxy_path, params, timeout=12)
+        payload = get_json(api, connection.proxy_path("/api/v1/query_range"), params, timeout=12)
         return _parse_series(payload, start=start, end=end, step=step)
     except KubernetesAPIError as exc:
         status = "unavailable" if exc.http_status in {404, 502, 503, 504} else "error"

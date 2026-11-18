@@ -66,6 +66,7 @@ class Cluster(UUIDPrimaryKey, Timestamps, OrganizationScoped, Base):
     tls_server_name: Mapped[str | None] = mapped_column(String(253))
 
     prometheus_connection: Mapped[JsonDict | None]
+    loki_connection: Mapped[JsonDict | None]
 
     spec: Mapped[JsonDict] = mapped_column(default=dict)  # desired configuration (ClusterSpec)
     status_detail: Mapped[JsonDict] = mapped_column(default=dict)  # last observed health summary

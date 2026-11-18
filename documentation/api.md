@@ -183,6 +183,12 @@ See [Cluster integrations](cluster-integrations.md) for configuration, ownership
 | GET | `/clusters/{id}/monitoring/connection` | The selected cluster’s saved Prometheus Service and optional Grafana base URL, or null. |
 | PUT | `/clusters/{id}/monitoring/connection` | Set or clear `{connection: {namespace, service, port, grafana_url?} \| null}`. Requires cluster write access. |
 | GET | `/clusters/{id}/monitoring` | Historical node and pod CPU and memory. Set `window=1h\|6h\|24h` and optionally `namespace` for pod charts. Returns evaluation timestamps, interval, and per-metric series with explicit panel status. |
+| GET | `/clusters/{id}/logs/connection` | The selected cluster’s saved Loki Service or null. |
+| PUT | `/clusters/{id}/logs/connection` | Set or clear `{connection: {namespace, service, port} \| null}`. Requires cluster write access. |
+| GET | `/clusters/{id}/logs/namespaces` | Sorted namespace labels from the selected Loki Service. Accepts the same `window` as log search. |
+| GET | `/clusters/{id}/logs/pods` | Loki pod labels filtered by required `namespace` and optional `window`. |
+| GET | `/clusters/{id}/logs/containers` | Loki container labels filtered by required `namespace`, optional `pod`, and `window`. |
+| GET | `/clusters/{id}/logs` | Historical pod log search. Requires `namespace`. Optional filters are `pod`, `container`, `contains`, and `window=15m\|1h\|6h`. Returns up to 200 entries, newest first. |
 | GET | `/clusters/{id}/nodes` | Live nodes with roles, conditions, capacity, requested and used resources, pod counts. |
 | GET | `/clusters/{id}/nodes/{name}` | One node plus its pods and events. |
 | POST | `/clusters/{id}/nodes/{name}/cordon` · `/uncordon` | Mark the node (un)schedulable; returns the node. |

@@ -15,6 +15,7 @@ from app.modules.auditing import service as audit
 from app.modules.cluster_lifecycle.models import ClusterLifecycleState
 from app.modules.kubernetes import monitoring
 from app.modules.kubernetes.service import KubernetesService
+from app.modules.kubernetes.service_proxy import DNSLabel
 
 router = APIRouter(prefix="/clusters/{cluster_id}/monitoring", tags=["monitoring"])
 
@@ -65,7 +66,7 @@ def read_monitoring(
     cluster_id: uuid.UUID,
     response: Response,
     window: monitoring.Window = "1h",
-    namespace: monitoring.DNSLabel | None = None,
+    namespace: DNSLabel | None = None,
     principal: Principal = Depends(get_principal),
     service: KubernetesService = Depends(get_kubernetes_service),
 ) -> monitoring.MonitoringReport:
