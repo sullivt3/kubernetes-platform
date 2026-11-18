@@ -1,0 +1,137 @@
+{
+  "uid": "kplatform-pod-metrics",
+  "title": "Pod metrics",
+  "schemaVersion": 39,
+  "editable": false,
+  "tags": [
+    "kubernetes",
+    "kplatform"
+  ],
+  "refresh": "1m",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Pod CPU",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kplatform-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "topk(8, 1000 * sum by (namespace,pod) (max by (namespace,pod,container) (rate(container_cpu_usage_seconds_total{pod!=\"\",container!=\"\",container!=\"POD\",namespace=~\"${namespace:regex}\"}[5m]))))",
+          "legendFormat": "{{namespace}}/{{pod}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: mCPU",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Pod memory",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kplatform-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "topk(8, sum by (namespace,pod) (max by (namespace,pod,container) (container_memory_working_set_bytes{pod!=\"\",container!=\"\",container!=\"POD\",namespace=~\"${namespace:regex}\"})))",
+          "legendFormat": "{{namespace}}/{{pod}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "kplatform-prometheus"
+        },
+        "definition": "label_values(container_memory_working_set_bytes{namespace!=\"\",pod!=\"\",container!=\"\",container!=\"POD\"}, namespace)",
+        "query": {
+          "query": "label_values(container_memory_working_set_bytes{namespace!=\"\",pod!=\"\",container!=\"\",container!=\"POD\"}, namespace)",
+          "refId": "StandardVariableQuery"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "refresh": 1,
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      }
+    ]
+  }
+}

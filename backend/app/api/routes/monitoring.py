@@ -1,4 +1,4 @@
-"""Prometheus setup and range queries for the selected cluster."""
+"""Monitoring connection settings and Prometheus queries for the selected cluster."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def update_monitoring_connection(
     if cluster.lifecycle_state in {ClusterLifecycleState.DELETING, ClusterLifecycleState.DELETED}:
         raise InvalidStateError("The cluster is being deleted")
     before = cluster.prometheus_connection
-    after = body.connection.model_dump() if body.connection else None
+    after = body.connection.model_dump(mode="json", exclude_none=True) if body.connection else None
     if before != after:
         cluster.prometheus_connection = after
         audit.record(

@@ -180,8 +180,8 @@ See [Cluster integrations](cluster-integrations.md) for configuration, ownership
 | POST | `/clusters/{id}/unregister?confirm=<name>` | Imported clusters only (204). Forgets the cluster and its kubeconfig; the cluster is not changed. |
 | POST | `/clusters/{id}/addons/metrics-server` | `{kubelet_insecure_tls}` → installs metrics-server v0.9.1 (202). |
 | GET | `/clusters/{id}/health` | Live summary: version, readiness checks, nodes, pods, CPU/memory (allocatable, requested, used), alerts. |
-| GET | `/clusters/{id}/monitoring/connection` | The selected cluster’s saved Prometheus Service or null. |
-| PUT | `/clusters/{id}/monitoring/connection` | Set or clear `{connection: {namespace, service, port} \| null}`. Requires cluster write access. |
+| GET | `/clusters/{id}/monitoring/connection` | The selected cluster’s saved Prometheus Service and optional Grafana base URL, or null. |
+| PUT | `/clusters/{id}/monitoring/connection` | Set or clear `{connection: {namespace, service, port, grafana_url?} \| null}`. Requires cluster write access. |
 | GET | `/clusters/{id}/monitoring` | Historical node and pod CPU and memory. Set `window=1h\|6h\|24h` and optionally `namespace` for pod charts. Returns evaluation timestamps, interval, and per-metric series with explicit panel status. |
 | GET | `/clusters/{id}/nodes` | Live nodes with roles, conditions, capacity, requested and used resources, pod counts. |
 | GET | `/clusters/{id}/nodes/{name}` | One node plus its pods and events. |

@@ -21,7 +21,21 @@ def test_prometheus_service_connection_and_history(client: TestClient, monkeypat
         base = f"/api/v1/clusters/{created.json()['cluster_id']}/monitoring"
         assert client.get(base + "/connection").json() == {"connection": None}
         assert client.get(base).status_code == 409
-        settings = {"connection": {"namespace": "monitoring", "service": "prometheus", "port": "web"}}
+        prometheus = {"namespace": "monitoring", "service": "prometheus", "port": "web"}
+        legacy = client.put(base + "/connection", json={"connection": prometheus})
+        assert legacy.json() == {"connection": {**prometheus, "grafana_url": None}}
+        settings = {"connection": {**prometheus, "grafana_url": "https://dashboards.example.test/grafana/"}}
+        for bad_url in (
+            "javascript:alert(1)",
+            "https://name:password@dashboards.example.test",
+            "http://dashboards.example.test",
+            "https://dashboards.example.test?token=x",
+            "https://dashboards.example.test#frag",
+        ):
+            invalid = {"connection": {**prometheus, "grafana_url": bad_url}}
+            assert client.put(base + "/connection", json=invalid).status_code == 422
+        local = {"connection": {**prometheus, "grafana_url": "http://localhost:3300/"}}
+        assert client.put(base + "/connection", json=local).json() == local
         assert client.put(base + "/connection", json=settings).json() == settings
         assert client.get(base + "/connection").json() == settings
         for bad in ({"service": "https://host"}, {"namespace": "../test"}, {"port": "0"}, {"port": "a/b"}):

@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kplatform-monitoring
+resources:
+  - grafana.yaml
+configMapGenerator:
+  - name: grafana-datasources
+    files:
+      - prometheus.yaml
+  - name: grafana-dashboard-provider
+    files:
+      - dashboards.yaml
+  - name: grafana-dashboards
+    files:
+      - dashboards/node-metrics.json
+      - dashboards/pod-metrics.json

@@ -9,7 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, StringConstraints, field_validator
+from pydantic import BaseModel, HttpUrl, StringConstraints, field_validator
 
 from app.core.errors import PlatformError
 from app.modules.kubernetes.client import ClusterAPI, KubernetesAPIError, get_json
@@ -25,6 +25,7 @@ class PrometheusService(BaseModel):
     namespace: DNSLabel
     service: DNSLabel
     port: str
+    grafana_url: HttpUrl | None = None
 
     @field_validator("port")
     @classmethod
@@ -34,6 +35,17 @@ class PrometheusService(BaseModel):
         if re.fullmatch(r"[a-z0-9]([-a-z0-9]{0,13}[a-z0-9])?", value) and re.search(r"[a-z]", value):
             return value
         raise ValueError("Enter a Service port number or a Kubernetes port name")
+
+    @field_validator("grafana_url")
+    @classmethod
+    def validate_grafana_url(cls, value: HttpUrl | None) -> HttpUrl | None:
+        if value is None:
+            return value
+        if value.scheme == "http" and value.host not in {"127.0.0.1", "localhost", "[::1]"}:
+            raise ValueError("Use HTTPS for Grafana or HTTP on loopback for local testing")
+        if any(part is not None for part in (value.username, value.password, value.query, value.fragment)):
+            raise ValueError("Enter the Grafana base URL without credentials, query parameters, or a fragment")
+        return value
 
     @property
     def proxy_path(self) -> str:

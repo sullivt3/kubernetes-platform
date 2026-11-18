@@ -39,3 +39,36 @@ both nodes and TLS-verified kubelet scrapes. The test Deployment keeps up to
 24 hours of history in an `emptyDir`, which is discarded when its pod is
 replaced. Use persistent Prometheus storage when retention must survive pod
 replacement.
+
+## Grafana dashboards
+
+The repository includes Kubernetes provisioning for **Node metrics** and
+**Pod metrics** dashboards under `infrastructure/monitoring/grafana`. Both
+use the same CPU and memory queries as the app. The pod dashboard has a
+namespace selector.
+
+1. Set the Prometheus URL in
+   `infrastructure/monitoring/grafana/prometheus.yaml` if your Service differs
+   from `prometheus:9090`. The provided manifests target the existing
+   `kplatform-monitoring` namespace.
+2. Create a Secret named `grafana-admin` with the key `password` in that
+   namespace. Supply the initial password from a protected file or your
+   deployment's secret manager. Apply the manifests with
+   `kubectl apply -k infrastructure/monitoring/grafana`.
+3. Set Grafana's `GF_SERVER_ROOT_URL` to its browser-facing base URL. Use your
+   deployment's TLS endpoint and identity provider for shared access. For
+   local testing, `kubectl -n kplatform-monitoring port-forward svc/grafana
+   3300:3000` provides loopback access. The Fedora test Deployment uses
+   `http://localhost:3300/` as its root URL.
+4. In **Operations → Monitoring**, choose **Edit connection** and enter the
+   Grafana base URL. The platform accepts HTTPS and loopback HTTP. The two
+   links carry over the selected time range, and the pod link carries the
+   applied namespace filter. Viewers can open the links using their Grafana
+   sign-in. Grafana controls its own dashboard and data source permissions.
+
+The supplied Grafana Deployment stores its local database in an `emptyDir`.
+Replacing the pod recreates the provisioned dashboards and initial
+administrator. Use persistent Grafana storage or an external database for
+accounts, settings and sessions that need to survive replacement.
+[Grafana provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/),
+[Prometheus data source](https://grafana.com/docs/grafana/latest/datasources/prometheus/)

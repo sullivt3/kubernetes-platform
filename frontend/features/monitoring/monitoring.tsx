@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, RefreshCw } from "lucide-react";
+import { Activity, ExternalLink, RefreshCw } from "lucide-react";
 import { useState } from "react";
 
 import { EmptyState, ErrorState, PageHeader, TableSkeleton } from "@/components/common/page";
@@ -14,7 +14,7 @@ import { api, apiRequest } from "@/lib/api/client";
 import { formatBytes } from "@/lib/format";
 import { TimeSeriesChart, type Series, type TimeRange } from "./chart";
 
-type Connection = { namespace: string; service: string; port: string };
+type Connection = { namespace: string; service: string; port: string; grafana_url: string | null };
 type Settings = { connection: Connection | null };
 type Metric = "node_cpu" | "node_memory" | "pod_cpu" | "pod_memory";
 type Panel = { status: "ok" | "empty" | "unavailable" | "error"; series: Series[] };
@@ -34,7 +34,7 @@ const metrics = {
 function ConnectionForm({ clusterId, connection, onClose }: {
   clusterId: string; connection: Connection | null; onClose: () => void;
 }) {
-  const [values, setValues] = useState(connection ?? { namespace: "", service: "", port: "9090" });
+  const [values, setValues] = useState(connection ?? { namespace: "", service: "", port: "9090", grafana_url: null });
   const queryClient = useQueryClient();
   const save = useMutation({
     mutationFn: (connection: Connection | null) =>
@@ -47,7 +47,7 @@ function ConnectionForm({ clusterId, connection, onClose }: {
   });
   return (
     <Card>
-      <CardHeader><CardTitle>Prometheus connection</CardTitle></CardHeader>
+      <CardHeader><CardTitle>Monitoring connection</CardTitle></CardHeader>
       <CardContent>
         <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); save.mutate(values); }}>
           <p className="text-sm text-muted-foreground">Enter the Kubernetes Service that serves your Prometheus HTTP API.</p>
@@ -65,6 +65,10 @@ function ConnectionForm({ clusterId, connection, onClose }: {
                 onChange={(event) => setValues({ ...values, port: event.target.value.trim() })} />
             </label>
           </div>
+          <label className="block max-w-xl space-y-1 text-sm">Grafana base URL (optional)
+            <Input type="url" maxLength={2083} value={values.grafana_url ?? ""} placeholder="https://grafana.example.com"
+              onChange={(event) => setValues({ ...values, grafana_url: event.target.value.trim() || null })} />
+          </label>
           {save.isError && <ErrorState error={save.error} />}
           <div className="flex flex-wrap gap-2">
             <Button disabled={save.isPending}>Save connection</Button>
@@ -74,6 +78,27 @@ function ConnectionForm({ clusterId, connection, onClose }: {
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+function GrafanaLinks({ baseUrl, window, namespace }: { baseUrl: string; window: Window; namespace: string }) {
+  const base = baseUrl.replace(/\/+$/, "");
+  const time = new URLSearchParams({ from: `now-${window}`, to: "now" });
+  const pods = new URLSearchParams(time);
+  if (namespace) pods.set("var-namespace", namespace);
+  return (
+    <div className="flex flex-wrap gap-2" aria-label="Grafana dashboards">
+      <Button asChild variant="outline" size="sm">
+        <a href={`${base}/d/kplatform-node-metrics/node-metrics?${time}`} target="_blank" rel="noopener noreferrer">
+          <ExternalLink /> Node dashboard in Grafana
+        </a>
+      </Button>
+      <Button asChild variant="outline" size="sm">
+        <a href={`${base}/d/kplatform-pod-metrics/pod-metrics?${pods}`} target="_blank" rel="noopener noreferrer">
+          <ExternalLink /> Pod dashboard in Grafana
+        </a>
+      </Button>
+    </div>
   );
 }
 
@@ -108,6 +133,7 @@ function Dashboard({ clusterId, connection }: { clusterId: string; connection: C
           <RefreshCw /> Refresh
         </Button>
       </div>
+      {connection.grafana_url && <GrafanaLinks baseUrl={connection.grafana_url} window={window} namespace={namespace} />}
       {report.isLoading && <TableSkeleton />}
       {report.isError && <LiveError error={report.error} clusterId={clusterId} onRetry={() => report.refetch()} />}
       {report.data && (

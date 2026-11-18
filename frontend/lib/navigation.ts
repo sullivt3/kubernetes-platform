@@ -148,7 +148,7 @@ export const NAVIGATION: NavSection[] = [
     icon: Activity,
     items: [
       { title: "Operations", href: "/operations", description: "Active and historical operations with live execution logs.", keywords: ["jobs", "history", "tasks"] },
-      { title: "Monitoring", href: "/ops/monitoring", description: "Historical node and pod metrics from Prometheus." },
+      { title: "Monitoring", href: "/ops/monitoring", description: "Historical node and pod metrics and Grafana dashboards." },
       { title: "Logs", href: "/ops/logs", description: "Application logs (Loki).", phase: 8 },
       { title: "Events", href: "/ops/events", description: "Recent Kubernetes events for the selected cluster." },
       { title: "Alerts", href: "/ops/alerts", description: "Alert rules and active alerts.", phase: 8 },

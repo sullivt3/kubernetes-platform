@@ -137,7 +137,7 @@ Context reviewed **2026-11-11**. This handoff includes machine address/health ma
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Prometheus connection and historical node and pod CPU/memory charts implemented. Grafana, Loki, alerts, remediation, Helm releases, GitOps, dynamic CRD management, command center and custom workflows remain planned. |
+| 8 — Advanced operations | **In progress.** Prometheus history and Grafana node and pod dashboards implemented. Loki, alerts, remediation, Helm releases, GitOps, dynamic CRD management, command center and custom workflows remain planned. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -209,6 +209,13 @@ healthy scrape targets with TLS verification for both kubelets. Live Keycloak
 operator and viewer browser checks passed. The 104 targeted backend tests,
 29 frontend tests, and Docker frontend build passed.
 [Monitoring setup](documentation/monitoring.md)
+
+The Grafana integration stores an optional per-cluster dashboard base URL and
+links from Monitoring with the selected time range and pod namespace. The
+Kubernetes provisioning manifests ship node and pod dashboards backed by the
+existing Prometheus Service. Live Fedora browser checks verified operator and
+viewer links, Grafana sign-in, and matching samples across all four panels.
+The 81 targeted backend tests, 29 frontend tests, and Docker frontend build passed.
 
 ## Remaining work and priorities
 
