@@ -9,6 +9,8 @@ const colors = ["#38bdf8", "#4ade80", "#fbbf24", "#c084fc", "#fb7185", "#2dd4bf"
 const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
 function seriesName(labels: Series["labels"]) {
+  if (labels.mountpoint) return `${labels.node || labels.instance} ${labels.mountpoint}`;
+  if (labels.device) return `${labels.node || labels.instance} ${labels.device}`;
   if (labels.pod) return `${labels.namespace}/${labels.pod}`;
   return labels.node || labels.instance || "Unlabeled series";
 }

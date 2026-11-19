@@ -1,0 +1,11 @@
+spec:
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+  template:
+    spec:
+      volumes:
+        - name: data
+          emptyDir: null
+          persistentVolumeClaim:
+            claimName: kp-prometheus-data

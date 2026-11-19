@@ -137,7 +137,7 @@ Context reviewed **2026-11-11**. This handoff includes machine address/health ma
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Prometheus history, Grafana dashboards, and Loki pod log search implemented. Alerts, remediation, Helm releases, GitOps, dynamic CRD management, command center and custom workflows remain planned. |
+| 8 — Advanced operations | **In progress.** Prometheus history, Grafana dashboards, disk/network metrics, Loki pod log search, managed namespace collection, operational alerts and investigation guidance implemented. Automated remediation, Helm releases, GitOps, dynamic CRD management, command center and custom workflows remain planned. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -265,6 +265,37 @@ Default recommendation, subject to the user's chosen task: validate the current 
 - Enforce authorization and organization/project boundaries server-side, including detail access, linked resources, workflows and streams. UI visibility alone is insufficient.
 - Preserve safe Kubernetes scheduling/drain semantics and etcd/control-plane sequencing.
 - Add meaningful tests for important behavior and regressions; keep API/configuration documentation current. Do not call a phase complete solely because its UI routes exist.
+
+
+Phase 8 monitoring/logging follow-up (2026-11-18): disk usage, disk I/O and
+network throughput use existing root-cgroup kubelet cAdvisor metrics; no new
+host filesystem mounts or node-exporter permissions are required. The node
+Grafana dashboard includes matching panels. Operations → Alerts checks node
+conditions, container waiting and failed termination states, deployment failures,
+API readiness, storage/network events, metric thresholds, and verified API
+serving certificate expiry. It reports incomplete coverage and investigation
+steps. Five native Prometheus rules expose inactive/pending/firing state; external
+notification delivery and automated remediation are not configured.
+
+Logs → Collected namespaces queues `cluster.logs.collection`, requiring cluster
+write permission and an explicitly registered Alloy Deployment. The manager uses
+versioned configuration, ownership-checked namespace Roles/RoleBindings, rollout
+verification and owned-grant revocation. The Fedora lab collects `default` and
+`kplatform-monitoring`; removing a namespace preserves stored history.
+
+Grafana/Loki/Alloy manifests use PVCs; Prometheus claim/patch and alert rules are
+under `infrastructure/monitoring/prometheus`. The live lab migrated all four data
+directories to retained local PVs on tsnode1 and verified history/preferences
+survive replacing every pod. These volumes remain node-local and require separate
+host-loss recovery. See the monitoring and logging guides for setup and limits.
+Final verification passed 48 targeted backend tests, Ruff/format/Mypy,
+29 frontend tests, frontend lint/type checking and the Docker production build.
+Live operator/viewer checks covered collection authorization, disk/network charts,
+certificate coverage and five healthy Prometheus rules. A temporary failing pod
+and unreachable scrape target verified actionable findings and a rule reaching
+firing after its two-minute hold. All fixtures were removed. Both Fedora nodes
+and monitoring pods were Ready, all four claims Bound, four scrape targets up,
+and all six Grafana node panels returned data. The local UI and API run this code.
 
 ## Local development and checks
 

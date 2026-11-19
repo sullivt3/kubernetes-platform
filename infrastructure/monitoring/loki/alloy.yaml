@@ -8,20 +8,28 @@ kind: Role
 metadata:
   name: alloy-pod-logs
 rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ''
+  resources:
+  - pods/log
+  verbs:
+  - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: alloy-pod-logs
 subjects:
-  - kind: ServiceAccount
-    name: alloy
+- kind: ServiceAccount
+  name: alloy
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -50,37 +58,42 @@ spec:
         runAsGroup: 473
         fsGroup: 473
       containers:
-        - name: alloy
-          image: grafana/alloy:v1.22.0
-          args: ["run", "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy", "/etc/alloy/config.alloy"]
-          ports:
-            - name: http
-              containerPort: 12345
-          readinessProbe:
-            httpGet:
-              path: /-/ready
-              port: http
-            periodSeconds: 5
-          resources:
-            requests:
-              cpu: 50m
-              memory: 96Mi
-            limits:
-              memory: 384Mi
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: config
-              mountPath: /etc/alloy
-              readOnly: true
-            - name: data
-              mountPath: /var/lib/alloy
-      volumes:
+      - name: alloy
+        image: grafana/alloy:v1.22.0
+        args:
+        - run
+        - --server.http.listen-addr=0.0.0.0:12345
+        - --storage.path=/var/lib/alloy
+        - /etc/alloy/config.alloy
+        ports:
+        - name: http
+          containerPort: 12345
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: http
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 50m
+            memory: 96Mi
+          limits:
+            memory: 384Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
         - name: config
-          configMap:
-            name: alloy-config
+          mountPath: /etc/alloy
+          readOnly: true
         - name: data
-          emptyDir:
-            sizeLimit: 128Mi
+          mountPath: /var/lib/alloy
+      volumes:
+      - name: config
+        configMap:
+          name: alloy-config
+      - name: data
+        persistentVolumeClaim:
+          claimName: kp-alloy-data

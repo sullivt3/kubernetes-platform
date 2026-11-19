@@ -15,7 +15,9 @@ from app.modules.kubernetes.client import ClusterAPI, KubernetesAPIError, get_js
 from app.modules.kubernetes.service_proxy import ServiceEndpoint
 
 Window = Literal["1h", "6h", "24h"]
-Metric = Literal["node_cpu", "node_memory", "pod_cpu", "pod_memory"]
+Metric = Literal[
+    "node_cpu", "node_memory", "pod_cpu", "pod_memory", "node_disk", "node_disk_io", "node_receive", "node_transmit"
+]
 WINDOWS: dict[Window, tuple[int, int]] = {"1h": (3600, 30), "6h": (21600, 120), "24h": (86400, 300)}
 SERIES_LIMIT = 8
 
@@ -66,6 +68,19 @@ def _queries(namespace: str | None) -> dict[Metric, str]:
         "node_memory": (
             "max by (instance,node) (100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))"
         ),
+        "node_disk": 'max by (node,device) (100 * container_fs_usage_bytes{id="/"} / container_fs_limit_bytes{id="/"})',
+        "node_disk_io": (
+            'sum by (node) (max by (node,device) (rate(container_fs_reads_bytes_total{id="/"}[5m])'
+            ' + rate(container_fs_writes_bytes_total{id="/"}[5m])))'
+        ),
+        "node_receive": (
+            "sum by (node) (max by (node,interface) "
+            '(rate(container_network_receive_bytes_total{id="/",interface!="lo"}[5m])))'
+        ),
+        "node_transmit": (
+            "sum by (node) (max by (node,interface) "
+            '(rate(container_network_transmit_bytes_total{id="/",interface!="lo"}[5m])))'
+        ),
         "pod_cpu": (
             "sum by (namespace,pod) (max by (namespace,pod,container) "
             f"(rate(container_cpu_usage_seconds_total{{{pod}}}[5m])))"
@@ -82,7 +97,11 @@ def _parse_series(raw: dict[str, Any], *, start: int, end: int, step: int) -> Me
         return MetricPanel(series=[], status="error")
     series = []
     for item in data["result"][:96]:
-        labels = {k: str(v) for k, v in item["metric"].items() if k in {"node", "instance", "pod", "namespace"}}
+        labels = {
+            k: str(v)
+            for k, v in item["metric"].items()
+            if k in {"node", "instance", "pod", "namespace", "mountpoint", "device"}
+        }
         samples = []
         for timestamp, value in item["values"][: (end - start) // step + 1]:
             ts, val = float(timestamp), float(value)
@@ -121,7 +140,7 @@ def collect(api: ClusterAPI, connection: PrometheusService, window: Window, name
     end = int(time.time()) // step * step
     start = end - duration
     queries = _queries(namespace)
-    with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         results = {
             key: pool.submit(_query, api, connection, query, start=start, end=end, step=step)
             for key, query in queries.items()

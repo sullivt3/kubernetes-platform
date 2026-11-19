@@ -12,6 +12,7 @@ import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import { ClusterScope, LiveError } from "@/features/kubernetes/shared";
+import { CollectionControls } from "./collection";
 import { api, apiRequest } from "@/lib/api/client";
 
 type Connection = { namespace: string; service: string; port: string };
@@ -239,6 +240,7 @@ function ClusterLogs({ clusterId }: { clusterId: string }) {
             <p className="text-sm text-muted-foreground">Loki <code>{connection.namespace}/{connection.service}:{connection.port}</code></p>
             {canConfigure && !editing && <Button variant="outline" onClick={() => setEditing(true)}>Edit connection</Button>}
           </div>
+          {canConfigure && <CollectionControls id={clusterId} />}
           <SearchLogs clusterId={clusterId} connection={connection} />
         </>
       ) : !editing && (

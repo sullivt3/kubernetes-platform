@@ -290,3 +290,15 @@ list truncation indicators. `POST /clusters/{id}/backups` accepts `name` and `lo
 `POST /clusters/{id}/restores` accepts `name`, `backup` and the exact cluster name
 as `confirm`. A 202 response means Velero accepted a request. Read its phase to
 determine the outcome. [Recovery guide](backup-restore.md)
+
+### Operational monitoring
+
+`GET /clusters/{id}/monitoring/alerts` returns current findings with investigation
+guidance, per-source coverage and the connected Prometheus alert rule states.
+It requires cluster read access. The eight historical monitoring panels now include
+disk usage, disk I/O, network receive and network transmit.
+
+`GET /clusters/{id}/logs/collection` returns collector registration, selected
+namespaces and available namespaces. `POST /clusters/{id}/logs/collection`
+accepts `{namespaces: [...]}`, requires cluster write access, and returns a
+tracked operation for namespace grant/configuration reconciliation.

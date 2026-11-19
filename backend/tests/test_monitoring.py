@@ -76,9 +76,9 @@ def test_prometheus_service_connection_and_history(client: TestClient, monkeypat
         assert report.headers["cache-control"] == "no-store"
         data = report.json()
         assert data["end"] - data["start"] == 21600
-        assert data["step"] == 120 and len(requests) == 4
+        assert data["step"] == 120 and len(requests) == 8
         assert all(req["timeout"] == "8s" and req["limit"] == 96 for req in requests)
-        assert all('namespace="apps"' in req["query"] for req in requests if "container_" in req["query"])
+        assert all('namespace="apps"' in req["query"] for req in requests if "namespace,pod" in req["query"])
         assert data["panels"]["node_cpu"]["series"] == [
             {
                 "labels": {"instance": "node-a:9100", "node": "node-a"},

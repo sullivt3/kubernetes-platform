@@ -1,0 +1,48 @@
+groups:
+- name: kplatform
+  rules:
+  - alert: KPlatformCpu
+    expr: 100 * (1 - avg by (instance,node) (rate(node_cpu_seconds_total{mode="idle"}[5m])))
+      > 85
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: High CPU usage
+      description: Inspect busy pods, CPU limits and node capacity.
+  - alert: KPlatformMemory
+    expr: 100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+      > 90
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: High memory usage
+      description: Inspect pod working sets, memory limits and recent OOM events.
+  - alert: KPlatformDisk
+    expr: max by (node,device) (100 * container_fs_usage_bytes{id="/"} / container_fs_limit_bytes{id="/"})
+      > 85
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: Filesystem space running low
+      description: Inspect image garbage collection, local volumes and retained logs.
+  - alert: KPlatformNetwork
+    expr: sum by (node) (max by (node,interface) (rate(container_network_receive_errors_total{id="/"}[5m])
+      + rate(container_network_transmit_errors_total{id="/"}[5m]))) > 0
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: Network interface errors
+      description: Check interface counters, node routes, CNI pods and recent network
+        events.
+  - alert: KPlatformTargets
+    expr: up == 0
+    for: 2m
+    labels:
+      severity: warning
+    annotations:
+      summary: Scrape target unavailable
+      description: Check collector readiness, network reachability and scrape TLS.

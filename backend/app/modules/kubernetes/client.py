@@ -376,3 +376,22 @@ def stream_lines(api: ClusterAPI, path: str, params: dict[str, Any] | None = Non
     if streamer is None:
         raise KubernetesAPIError("Streaming is not supported by this connection")
     return streamer(path, params)
+
+
+def serving_certificate_expiry(target: ConnectionTarget) -> str:
+    """Read the TLS certificate only after verifying the configured CA and server name."""
+    import socket
+    from datetime import UTC
+
+    from cryptography import x509
+
+    parts = urlsplit(target.server)
+    context = _ssl_context(target)
+    with (
+        socket.create_connection((parts.hostname, parts.port or 443), timeout=5) as sock,
+        context.wrap_socket(sock, server_hostname=target.verify_name or parts.hostname) as secure,
+    ):
+        certificate = secure.getpeercert(binary_form=True)
+    if certificate is None:
+        raise ClusterUnreachableError("The API server did not return a certificate")
+    return x509.load_der_x509_certificate(certificate).not_valid_after_utc.astimezone(UTC).isoformat()

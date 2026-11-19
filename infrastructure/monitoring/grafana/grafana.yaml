@@ -6,9 +6,9 @@ spec:
   selector:
     app.kubernetes.io/name: grafana
   ports:
-    - name: http
-      port: 3000
-      targetPort: http
+  - name: http
+    port: 3000
+    targetPort: http
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -33,58 +33,59 @@ spec:
         runAsGroup: 472
         fsGroup: 472
       containers:
-        - name: grafana
-          image: grafana/grafana:13.3.1
-          env:
-            - name: GF_SECURITY_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: grafana-admin
-                  key: password
-            - name: GF_USERS_ALLOW_SIGN_UP
-              value: "false"
-            - name: GF_AUTH_ANONYMOUS_ENABLED
-              value: "false"
-          ports:
-            - name: http
-              containerPort: 3000
-          readinessProbe:
-            httpGet:
-              path: /api/health
-              port: http
-            periodSeconds: 5
-          resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              memory: 512Mi
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/grafana
-            - name: datasources
-              mountPath: /etc/grafana/provisioning/datasources
-              readOnly: true
-            - name: provider
-              mountPath: /etc/grafana/provisioning/dashboards
-              readOnly: true
-            - name: dashboards
-              mountPath: /var/lib/grafana/dashboards
-              readOnly: true
-      volumes:
+      - name: grafana
+        image: grafana/grafana:13.3.1
+        env:
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: grafana-admin
+              key: password
+        - name: GF_USERS_ALLOW_SIGN_UP
+          value: 'false'
+        - name: GF_AUTH_ANONYMOUS_ENABLED
+          value: 'false'
+        ports:
+        - name: http
+          containerPort: 3000
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
         - name: data
-          emptyDir:
-            sizeLimit: 256Mi
+          mountPath: /var/lib/grafana
         - name: datasources
-          configMap:
-            name: grafana-datasources
+          mountPath: /etc/grafana/provisioning/datasources
+          readOnly: true
         - name: provider
-          configMap:
-            name: grafana-dashboard-provider
+          mountPath: /etc/grafana/provisioning/dashboards
+          readOnly: true
         - name: dashboards
-          configMap:
-            name: grafana-dashboards
+          mountPath: /var/lib/grafana/dashboards
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: kp-grafana-data
+      - name: datasources
+        configMap:
+          name: grafana-datasources
+      - name: provider
+        configMap:
+          name: grafana-dashboard-provider
+      - name: dashboards
+        configMap:
+          name: grafana-dashboards

@@ -6,9 +6,9 @@ spec:
   selector:
     app.kubernetes.io/name: loki
   ports:
-    - name: http
-      port: 3100
-      targetPort: http
+  - name: http
+    port: 3100
+    targetPort: http
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -33,37 +33,39 @@ spec:
         runAsGroup: 10001
         fsGroup: 10001
       containers:
-        - name: loki
-          image: grafana/loki:3.7.10
-          args: ["-config.file=/etc/loki/config.yaml"]
-          ports:
-            - name: http
-              containerPort: 3100
-          readinessProbe:
-            httpGet:
-              path: /ready
-              port: http
-            periodSeconds: 5
-          resources:
-            requests:
-              cpu: 75m
-              memory: 192Mi
-            limits:
-              memory: 768Mi
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: config
-              mountPath: /etc/loki
-              readOnly: true
-            - name: data
-              mountPath: /var/loki
-      volumes:
+      - name: loki
+        image: grafana/loki:3.7.10
+        args:
+        - -config.file=/etc/loki/config.yaml
+        ports:
+        - name: http
+          containerPort: 3100
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 75m
+            memory: 192Mi
+          limits:
+            memory: 768Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
         - name: config
-          configMap:
-            name: loki-config
+          mountPath: /etc/loki
+          readOnly: true
         - name: data
-          emptyDir:
-            sizeLimit: 1Gi
+          mountPath: /var/loki
+      volumes:
+      - name: config
+        configMap:
+          name: loki-config
+      - name: data
+        persistentVolumeClaim:
+          claimName: kp-loki-data

@@ -16,7 +16,7 @@ import { TimeSeriesChart, type Series, type TimeRange } from "./chart";
 
 type Connection = { namespace: string; service: string; port: string; grafana_url: string | null };
 type Settings = { connection: Connection | null };
-type Metric = "node_cpu" | "node_memory" | "pod_cpu" | "pod_memory";
+type Metric = "node_cpu" | "node_memory" | "pod_cpu" | "pod_memory" | "node_disk" | "node_disk_io" | "node_receive" | "node_transmit";
 type Panel = { status: "ok" | "empty" | "unavailable" | "error"; series: Series[] };
 type Report = TimeRange & { panels: Record<Metric, Panel> };
 
@@ -27,6 +27,10 @@ const cores = (value: number) => `${Math.round(value * 1000)}m`;
 const metrics = {
   node_cpu: { title: "Node CPU", description: "Percent of CPU time in use", format: percent, ceiling: 100 },
   node_memory: { title: "Node memory", description: "Percent of memory in use", format: percent, ceiling: 100 },
+  node_disk: { title: "Disk usage", description: "Filesystem space used", format: percent, ceiling: 100 },
+  node_disk_io: { title: "Disk I/O", description: "Read and write throughput", format: (v: number) => formatBytes(v) + "/s", ceiling: 0 },
+  node_receive: { title: "Network receive", description: "Incoming traffic", format: (v: number) => formatBytes(v) + "/s", ceiling: 0 },
+  node_transmit: { title: "Network transmit", description: "Outgoing traffic", format: (v: number) => formatBytes(v) + "/s", ceiling: 0 },
   pod_cpu: { title: "Pod CPU", description: "CPU usage in millicores", format: cores, ceiling: 0 },
   pod_memory: { title: "Pod memory", description: "Memory working set", format: formatBytes, ceiling: 0 },
 };

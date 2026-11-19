@@ -45,7 +45,30 @@ grant its ServiceAccount pod discovery and `pods/log` access in each
 selected namespace. [Alloy Kubernetes log source](https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.kubernetes/)
 
 The example uses a single-tenant, internal Loki Service with local filesystem
-storage and a 24-hour retention policy. The pod's temporary storage is lost
-when it is replaced. For a shared deployment, use authenticated Loki access
+storage and a 24-hour retention policy. The supplied deployment stores this data on its PVC. For a shared deployment, use authenticated Loki access
 behind an internal Service and durable storage suited to its retention
 requirements. [Loki retention](https://grafana.com/docs/loki/latest/operations/storage/retention/)
+
+## Configure collected namespaces
+
+Operators can expand **Collected namespaces** on the Logs page and select the
+namespaces Alloy should collect. The app submits a tracked operation and shows
+its operation link. Refresh status after completion.
+
+The manager targets a dedicated Alloy Deployment named `alloy` in the Loki
+Service's namespace, running as the `alloy` ServiceAccount and writing to
+`loki:3100` there. Register the installation with the Deployment annotation
+`kubernetes-platform.io/log-collector=<platform-cluster-UUID>`. Registration
+should follow a review of the existing installation. The Fedora lab is registered.
+
+The operation creates owned namespace Roles and RoleBindings, deploys a
+versioned Alloy ConfigMap, verifies rollout, then revokes its own grants for
+deselected namespaces. Existing grants managed by another installation retain
+their ownership. Deselecting a namespace stops its collection after rollout,
+while its stored logs follow Loki retention. At least one namespace is required,
+and a collection can include up to 30 namespaces.
+
+The shipped deployments now use PVCs for Loki and Alloy. The Fedora lab's
+persistent storage migration and restart verification are described in the
+[monitoring guide](monitoring.md). Retention and durable storage should be
+configured together.

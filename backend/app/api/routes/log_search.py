@@ -6,16 +6,19 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.auth import get_principal
 from app.api.deps import get_kubernetes_service
+from app.api.routes.operations import OperationDetail
 from app.core.errors import InvalidStateError
 from app.core.principal import Principal
 from app.modules.auditing import service as audit
 from app.modules.cluster_lifecycle.models import ClusterLifecycleState
-from app.modules.kubernetes import log_search
+from app.modules.kubernetes import client as kc
+from app.modules.kubernetes import log_collection, log_search
 from app.modules.kubernetes.client import ClusterAPI
+from app.modules.kubernetes.phase6 import submit
 from app.modules.kubernetes.service import KubernetesService
 from app.modules.kubernetes.service_proxy import ServiceEndpoint
 
@@ -128,3 +131,53 @@ def query_logs(
     api, connection = _configured_loki(service, principal, cluster_id)
     response.headers["Cache-Control"] = "no-store"
     return log_search.search(api, connection, filters)
+
+
+class CollectionSettings(BaseModel):
+    namespaces: list[log_search.DNSLabel] = Field(min_length=1, max_length=30)
+
+
+@router.get("/collection")
+def get_collection(
+    cluster_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+) -> dict:
+    cluster = service.cluster(principal, cluster_id)
+    if not cluster.loki_connection:
+        raise InvalidStateError("Connect Loki first")
+    _, api = service.api(principal, cluster_id)
+    ns = cluster.loki_connection["namespace"]
+    deploy = log_collection.optional(api, f"/apis/apps/v1/namespaces/{ns}/deployments/alloy")
+    managed = bool(deploy and log_collection.owned(deploy, str(cluster.id)))
+    selected = []
+    if managed and deploy is not None:
+        volumes = deploy["spec"]["template"]["spec"]["volumes"]
+        config = next(v["configMap"]["name"] for v in volumes if v["name"] == "config")
+        obj = kc.get_json(api, log_collection.path(ns, "configmaps", config))
+        import json
+
+        selected = json.loads(
+            (obj["metadata"].get("annotations") or {}).get("kubernetes-platform.io/collected-namespaces", "[]")
+        )
+    rows, truncated = kc.list_items(api, "/api/v1/namespaces")
+    return {
+        "managed": managed,
+        "selected": selected,
+        "available": sorted(n["metadata"]["name"] for n in rows),
+        "truncated": truncated,
+    }
+
+
+@router.post("/collection", status_code=202)
+def update_collection(
+    cluster_id: uuid.UUID,
+    body: CollectionSettings,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+) -> OperationDetail:
+    cluster = service.cluster(principal, cluster_id)
+    if not cluster.loki_connection:
+        raise InvalidStateError("Connect Loki first")
+    params = {"collector_namespace": cluster.loki_connection["namespace"], "namespaces": body.namespaces}
+    return OperationDetail.model_validate(submit(service, principal, cluster_id, "cluster.logs.collection", params))

@@ -21,6 +21,8 @@ the Prometheus HTTP API at its root. [Prometheus HTTP API](https://prometheus.io
 | Node memory | node exporter `node_memory_MemAvailable_bytes` and `node_memory_MemTotal_bytes` |
 | Pod CPU | kubelet cAdvisor `container_cpu_usage_seconds_total` |
 | Pod memory | kubelet cAdvisor `container_memory_working_set_bytes` |
+| Node disk usage and I/O | root cgroup cAdvisor filesystem usage, capacity, read and write counters |
+| Node network receive/transmit | root cgroup cAdvisor network byte counters, excluding loopback |
 
 Set a `node` label on node exporter targets to show node names. The chart uses
 the target's `instance` label otherwise. Pod charts group by `namespace` and
@@ -35,10 +37,7 @@ samples on demand. [Kubelet authorization](https://kubernetes.io/docs/reference/
 
 The local Fedora validation stack has a dedicated `kplatform-monitoring`
 namespace and an internal `prometheus:http` Service. It uses node exporter on
-both nodes and TLS-verified kubelet scrapes. The test Deployment keeps up to
-24 hours of history in an `emptyDir`, which is discarded when its pod is
-replaced. Use persistent Prometheus storage when retention must survive pod
-replacement.
+both nodes and TLS-verified kubelet scrapes. The lab retains up to 24 hours of history on its persistent volume.
 
 ## Grafana dashboards
 
@@ -66,9 +65,55 @@ namespace selector.
    applied namespace filter. Viewers can open the links using their Grafana
    sign-in. Grafana controls its own dashboard and data source permissions.
 
-The supplied Grafana Deployment stores its local database in an `emptyDir`.
-Replacing the pod recreates the provisioned dashboards and initial
-administrator. Use persistent Grafana storage or an external database for
-accounts, settings and sessions that need to survive replacement.
+The supplied Grafana Deployment stores its local database on a PVC. Provisioned dashboards remain sourced from the mounted ConfigMaps.
 [Grafana provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/),
 [Prometheus data source](https://grafana.com/docs/grafana/latest/datasources/prometheus/)
+
+## Disk, network and operational checks
+
+Monitoring also shows host filesystem usage, combined disk read/write throughput,
+and receive/transmit throughput. These use the root cgroup metrics already
+collected from kubelet cAdvisor. The network totals sum non-loopback interface
+counters, which can include bridges and virtual interfaces. They represent
+interface traffic and can count a packet on multiple interfaces.
+
+The provisioned node Grafana dashboard includes the same four charts.
+The **Alerts** page runs current node readiness, node pressure, container startup and failed termination,
+deployment progress, API readiness, and recent storage/network event checks.
+It also reads Prometheus CPU, memory, filesystem and network-error measurements,
+and verifies the API server serving certificate against the registered CA.
+Certificates within 30 days of expiry produce a finding, with critical severity
+within seven days. Each finding provides relevant investigation steps.
+
+The page shows per-source coverage. Missing metrics or failed reads remain visible.
+Prometheus rules in `infrastructure/monitoring/prometheus/alerts.yaml` provide
+sustained thresholds for CPU over 85%, memory over 90%, filesystem usage over 85%,
+network errors and unavailable scrape targets. Add the file to the Prometheus
+configuration directory and list it under `rule_files`. Resource thresholds
+require five minutes. Scrape availability requires two minutes. The lab has
+these rules installed. The app displays their pending, firing and inactive states.
+These in-app checks and rule states refresh while the page is open.
+Prometheus evaluates its rules independently of the browser. External notification
+delivery is not configured by this integration.
+
+## Persistent storage
+
+The Grafana, Loki and Alloy manifests now reference PVCs. Select a suitable
+StorageClass or bind their claims to existing volumes before applying them.
+The Prometheus claim and its deployment volume patch are in
+`infrastructure/monitoring/prometheus`.
+
+For an existing temporary deployment, preserve data before replacing its volume.
+The Fedora lab was migrated at a quiescent point, retaining each application's
+data directory, then switching its Deployment to its PVC. Verification replaced
+the pods and compared historical metric samples, old log entries, and Grafana
+preferences.
+
+The lab uses retained local PVs on `tsnode1` under
+`/var/lib/kplatform-observability`, with matching PVCs named
+`kp-prometheus-data`, `kp-loki-data`, `kp-grafana-data`, and `kp-alloy-data`.
+These survive pod replacement and remain tied to that node. Host loss requires
+volume recovery from a separate backup or replacement storage. Their storage
+requests describe expected capacity. Node-local directories rely on available
+host disk space. Prometheus's configured retention size and Loki's retention
+period still apply.

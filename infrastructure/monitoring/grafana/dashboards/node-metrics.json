@@ -105,6 +105,187 @@
           "mode": "multi"
         }
       }
+    },
+    {
+      "id": 3,
+      "title": "Disk usage",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kplatform-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "topk(8, max by (node,device) (100 * container_fs_usage_bytes{id=\"/\"} / container_fs_limit_bytes{id=\"/\"}))",
+          "legendFormat": "",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          },
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Disk I/O",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kplatform-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "topk(8, sum by (node) (max by (node,device) (rate(container_fs_reads_bytes_total{id=\"/\"}[5m]) + rate(container_fs_writes_bytes_total{id=\"/\"}[5m]))))",
+          "legendFormat": "",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Network receive",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kplatform-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "topk(8, sum by (node) (max by (node,interface) (rate(container_network_receive_bytes_total{id=\"/\",interface!=\"lo\"}[5m]))))",
+          "legendFormat": "",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Network transmit",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kplatform-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "topk(8, sum by (node) (max by (node,interface) (rate(container_network_transmit_bytes_total{id=\"/\",interface!=\"lo\"}[5m]))))",
+          "legendFormat": "",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     }
   ]
 }
