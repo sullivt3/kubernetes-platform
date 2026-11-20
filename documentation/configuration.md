@@ -9,7 +9,7 @@ All settings are validated at startup. Unsafe combinations make the process refu
 | `ENVIRONMENT` | `development` | `development`, `test`, `staging` or `production`. |
 | `LOG_LEVEL` | `INFO` | Python log level. |
 | `LOG_JSON` | `false` | Emit JSON log lines (recommended in production). |
-| `DATABASE_URL` | `postgresql+psycopg://kplatform:kplatform-dev-only@localhost:5432/kplatform` | SQLAlchemy URL. Must use the `postgresql+psycopg` driver. |
+| `DATABASE_URL` | — (**required**) | SQLAlchemy URL using your local database credentials. Must use the `postgresql+psycopg` driver. |
 | `DATABASE_POOL_SIZE` | `10` | Connection pool size per process. |
 | `REDIS_URL` | `redis://localhost:6379/0` | Celery broker and change-notification channel. |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated list. Browsers normally reach the API through the Next.js proxy, so CORS mainly matters for direct API clients. |
@@ -62,7 +62,7 @@ Pinned CNI versions live in `app/modules/cluster_lifecycle/distributions/kubeadm
 
 | Variable | Default | Description |
 |---|---|---|
-| `POSTGRES_PASSWORD` | `kplatform-dev-only` | Development database password. |
+| `POSTGRES_PASSWORD` | — (**required**) | Generate a unique database password locally; supply it through the shell or an ignored root `.env`. Use the same value in `backend/.env`'s `DATABASE_URL`. |
 | `POSTGRES_PORT` | `5432` | Host port for PostgreSQL. |
 | `REDIS_PORT` | `6379` | Host port for Redis. |
 

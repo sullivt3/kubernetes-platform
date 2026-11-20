@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     log_json: bool = False
 
     # --- Data services -------------------------------------------------------
-    database_url: str = "postgresql+psycopg://kplatform:kplatform-dev-only@localhost:5432/kplatform"
+    database_url: str = Field(min_length=1)
     database_pool_size: int = Field(default=10, ge=1)
     database_echo: bool = False
     redis_url: str = "redis://localhost:6379/0"

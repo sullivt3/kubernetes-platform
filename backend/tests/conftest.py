@@ -18,9 +18,7 @@ os.environ["AUTH_MODE"] = "dev"
 os.environ["SECRET_ENCRYPTION_KEYS"] = f"test:{Fernet.generate_key().decode()}"
 os.environ.setdefault(
     "DATABASE_URL",
-    os.environ.get(
-        "TEST_DATABASE_URL", "postgresql+psycopg://kplatform:kplatform-dev-only@localhost:5432/kplatform_test"
-    ),
+    os.environ.get("TEST_DATABASE_URL", "postgresql+psycopg://kplatform@localhost:5432/kplatform_test"),
 )
 os.environ.setdefault("REDIS_URL", os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15"))
 

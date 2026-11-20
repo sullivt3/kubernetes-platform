@@ -18,6 +18,13 @@ def make_settings(**overrides: object) -> Settings:
 
 
 class TestSettings:
+    def test_database_connection_must_be_supplied(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        with pytest.raises(ValidationError, match="database_url"):
+            make_settings()
+        with pytest.raises(ValidationError, match="database_url"):
+            make_settings(database_url="")
+
     def test_environment_variables_are_applied(self) -> None:
         settings = make_settings()  # conftest sets ENVIRONMENT=test, AUTH_MODE=dev
         assert settings.environment is Environment.TEST

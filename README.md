@@ -56,6 +56,13 @@ installation, cluster administration, workload management and monitoring from a 
 
 ## Running locally
 
+Generate a unique PostgreSQL password locally (for example, `openssl rand -hex 24`)
+and set `POSTGRES_PASSWORD` in your shell or an ignored root `.env` file before
+starting Compose. Set `DATABASE_URL` in `backend/.env` to the matching
+`postgresql+psycopg` connection URL. There is no shared database password or default
+connection URL. Keep both files private; existing database volumes retain their
+previous password until it is changed in PostgreSQL.
+
 ```bash
 # 1. Data services (also creates the kplatform_test database)
 docker compose -f infrastructure/deployment/docker-compose.yml up -d

@@ -299,6 +299,13 @@ and all six Grafana node panels returned data. The local UI and API run this cod
 
 ## Local development and checks
 
+Database credentials have no shared default. Set `DATABASE_URL` explicitly and
+supply `POSTGRES_PASSWORD` to the development Compose stack from private local
+configuration. GitHub secret scanning and push protection are enabled. A redacted
+history audit found only dummy bootstrap-token fixtures, with no matches for the
+generated local secrets. The former development database default was removed
+from the current tree; historical commits were not rewritten.
+
 Use `README.md` for full setup. Required tooling: Python 3.12+, Node.js 20.9+ (developed with Node 24), Docker for PostgreSQL/Redis, and installed project dependencies.
 
 From the repository root, start development data services:

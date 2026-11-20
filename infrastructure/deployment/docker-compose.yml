@@ -15,7 +15,7 @@ services:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: kplatform
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kplatform-dev-only}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD in your shell or private root .env}
       POSTGRES_DB: kplatform
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -48,7 +48,7 @@ services:
       dockerfile: ../infrastructure/containers/backend.Dockerfile
     env_file: ../../backend/.env
     environment:
-      DATABASE_URL: postgresql+psycopg://kplatform:${POSTGRES_PASSWORD:-kplatform-dev-only}@postgres:5432/kplatform
+      DATABASE_URL: postgresql+psycopg://kplatform:${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD in your shell or private root .env}@postgres:5432/kplatform
       REDIS_URL: redis://redis:6379/0
     volumes:
       - platform-backups:/var/lib/kplatform/backups:ro
@@ -66,7 +66,7 @@ services:
       dockerfile: ../infrastructure/containers/backend.Dockerfile
     env_file: ../../backend/.env
     environment:
-      DATABASE_URL: postgresql+psycopg://kplatform:${POSTGRES_PASSWORD:-kplatform-dev-only}@postgres:5432/kplatform
+      DATABASE_URL: postgresql+psycopg://kplatform:${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD in your shell or private root .env}@postgres:5432/kplatform
       REDIS_URL: redis://redis:6379/0
     volumes:
       - platform-backups:/var/lib/kplatform/backups
@@ -82,7 +82,7 @@ services:
       dockerfile: ../infrastructure/containers/backend.Dockerfile
     env_file: ../../backend/.env
     environment:
-      DATABASE_URL: postgresql+psycopg://kplatform:${POSTGRES_PASSWORD:-kplatform-dev-only}@postgres:5432/kplatform
+      DATABASE_URL: postgresql+psycopg://kplatform:${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD in your shell or private root .env}@postgres:5432/kplatform
       REDIS_URL: redis://redis:6379/0
     command: ["celery", "-A", "app.orchestration.celery_app", "beat", "--loglevel=INFO"]
     depends_on:
