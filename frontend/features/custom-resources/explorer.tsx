@@ -13,9 +13,11 @@ import { ClusterScope } from "@/features/kubernetes/shared";
 import { api, ApiError } from "@/lib/api/client";
 import { useClusterNamespaces } from "@/lib/api/kube";
 
+import { DefinitionInstall, DefinitionManagement, type DefinitionResult } from "./definition-lifecycle";
+
 type Condition = { type: string; status: string; last_transition_time?: string | null };
 type Version = { name: string; served: boolean; storage: boolean };
-type Definition = { name: string; uid: string; group: string; kind: string; plural: string; scope: "Namespaced" | "Cluster"; versions: Version[]; conditions: Condition[]; deletion_timestamp?: string | null };
+type Definition = { managed?: boolean; name: string; uid: string; group: string; kind: string; plural: string; scope: "Namespaced" | "Cluster"; versions: Version[]; conditions: Condition[]; deletion_timestamp?: string | null };
 type Resource = { name: string; namespace: string | null; uid: string; resource_version: string; generation?: number; observed_generation?: number; created_at?: string; deletion_timestamp?: string | null; conditions: Condition[]; finalizer_count: number; owner_count: number };
 type SchemaField = { path: string; type: string; required: boolean; nullable: boolean; preserve_unknown: boolean; enum_count: number; validation_rule_count: number; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number };
 type Schema = { schema: { fields: SchemaField[]; truncated: boolean; has_schema: boolean }; template: string; subresources: string[] };
@@ -118,27 +120,33 @@ function Instances({ id, definition, version, schema, available }: { id: string;
   </div>;
 }
 
-function DefinitionExplorer({ id, definition }: { id: string; definition: Definition }) {
+function DefinitionExplorer({ id, definition, done }: { id: string; definition: Definition; done: (result: DefinitionResult) => void }) {
   const [chosen, setChosen] = useState("");
-  const canReveal = useCan("secrets.reveal");
+  const canReveal = useCan("secrets.reveal"); const manage = useCan("organization.manage");
   const version = chosen || definition.versions.find((v) => v.served && v.storage)?.name || definition.versions.find((v) => v.served)?.name || definition.versions[0]?.name || "";
   const schema = useQuery({ queryKey: ["custom-resource-schema", id, definition.name, definition.uid, version], queryFn: () => api.get<Schema>(`/clusters/${id}/custom-resources/definitions/${definition.name}`, { version }), enabled: Boolean(version) });
   const available = Boolean(definition.versions.find((v) => v.name === version)?.served && definition.conditions.some((c) => c.type === "Established" && c.status === "True") && !definition.conditions.some((c) => c.type === "NamesAccepted" && c.status === "False") && !definition.deletion_timestamp);
   return <div className="space-y-4"><section className="space-y-3 rounded-lg border p-4"><h2 className="font-semibold">{definition.kind} · {definition.name}</h2><p className="text-sm text-muted-foreground">{definition.group} · {definition.scope} · UID {definition.uid}</p><ConditionList conditions={definition.conditions} /><SearchableChoice label="API version" value={version} options={definition.versions.map((v) => ({ value: v.name, label: `${v.name}${v.storage ? " · storage" : ""}${v.served ? " · served" : " · unserved"}` }))} change={setChosen} /></section>
+    <DefinitionManagement key={`${definition.uid}:${canReveal}:${manage}`} base={`/clusters/${id}/custom-resources`} definition={definition} done={done} />
     {schema.isPending && <p>Loading CRD schema…</p>}{schema.isError && <ErrorState error={schema.error} onRetry={() => schema.refetch()} />}{schema.data && <><SchemaGuide key={`${version}:${canReveal}`} base={`/clusters/${id}/custom-resources`} definition={definition} version={version} schema={schema.data} /><Instances key={version} id={id} definition={definition} version={version} schema={schema.data} available={available} /></>}
   </div>;
 }
 
 function ClusterCustomResources({ id }: { id: string }) {
   const [selected, setSelected] = useState("");
+  const client = useQueryClient();
+  const [result, setResult] = useState<DefinitionResult | null>(null);
+  const done = (value: DefinitionResult) => { setResult(value); setSelected(value.action === "remove" ? "" : value.name); void client.invalidateQueries({ queryKey: ["custom-resource-definitions", id] }); void client.invalidateQueries({ queryKey: ["custom-resource-schema", id] }); };
   const definitions = useQuery({ queryKey: ["custom-resource-definitions", id], queryFn: () => api.get<{ available: boolean; reason?: string; items: Definition[]; truncated: boolean }>(`/clusters/${id}/custom-resources/definitions`), refetchInterval: 30000 });
   const current = definitions.data?.items.find((item) => item.name === selected) ?? (!selected ? definitions.data?.items[0] : undefined);
   return <div className="space-y-4"><div className="flex flex-wrap items-end gap-3"><div className="min-w-64 flex-1"><SearchableChoice label="Custom resource definition" value={current?.name ?? selected} options={definitions.data?.items.map((item) => ({ value: item.name, label: `${item.kind} · ${item.name}` })) ?? []} change={setSelected} /></div><Button variant="outline" onClick={() => definitions.refetch()}>Refresh definitions</Button></div>
+    {definitions.data?.available && <DefinitionInstall base={`/clusters/${id}/custom-resources`} done={done} />}
+    {result && <p role="status" className="rounded border p-3 text-sm">Definition {result.status.replaceAll("_", " ")} · {result.name}. Kubernetes accepted the request; establishment and cleanup are reported separately.</p>}
     {definitions.isPending && <p>Loading custom resource definitions…</p>}{definitions.isError && <ErrorState error={definitions.error} onRetry={() => definitions.refetch()} />}
     {definitions.data && !definitions.data.available && <EmptyState title={definitions.data.reason === "forbidden" ? "CRD inventory forbidden" : "CRD API unavailable"} description={definitions.data.reason === "forbidden" ? "The registered cluster credentials cannot list CRD definitions." : "This cluster does not serve the expected CRD API."} />}
     {definitions.data?.available && !definitions.data.items.length && <EmptyState title="No CRDs installed" description="No custom resource definitions were returned by the cluster." />}
     {definitions.data?.truncated && <p className="text-sm">Definition inventory is limited to 1,000 entries.</p>}
-    {current && <DefinitionExplorer key={`${current.name}:${current.uid}`} id={id} definition={current} />}
+    {current && <DefinitionExplorer key={`${current.name}:${current.uid}`} id={id} definition={current} done={done} />}
   </div>;
 }
 

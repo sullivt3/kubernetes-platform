@@ -137,7 +137,7 @@ Context reviewed **2026-11-23**. The monitoring/logging milestone is implemented
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; definition lifecycle, controller integrations, command center and custom workflows remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
+| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; storage migrations, controller integrations, command center and custom workflows remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -248,7 +248,7 @@ The Phase 7 items below remain hardening and integration-validation boundaries.
 ### Requirements not fully represented by “completed” earlier phases
 
 - Global search currently covers pages and recent operations, not live clusters/nodes/pods/deployments/namespaces/services/infrastructure.
-- YAML apply uses discovery, but generic discovery-driven resource lists/details/forms, CRD exploration and schema assistance remain incomplete.
+- CRD discovery/schema guidance, reviewed instance CRUD and guarded definition lifecycle are implemented. A generic explorer for all API resource types and richer graphical schema forms remain incomplete.
 - Deployment creation has a dedicated form; other workload creation primarily uses YAML/templates. Advanced scheduling and broader graphical creation need requirement-by-requirement review.
 - Monitoring/logging's CPU, memory, disk/network metrics, operational findings,
   investigation guidance and five sustained Prometheus rules are implemented.
@@ -528,6 +528,43 @@ were removed with UID checks; both nodes and all 17 active pods were Ready.
 Publishable-file and application-log secret checks passed. Migration `0014` is
 applied locally; API, worker, scheduler and UI run the integration. Third-party
 operators and conversion webhooks still require relevant live validation.
+
+CRD definition lifecycle follow-up (2026-11-23): `definition_lifecycle.py`
+adds administrator-only reviewed install/update/remove using the encrypted `0014`
+review table, separated by category and execution endpoint from instance reviews.
+No new migration is needed. UI actions live on Configuration → Custom resources.
+Definitions installed here carry cluster-bound ownership labels; existing,
+Helm/GitOps/controller-owned definitions are never adopted. Full definition YAML
+is an explicit audited reveal outside shared query caches. Updates bind that
+snapshot, preserve ownership/finalizers/status and recheck stored versions.
+Only None conversion is supported. Group/names/scope, storage version and old
+version entries are retained; previously served versions stay served. Any spec
+change requires zero instances, while metadata-only changes can retain instances.
+Removal repeats all-namespace inventory checks at review and execution, fails
+closed on incomplete/unavailable inventory, uses body-bound dry run and UID/RV
+preconditions, and preserves finalizers. Inventory and deletion are separate API
+requests: concurrent writers are not fenced, and Kubernetes can delete instances
+created in the gap. The UI prompts users to pause writers first. API
+establishment and deletion cleanup remain separate observed conditions.
+Storage migration, webhook/operator installation and custom workflows remain
+separate milestones. See `documentation/custom-resources.md` and
+`tests/test_definition_lifecycle.py`.
+
+Definition lifecycle validation: 136 backend regressions passed, followed by all
+35 definition cases against final source. Full Mypy passed for 163 files with
+untyped bodies checked for the definition service and routes. Ruff/format,
+frontend type checking/lint, 29 frontend tests and both production images passed.
+Live Keycloak/Fedora browser validation covered administrator/operator/viewer
+boundaries, encrypted non-mutating install review, typed confirmation, explicit
+reveal, storage-version refusal, empty schema update with an additional served
+version, nonempty removal refusal, instances created between review/execution,
+non-mutating delete previews, pending deletion and finalizer preservation.
+Only isolated platform-owned fixtures were changed; their UID-matched resources
+and review rows were removed. Both Fedora nodes and all 17 active pods were Ready.
+Publishable-file/application-log secret checks passed; private fixture state was
+removed. API, worker, scheduler and production UI run the integration locally.
+Custom workflows are the next original Phase 8 milestone; external notifications
+and observability host-loss recovery remain scheduled towards the end.
 
 ## Local development and checks
 

@@ -380,6 +380,8 @@ class CustomResources:
         self.store = kubernetes.secret_store
 
     def definitions(self, principal, cluster_id):
+        from app.modules.kubernetes.definition_lifecycle import managed
+
         _, api = self.kubernetes.api(principal, cluster_id)
         items = []
         truncated = False
@@ -410,7 +412,10 @@ class CustomResources:
             return {"available": False, "reason": "unavailable", "items": [], "truncated": False}
         return {
             "available": True,
-            "items": sorted([definition_summary(obj) for obj in items], key=lambda obj: obj["name"]),
+            "items": sorted(
+                [{**definition_summary(obj), "managed": managed(obj, cluster_id)} for obj in items],
+                key=lambda obj: obj["name"],
+            ),
             "truncated": truncated,
         }
 
@@ -603,7 +608,7 @@ class CustomResources:
             .where(CustomResourceReview.id == body.review_id, CustomResourceReview.cluster_id == cluster_id)
             .with_for_update()
         )
-        if row is None or row.created_by != principal.subject:
+        if row is None or row.created_by != principal.subject or row.specification.get("category") == "definition":
             raise NotFoundError("Custom-resource review not found")
         spec = row.specification
         if body.confirm != spec["name"]:

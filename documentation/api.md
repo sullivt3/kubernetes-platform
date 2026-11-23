@@ -386,8 +386,27 @@ Review bodies require `definition`, `definition_uid`, `version`, `name`, `action
 optional namespaced `namespace`, and `manifest` YAML for create/update. Update/delete
 require `expected_uid`; update additionally requires `expected_hash` from reveal's
 `content_hash`. Definition/content changes invalidate reviews. Accepted delete
-requests preserve finalizers and can remain pending. No definition lifecycle or
-status-subresource writes are provided. [Custom-resource guide](custom-resources.md)
+requests preserve finalizers and can remain pending. Status-subresource writes are not provided. Definition lifecycle uses the
+separate administrator endpoints below. [Custom-resource guide](custom-resources.md)
+
+Definition lifecycle uses the same `/clusters/{id}/custom-resources` prefix:
+
+| Method | Path | Behavior |
+|---|---|---|
+| POST | `/definitions/{name}/manifest/reveal` | Explicit audited full/edit-ready definition YAML and content_hash; body `{name, expected_uid?}`. Requires secrets.reveal. |
+| POST | `/definition-reviews` | `{name, action: install/update/remove, manifest?, expected_uid?, expected_hash?}`. Organization administrators review a platform-owned definition action. |
+| POST | `/definition-execute` | `{review_id, confirm: full_definition_name}` executes a current, author-bound definition review; organization administrator and cluster write grants required. |
+
+Definition inventory includes a `managed` boolean scoped to the selected cluster.
+Updates/removal require expected_uid; updates also require expected_hash from
+manifest reveal. New installs never adopt an existing definition. API identity,
+storage version, version retention, conversion, empty-instance inventory and
+ownership guards apply. Specification changes and removal require empty inventory
+at review and execution; concurrent external writers are not fenced. Kubernetes
+can delete instances created in the gap before definition removal. Pause writers
+before using removal. Accepted results report establishment/deletion separately.
+Definition review payloads share migration `0014` encrypted storage; instance and
+definition execution routes cannot consume one another's reviews.
 
 ### Operational monitoring
 
