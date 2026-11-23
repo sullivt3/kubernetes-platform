@@ -28,7 +28,7 @@ Target environments include existing physical Linux servers over SSH, local Dock
 - **Domain modules:** `backend/app/modules/` contains organizations/identity, credentials, auditing, providers, infrastructure, cluster lifecycle, Kubernetes access and workloads. Networking/storage functionality currently shares the Kubernetes/workload modules; do not create parallel modules just to match a suggested directory tree.
 - **Orchestration:** `backend/app/orchestration/` uses Celery and Redis with PostgreSQL-backed operations, steps, checkpoints, logs and recovery. API, worker and scheduler are separate process roles from the same backend codebase. SSE supplies operation/log updates; WebSockets bridge pod terminals.
 - **Infrastructure:** provider implementations live in `modules/providers/implementations/`; SSH execution and inventory live in `modules/infrastructure/`. Distribution plans and installers live in `modules/cluster_lifecycle/distributions/`.
-- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0008`, adding a per-cluster Loki Service connection.
+- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0009`, adding opt-in remediation policies and durable observations/approvals.
 - **Deployment:** `infrastructure/deployment/docker-compose.yml` supplies PostgreSQL/Redis and optional backend API/worker/scheduler services. The frontend runs separately. `infrastructure/containers/backend.Dockerfile` packages the backend.
 
 Keep infrastructure provisioning, host execution, and Kubernetes distribution installation separate. Add capabilities through the existing provider/distribution contracts and registries instead of scattering provider conditionals through services or UI.
@@ -125,7 +125,7 @@ These are existing decisions/deviations from the original prompt. Do not replace
 
 ## Current status
 
-Context reviewed **2026-11-11**. This handoff includes machine address/health management, optional user kubeconfigs, installer verification and automatic firewalld policies. Check current HEAD and update this file when milestones change.
+Context reviewed **2026-11-23**. The monitoring/logging milestone is implemented and live-validated. Phase 8 remains in progress. Check current HEAD and update this file when milestones change.
 
 | Phase | Implemented scope / remaining boundary |
 |---|---|
@@ -137,7 +137,7 @@ Context reviewed **2026-11-11**. This handoff includes machine address/health ma
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Prometheus history, Grafana dashboards, disk/network metrics, Loki pod log search, managed namespace collection, operational alerts and investigation guidance implemented. Automated remediation, Helm releases, GitOps, dynamic CRD management, command center and custom workflows remain planned. |
+| 8 — Advanced operations | **In progress.** Prometheus history, Grafana dashboards, disk/network metrics, Loki pod log search, managed namespace collection, operational alerts, investigation guidance and approval-controlled stateless pod remediation implemented. Helm releases, GitOps, dynamic CRD management, command center and custom workflows remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -220,7 +220,7 @@ The 81 targeted backend tests, 29 frontend tests, and Docker frontend build pass
 Loki log search under **Operations → Logs** uses a cluster-scoped Service
 connection stored by migration `0008`. The Fedora lab runs Loki and Alloy in
 `kplatform-monitoring`. The shipped collector covers that namespace. The
-live lab also includes `default/loki-log-test` through a pod-scoped Role.
+initial live lab also included `default/loki-log-test` through a pod-scoped Role.
 The Namespace dropdown queries the selected Loki Service for the selected
 lookback and preselects a sole result. Live operator and viewer checks found logs from both UIDs of a
 disposable, replaced pod. The 83 backend tests, 29 frontend tests and Docker
@@ -228,7 +228,12 @@ frontend build passed. [Logging setup](documentation/logging.md)
 
 ## Remaining work and priorities
 
-Default recommendation, subject to the user's chosen task: validate the current baseline and finish Phase 7 before expanding Phase 8.
+The user has progressed into Phase 8. Monitoring/logging and the first bounded
+remediation runbook are implemented. Helm management is next in the original
+roadmap order; wait for the user's instruction before starting it.
+External alert notification delivery and observability host-loss recovery are
+explicitly scheduled towards the end of Phase 8 (see the README roadmap).
+The Phase 7 items below remain hardening and integration-validation boundaries.
 
 ### Phase 7
 
@@ -243,7 +248,10 @@ Default recommendation, subject to the user's chosen task: validate the current 
 - Global search currently covers pages and recent operations, not live clusters/nodes/pods/deployments/namespaces/services/infrastructure.
 - YAML apply uses discovery, but generic discovery-driven resource lists/details/forms, CRD exploration and schema assistance remain incomplete.
 - Deployment creation has a dedicated form; other workload creation primarily uses YAML/templates. Advanced scheduling and broader graphical creation need requirement-by-requirement review.
-- Disk/network utilization, broad alerting and troubleshooting recommendations remain unfinished.
+- Monitoring/logging's CPU, memory, disk/network metrics, operational findings,
+  investigation guidance and five sustained Prometheus rules are implemented.
+  External notification delivery remains separate work; the initial remediation
+  runbook covers approved replacement of repeatedly failing stateless pods.
 - Creation-time storage is centered on the NFS CSI integration, not a broad CSI vendor catalog.
 - Some UI descriptions are stale: the Cloud Resources page still describes managed Kubernetes as planned. Follow code and current integration/auth documentation when resolving inconsistencies. The backend example environment now includes the implemented OIDC settings.
 
@@ -275,7 +283,8 @@ conditions, container waiting and failed termination states, deployment failures
 API readiness, storage/network events, metric thresholds, and verified API
 serving certificate expiry. It reports incomplete coverage and investigation
 steps. Five native Prometheus rules expose inactive/pending/firing state; external
-notification delivery and automated remediation are not configured.
+notification delivery is not configured. The remediation follow-up below adds
+an opt-in, approval-controlled runbook; it is disabled by default.
 
 Logs → Collected namespaces queues `cluster.logs.collection`, requiring cluster
 write permission and an explicitly registered Alloy Deployment. The manager uses
@@ -296,6 +305,41 @@ and unreachable scrape target verified actionable findings and a rule reaching
 firing after its two-minute hold. All fixtures were removed. Both Fedora nodes
 and monitoring pods were Ready, all four claims Bound, four scrape targets up,
 and all six Grafana node panels returned data. The local UI and API run this code.
+
+On 2026-11-23 the original prompt's monitoring/operations requirements were
+checked against the implementation. Live checks verified administrator/operator/
+viewer login, the real worker pipeline, both Ready Fedora nodes, per-node pod DNS,
+fresh Loki ingestion from temporary probes on each node, all eight metric panels,
+five healthy rules, all alert-source coverage and four Bound observability claims.
+The temporary probes were removed. The original default logging pod is no longer
+present; do not treat its absent logs as collector failure. The UI's Docker port
+mapping and loopback Grafana tunnel were restored. Worker1 has about 1 GiB free
+disk (83% used), limiting additional test workload capacity. Monitoring/logging is
+complete for the current milestone, with external notifications, broader PKI
+expiry coverage and host-loss storage recovery outside that milestone.
+
+Remediation follow-up (2026-11-23): migration `0009` adds cluster policy JSON and
+`RemediationRequest` observations/approvals. `modules/kubernetes/remediation.py`
+registers the PDB-aware `cluster.remediation.replace_pod` workflow; Celery beat
+runs `remediation.scan` every minute. Only explicitly enabled namespaces are
+observed. Repeated failure (three restarts plus a stability window) creates a
+proposal, never an eviction. Organization/platform administrators approve each
+attempt on Alerts by typing the cluster name. Approvals expire, configuration
+edits revoke unexecuted approvals, and each Deployment has a cooldown. The worker
+revalidates UID/owner templates/current failure and verifies recovery. Stateful,
+standalone, protected, privileged, host-coupled and data-volume pods are excluded.
+Operation retries are administrator-only. Other alert types remain guidance.
+
+Validation passed 90 targeted backend regressions including schema consistency,
+a final 19-case remediation suite (one additional observation-gap case), Ruff,
+format/Mypy, 29 frontend tests and the Docker production build. A real isolated
+Fedora Deployment verified policy configuration through the UI, sustained failure
+detection, operator/viewer denial, typed administrator confirmation, PDB refusal,
+and a retried eviction followed by a Ready replacement. The fixture's ConfigMap
+was corrected before retry; the runbook itself does not repair configuration.
+The validation namespace was removed, default detection restored to disabled,
+and the updated local API/worker/scheduler/UI are running. The operation history
+retains the actual failed-then-succeeded drill for review. No Helm work has begun.
 
 ## Local development and checks
 

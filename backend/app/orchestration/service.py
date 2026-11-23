@@ -73,6 +73,8 @@ class OperationService:
     ) -> Operation:
         if workflow_type in {"platform.backup", "platform.restore"}:
             require(principal, "platform.manage")
+        if workflow_type.startswith("cluster.remediation."):
+            require(principal, "organization.manage")
         workflow = self.registry.get(workflow_type)
         validated = workflow.validate_params(params)
         target = workflow.target(validated)
@@ -233,6 +235,8 @@ class OperationService:
 
     def retry(self, principal: Principal, operation_id: uuid.UUID) -> Operation:
         op = self._get_for_update(principal, operation_id)
+        if op.type.startswith("cluster.remediation."):
+            require(principal, "organization.manage")
         if op.status not in (OperationStatus.FAILED, OperationStatus.CANCELLED):
             raise InvalidStateError("Only failed or cancelled operations can be retried")
         self.registry.get(op.type)  # the workflow must still exist

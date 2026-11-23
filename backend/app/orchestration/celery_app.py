@@ -33,6 +33,7 @@ celery_app.conf.update(
         "recover-operations": {"task": "operations.recover", "schedule": 30.0},
         "probe-clusters": {"task": "clusters.probe", "schedule": 60.0},
         "probe-machines": {"task": "machines.probe", "schedule": float(settings.machine_probe_interval_seconds)},
+        "scan-remediation": {"task": "remediation.scan", "schedule": 60.0},
     },
     timezone="UTC",
 )
@@ -103,6 +104,17 @@ def probe_machines() -> dict[str, int]:
 
     load_workflows()
     return run_probe(get_session_factory(), get_secret_store())
+
+
+@celery_app.task(name="remediation.scan")
+def scan_remediation() -> dict:
+    from app.core.secrets import get_secret_store
+    from app.db.session import get_session_factory
+    from app.modules.kubernetes.remediation import scan_all
+    from app.orchestration.runtime import load_workflows
+
+    load_workflows()
+    return scan_all(get_session_factory(), get_secret_store())
 
 
 # `celery -A app.orchestration.celery_app` looks for `app` or `celery` attributes.

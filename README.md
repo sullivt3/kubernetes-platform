@@ -154,4 +154,12 @@ npm run build
 | 5 | kubeadm upgrades, cloud VM provisioning, autoscaling policies, AWS load balancers, managed EKS/AKS/GKE create/delete/scale/upgrade; overdue Kind/k3d, K3s/RKE2 and vSphere paths implemented as preview; creation wizard VM, CNI and storage wiring |
 | 6 | Networking and storage ✅: resource management, live DNS diagnostics, PV/PVC, StorageClasses, CSI inventory and NFS CSI install/reconcile/remove (preview); ResourceQuotas and LimitRanges |
 | 7 | In progress: OIDC/session authentication, organization/project memberships, administration UI and application RBAC foundations implemented; Kubernetes security views, reporting, platform recovery and Velero integration implemented. Deployment hardening and provider validation remain |
-| 8 | In progress. Prometheus/Grafana CPU, memory, disk and network charts; operational alerts and investigation guidance; Loki log search and managed namespace collection; persistent observability storage. Helm, GitOps and other advanced operations remain planned. [Monitoring setup](documentation/monitoring.md) · [Logging setup](documentation/logging.md) |
+| 8 | In progress. Monitoring/logging milestone verified complete. Approval-controlled remediation detects repeatedly failing stateless Deployment pods, proposes replacement and verifies recovery. Helm management, GitOps, dynamic CRD management and custom workflows remain. [Monitoring setup](documentation/monitoring.md) · [Logging setup](documentation/logging.md) |
+
+Scheduled towards the end of Phase 8:
+
+- External alert notifications: configure destinations such as email or webhooks,
+  delivery credentials, retry/deduplication, and an end-to-end delivery test.
+- Observability host-loss recovery: back up Prometheus, Loki, Grafana and Alloy
+  data/configuration, restore onto replacement storage or a replacement host, and
+  run a recovery drill that verifies retained metrics, logs and dashboards.

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ClusterScope, LiveError } from "@/features/kubernetes/shared";
 import { api } from "@/lib/api/client";
 import { formatDateTime } from "@/lib/format";
+import { RemediationControls } from "./remediation";
 
 type Report = {
   rules: { name: string; state: string; health: string; duration: number; lastError?: string; annotations?: { summary?: string; description?: string } }[];
@@ -23,6 +24,7 @@ function ClusterAlerts({ id }: { id: string }) {
     refetchInterval: 60000, retry: false,
   });
   return <div className="space-y-4">
+    <RemediationControls id={id} />
     <Button variant="outline" disabled={query.isFetching} onClick={() => query.refetch()}>Refresh checks</Button>
     {query.isPending && <TableSkeleton />}
     {query.isError && <LiveError error={query.error} clusterId={id} onRetry={() => query.refetch()} />}

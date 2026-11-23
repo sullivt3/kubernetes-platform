@@ -182,7 +182,7 @@ See [Cluster integrations](cluster-integrations.md) for configuration, ownership
 | GET | `/clusters/{id}/health` | Live summary: version, readiness checks, nodes, pods, CPU/memory (allocatable, requested, used), alerts. |
 | GET | `/clusters/{id}/monitoring/connection` | The selected cluster’s saved Prometheus Service and optional Grafana base URL, or null. |
 | PUT | `/clusters/{id}/monitoring/connection` | Set or clear `{connection: {namespace, service, port, grafana_url?} \| null}`. Requires cluster write access. |
-| GET | `/clusters/{id}/monitoring` | Historical node and pod CPU and memory. Set `window=1h\|6h\|24h` and optionally `namespace` for pod charts. Returns evaluation timestamps, interval, and per-metric series with explicit panel status. |
+| GET | `/clusters/{id}/monitoring` | Historical node and pod CPU/memory plus node disk usage, disk I/O and network receive/transmit. Set `window=1h\|6h\|24h` and optionally `namespace` for pod charts. Returns evaluation timestamps, interval, and per-metric series with explicit panel status. |
 | GET | `/clusters/{id}/logs/connection` | The selected cluster’s saved Loki Service or null. |
 | PUT | `/clusters/{id}/logs/connection` | Set or clear `{connection: {namespace, service, port} \| null}`. Requires cluster write access. |
 | GET | `/clusters/{id}/logs/namespaces` | Sorted namespace labels from the selected Loki Service. Accepts the same `window` as log search. |
@@ -292,6 +292,16 @@ as `confirm`. A 202 response means Velero accepted a request. Read its phase to
 determine the outcome. [Recovery guide](backup-restore.md)
 
 ### Operational monitoring
+
+`GET /clusters/{id}/monitoring/remediation` returns the opt-in policy, last scan
+status and latest 100 observations/proposals with operation links. Cluster readers
+can inspect it. Organization/platform administrators can `PUT` the policy
+(`enabled`, `namespaces`, `grace_seconds`, `cooldown_minutes`), `POST` to
+`/remediation/scan`, and `POST` to `/remediation/{request_id}/approve` with
+`{confirm: <cluster name>}` or `/remediation/{request_id}/dismiss`.
+Approval returns a tracked operation (202). Every eviction requires a fresh,
+administrator-approved proposal and revalidation in the worker. These endpoints
+use the normal project scope, CSRF policy and audit trail. Apply migration `0009`.
 
 `GET /clusters/{id}/monitoring/alerts` returns current findings with investigation
 guidance, per-source coverage and the connected Prometheus alert rule states.

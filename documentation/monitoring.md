@@ -96,6 +96,49 @@ These in-app checks and rule states refresh while the page is open.
 Prometheus evaluates its rules independently of the browser. External notification
 delivery is not configured by this integration.
 
+## Automated remediation
+
+On **Operations → Alerts**, administrators can configure **Automated remediation**.
+Detection is disabled until an organization or platform administrator selects
+eligible namespaces and enables it. Operators and viewers can inspect observations
+and operation links; they cannot configure, approve, dismiss or retry remediation.
+Apply migration `0009` and restart the API, worker and scheduler.
+
+The scheduler scans once per minute. Its first runbook identifies Deployment pods
+with at least three restarts that are in CrashLoopBackOff or a failed termination
+state. A continuous observation window (default five minutes, minimum one minute)
+prevents immediate action on transient startup failures. A gap of over three
+minutes restarts that observation window. Detection creates a durable proposal;
+it never changes Kubernetes resources.
+
+An administrator reviews the pod, Deployment, failure and disruption impact, then
+types the cluster name to approve one attempt. Approval expires fifteen minutes
+after proposal creation. The worker rechecks policy, failure, pod UID and workload
+templates, evicts through the Kubernetes Eviction API, then waits up to three
+minutes for a Ready replacement and available Deployment replicas. PodDisruptionBudgets
+are enforced; no force deletion is used. An already recovered pod is skipped.
+Workload drift blocks execution. A lost acknowledgement cannot evict a replacement
+with a different UID. Each Deployment has a cooldown (default thirty minutes).
+Failure leaves a failed tracked operation and investigation guidance; it does not
+trigger repeated unattended replacements. Retrying a failed operation requires an
+administrator, and an unexecuted eviction still requires an unexpired approval.
+
+System/monitoring namespaces, standalone pods, Jobs, StatefulSets, static or critical
+pods, host-access/privileged pods and pods with local or persistent data volumes are
+excluded. This runbook can recover a transient pod problem; it does not repair an
+invalid image, application configuration or underlying host failure. Other findings
+continue to provide investigation guidance. The workflow retains normal audit,
+target-exclusion, cancellation, checkpoint and recovery behavior.
+
+Saving policy changes revokes outstanding observations/proposals and unexecuted
+approvals. A scan can begin observing still-failing, never-approved pods again.
+Dismissed pods are not automatically proposed again. The page shows the latest
+100 observations; API source failures are shown in the scan status.
+
+External notification delivery and host-loss recovery of the observability stack
+are explicitly scheduled towards the end of Phase 8. The latter must include a
+replacement-host/storage recovery drill; pod restart persistence is separate.
+
 ## Persistent storage
 
 The Grafana, Loki and Alloy manifests now reference PVCs. Select a suitable
