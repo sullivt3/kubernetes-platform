@@ -16,7 +16,7 @@ from enum import StrEnum
 from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, JsonDict, OrganizationScoped, Timestamps, UUIDPrimaryKey, str_enum
+from app.db.base import Base, JsonDict, JsonList, OrganizationScoped, Timestamps, UUIDPrimaryKey, str_enum
 from app.modules.cluster_lifecycle.distributions.types import DistributionType
 
 
@@ -68,6 +68,7 @@ class Cluster(UUIDPrimaryKey, Timestamps, OrganizationScoped, Base):
     prometheus_connection: Mapped[JsonDict | None]
     loki_connection: Mapped[JsonDict | None]
     remediation_policy: Mapped[JsonDict | None]
+    helm_repositories: Mapped[JsonList | None]
 
     spec: Mapped[JsonDict] = mapped_column(default=dict)  # desired configuration (ClusterSpec)
     status_detail: Mapped[JsonDict] = mapped_column(default=dict)  # last observed health summary

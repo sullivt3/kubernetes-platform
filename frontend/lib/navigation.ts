@@ -96,7 +96,7 @@ export const NAVIGATION: NavSection[] = [
       { title: "DaemonSets", href: "/workloads/daemonsets", description: "Per-node workloads." },
       { title: "Jobs", href: "/workloads/jobs", description: "Run-to-completion workloads." },
       { title: "CronJobs", href: "/workloads/cronjobs", description: "Scheduled jobs." },
-      { title: "Application deployments", href: "/workloads/applications", description: "Deploy applications from images or Helm charts.", phase: 8 },
+      { title: "Helm releases", href: "/workloads/applications", description: "Browse Helm charts, install, upgrade, roll back and uninstall releases.", keywords: ["helm", "charts", "applications", "releases"] },
     ],
   },
   {

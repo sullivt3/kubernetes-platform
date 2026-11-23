@@ -28,7 +28,7 @@ Target environments include existing physical Linux servers over SSH, local Dock
 - **Domain modules:** `backend/app/modules/` contains organizations/identity, credentials, auditing, providers, infrastructure, cluster lifecycle, Kubernetes access and workloads. Networking/storage functionality currently shares the Kubernetes/workload modules; do not create parallel modules just to match a suggested directory tree.
 - **Orchestration:** `backend/app/orchestration/` uses Celery and Redis with PostgreSQL-backed operations, steps, checkpoints, logs and recovery. API, worker and scheduler are separate process roles from the same backend codebase. SSE supplies operation/log updates; WebSockets bridge pod terminals.
 - **Infrastructure:** provider implementations live in `modules/providers/implementations/`; SSH execution and inventory live in `modules/infrastructure/`. Distribution plans and installers live in `modules/cluster_lifecycle/distributions/`.
-- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0009`, adding opt-in remediation policies and durable observations/approvals.
+- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0011`, adding encrypted, revocable Helm repository credentials after `0010` repository/review plans.
 - **Deployment:** `infrastructure/deployment/docker-compose.yml` supplies PostgreSQL/Redis and optional backend API/worker/scheduler services. The frontend runs separately. `infrastructure/containers/backend.Dockerfile` packages the backend.
 
 Keep infrastructure provisioning, host execution, and Kubernetes distribution installation separate. Add capabilities through the existing provider/distribution contracts and registries instead of scattering provider conditionals through services or UI.
@@ -137,7 +137,7 @@ Context reviewed **2026-11-23**. The monitoring/logging milestone is implemented
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Prometheus history, Grafana dashboards, disk/network metrics, Loki pod log search, managed namespace collection, operational alerts, investigation guidance and approval-controlled stateless pod remediation implemented. Helm releases, GitOps, dynamic CRD management, command center and custom workflows remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
+| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps, dynamic CRD management, command center and custom workflows remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -228,9 +228,9 @@ frontend build passed. [Logging setup](documentation/logging.md)
 
 ## Remaining work and priorities
 
-The user has progressed into Phase 8. Monitoring/logging and the first bounded
-remediation runbook are implemented. Helm management is next in the original
-roadmap order; wait for the user's instruction before starting it.
+The user has progressed into Phase 8. Monitoring/logging, the first bounded
+remediation runbook and Helm release management are implemented. GitOps is next
+in the original roadmap order; wait for the user's instruction before starting it.
 External alert notification delivery and observability host-loss recovery are
 explicitly scheduled towards the end of Phase 8 (see the README roadmap).
 The Phase 7 items below remain hardening and integration-validation boundaries.
@@ -339,7 +339,68 @@ and a retried eviction followed by a Ready replacement. The fixture's ConfigMap
 was corrected before retry; the runbook itself does not repair configuration.
 The validation namespace was removed, default detection restored to disabled,
 and the updated local API/worker/scheduler/UI are running. The operation history
-retains the actual failed-then-succeeded drill for review. No Helm work has begun.
+retains the actual failed-then-succeeded drill for review. Helm was added in the
+subsequent implementation below.
+
+Helm follow-up (2026-11-23): **Workloads → Helm releases** implements public
+HTTPS repository setup, chart/version browsing, values editing and expiring review
+plans, release inventory/history, and tracked install/upgrade/rollback/uninstall.
+`modules/helm/` contains bounded DNS-pinned catalog downloads, digest/archive
+checks, isolated Helm subprocesses and workflow execution. Migration `0010`
+stores per-cluster repositories and `HelmPlan` records; values are encrypted using
+the existing SecretStore and never included in operation params/results/logs.
+Helm 4.3.2 is checksum-pinned by `backend/tools/install_helm.py`, included in the
+backend container, and installed locally under ignored `.tools/helm/bin`.
+
+Mutations require cluster write access. Reviewed plans are user/project-bound,
+expire after fifteen minutes and snapshot release revision/head Secret UID.
+Upgrade, rollback and uninstall require typed release-name confirmation. The
+worker checks the snapshot again after chart download; operation markers avoid
+repeating an already committed successful action after recovery. Hooks are off
+by default, Helm waits for readiness, and install/upgrade roll back on failure.
+No ownership-taking, force replacement or automatic pending-release unlock is
+exposed. Public history omits values/notes/descriptions; previews return resource
+names/kinds only. See `documentation/helm.md` for offline-review/reused-values
+limits, cancellation semantics, and repository trust/credential handling.
+
+Validation: 82 targeted backend regressions (Helm, migrations, identity and
+orchestration), plus the final 18-case Helm-specific suite and a queued-expiry check, frontend
+checks (29 tests/type checking/lint/build) and both container builds. Real operator/viewer browser validation used Bedag's public
+`raw` 2.0.2 chart in an isolated namespace: install created revision 1, upgrade
+changed ConfigMap data at revision 2, rollback restored data at revision 3, and
+uninstall removed the release and ConfigMap. Viewer mutation denial, encrypted
+values and sanitized history/operation payloads passed. A delayed-response browser
+check verified that editing values discards an in-flight older preview. All drill namespaces and
+repository changes were cleaned up. Migration `0010` is applied locally and the
+API/worker/scheduler/UI run this integration. GitOps remains unstarted.
+
+
+Helm private-source follow-up (2026-11-23): migration `0011` adds encrypted,
+revocable repository credentials. HTTPS indexes and full OCI chart URLs support
+Basic/password-token and direct Bearer authentication. Read APIs expose only opaque
+auth references. OCI token exchanges request chart-specific pull access, require
+explicit trust before forwarding credentials to another token-service origin, and
+pin manifest/layer digests. Credential rotation/removal and source configuration
+changes invalidate affected new install/upgrade reviews. Public `0010` plans retain
+their compatibility path. Rollback/uninstall do not require the chart source.
+
+Organization/platform administrators control private RFC1918/ULA endpoints,
+custom TLS ports, CA bundles and exact OCI token-service trust; operators can use
+configured sources. TLS verification remains enabled; metadata/link-local/loopback
+addresses are blocked and cross-origin redirects drop credentials/custom trust.
+The GUI supports source editing/credential rotation and explicit OCI versions when
+tag listing is unavailable. See `documentation/helm.md` and `test_helm_sources.py`.
+
+Validation: 94 targeted backend tests, Ruff/format/Mypy, 29 frontend tests,
+frontend lint/type checking and both production container builds passed. Real
+TLS/Basic-protected HTTPS and OCI fixtures verified discovery, chart defaults,
+write-only encrypted credentials and source editing in the browser. An operator
+installed/removed the HTTPS chart, then installed/upgraded/rolled back/removed the
+OCI chart on the Fedora cluster; rollback restored the original ConfigMap data.
+The temporary namespace and registry were removed, repository settings restored,
+and fixture credentials revoked. No fixture password was found in publishable
+files or application logs. Migration `0011` is applied locally; API/worker/scheduler
+and UI run this integration. GitOps remains unstarted.
 
 ## Local development and checks
 

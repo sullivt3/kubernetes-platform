@@ -291,6 +291,38 @@ list truncation indicators. `POST /clusters/{id}/backups` accepts `name` and `lo
 as `confirm`. A 202 response means Velero accepted a request. Read its phase to
 determine the outcome. [Recovery guide](backup-restore.md)
 
+### Helm releases
+
+All endpoints below are relative to `/clusters/{id}/helm`. Read requests require
+cluster read permission; mutations require cluster write permission. Replies omit
+installed values, manifests, release notes and potentially sensitive descriptions.
+
+| Method | Path | Behavior |
+|---|---|---|
+| GET / PUT | `/repositories` | List or replace up to twenty named HTTPS indexes or full OCI chart references (`{repositories: [{name, url, ...}]}`). |
+| GET | `/charts?repository=...&search=...` | Browse up to 500 matching chart names and up to 100 indexed versions per chart. |
+| GET | `/charts/values?repository=...&chart=...&version=...` | Fetch digest-verified chart defaults; does not read installed values. |
+| GET | `/releases?namespace=...` | Inventory up to 256 releases, optionally restricted to a namespace; reports truncation. |
+| GET | `/releases/{namespace}/{release}/history` | Sanitized history, up to fifty revisions. |
+| POST | `/preview` | Review `action`, `release`, `namespace`, optional chart repository/name/version, `values_yaml`, `reuse_values`, `hooks`, rollback `revision`, `timeout_seconds`; returns expiring plan ID and resource inventory. Values are encrypted at rest. |
+| POST | `/execute` | Submit `{plan_id, confirm?}`; non-install actions require the release name as confirmation. Returns a tracked operation (202). |
+
+Apply migrations through `0011` and install the pinned Helm runtime on API/worker hosts.
+Repository entries accept write-only `authentication: {mode: "basic" | "bearer",
+username?, password}`; `password` contains the password/token. Reads return only
+an opaque `auth_id`. Preserve that reference or omit authentication to retain it;
+`clear_credentials: true` explicitly removes it. Rotation/removal revokes previous
+credentials and invalidates affected source reviews. Credentials cannot be borrowed
+from another cluster or repository URL.
+
+`allow_private_network`, `ca_pem` and `token_service_url` configure endpoint trust;
+new or changed trust requires `organization.manage` in addition to cluster write
+access. The token service is an exact HTTPS endpoint, without query parameters.
+Private access permits RFC1918/ULA and custom TLS ports, never loopback/link-local
+or metadata addresses. TLS verification and origin-bound credential handling remain
+mandatory.
+See [Helm management](helm.md) for review, recovery and repository limitations.
+
 ### Operational monitoring
 
 `GET /clusters/{id}/monitoring/remediation` returns the opt-in policy, last scan
