@@ -364,6 +364,31 @@ confirmation. Replaced/unowned resources block pruning, while PVCs, StatefulSets
 custom resources and retention annotations are protected. Deletes use UID/resource-
 version preconditions and preserve finalizers. [GitOps guide](gitops.md)
 
+### Custom resources
+
+All paths below are relative to `/clusters/{id}/custom-resources` and respect
+organization/project scope. Reads require `clusters.read`, mutations require
+`clusters.write`, and explicit YAML reveals additionally require `secrets.reveal`.
+Browser writes require CSRF protection. Apply migration `0014`.
+
+| Method | Path | Behavior |
+|---|---|---|
+| GET | `/definitions` | Bounded installed CRD inventory; distinguishes unavailable/forbidden APIs. |
+| GET | `/definitions/{name}?version=...` | Metadata, safe schema guidance and skeleton template; optional namespace. |
+| GET | `/definitions/{name}/resources?version=...` | Metadata-only resource page; optional namespace and continue_token. |
+| GET | `/resource` | Metadata/conditions for definition, version, name and optional namespace/expected_uid. |
+| POST | `/definitions/{name}/reveal` | Audited full schema YAML; body version and optional definition_uid. |
+| POST | `/reveal` | Audited full resource/edit YAML and content_hash; body identifies target and optional expected UIDs. |
+| POST | `/review` | Dry-run create/update/delete; encrypted, author-bound 15-minute review with field paths only. |
+| POST | `/execute` | `{review_id, confirm: object_name}` executes the reviewed action and returns metadata/status. |
+
+Review bodies require `definition`, `definition_uid`, `version`, `name`, `action`,
+optional namespaced `namespace`, and `manifest` YAML for create/update. Update/delete
+require `expected_uid`; update additionally requires `expected_hash` from reveal's
+`content_hash`. Definition/content changes invalidate reviews. Accepted delete
+requests preserve finalizers and can remain pending. No definition lifecycle or
+status-subresource writes are provided. [Custom-resource guide](custom-resources.md)
+
 ### Operational monitoring
 
 `GET /clusters/{id}/monitoring/remediation` returns the opt-in policy, last scan

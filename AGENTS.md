@@ -28,7 +28,7 @@ Target environments include existing physical Linux servers over SSH, local Dock
 - **Domain modules:** `backend/app/modules/` contains organizations/identity, credentials, auditing, providers, infrastructure, cluster lifecycle, Kubernetes access and workloads. Networking/storage functionality currently shares the Kubernetes/workload modules; do not create parallel modules just to match a suggested directory tree.
 - **Orchestration:** `backend/app/orchestration/` uses Celery and Redis with PostgreSQL-backed operations, steps, checkpoints, logs and recovery. API, worker and scheduler are separate process roles from the same backend codebase. SSE supplies operation/log updates; WebSockets bridge pod terminals.
 - **Infrastructure:** provider implementations live in `modules/providers/implementations/`; SSH execution and inventory live in `modules/infrastructure/`. Distribution plans and installers live in `modules/cluster_lifecycle/distributions/`.
-- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0013`, adding opt-in GitOps reconciliation policy/scheduling after `0012` applications and reviews.
+- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0014`, adding encrypted custom-resource action reviews after `0013` GitOps automation.
 - **Deployment:** `infrastructure/deployment/docker-compose.yml` supplies PostgreSQL/Redis and optional backend API/worker/scheduler services. The frontend runs separately. `infrastructure/containers/backend.Dockerfile` packages the backend.
 
 Keep infrastructure provisioning, host execution, and Kubernetes distribution installation separate. Add capabilities through the existing provider/distribution contracts and registries instead of scattering provider conditionals through services or UI.
@@ -137,7 +137,7 @@ Context reviewed **2026-11-23**. The monitoring/logging milestone is implemented
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; controller integrations, dynamic CRD management, command center and custom workflows remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
+| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; definition lifecycle, controller integrations, command center and custom workflows remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -493,6 +493,41 @@ or fixture passwords in application logs. Final Fedora nodes and active pods wer
 Ready. Migration `0013` is applied locally; API, worker, scheduler and UI run the
 new integration. Protected data kinds, readiness/finalizer failure paths and UID/
 ownership races have simulator coverage; live pruning used isolated ConfigMaps.
+
+Custom resources initial integration (2026-11-23): **Configuration → Custom
+resources** discovers installed definitions, versions/scopes and safe schema
+field guidance, then lists metadata/conditions and offers reviewed instance
+create/update/delete. Migration `0014` stores author-bound encrypted reviews with
+15-minute expiry. Full schema/resource YAML requires an explicit audited
+`secrets.reveal` action; ordinary queries omit spec/status values, defaults,
+examples and condition messages. Revealed YAML stays outside the shared query
+cache. Server dry runs validate manifests; delete dry runs set `dryRun: [All]`
+in the DeleteOptions body (the live custom-resource endpoint did not honor the
+query alone when a body was supplied). Every execution requires the object name.
+Definition UID/spec and resource identity/content are rechecked; edits require
+an unchanged revealed snapshot while status-only updates remain permitted.
+Writes preserve finalizers, owners and reserved ownership markers; deletion
+requests foreground cleanup and never strips finalizers. API acceptance is not
+resource health or completed deletion. Definition installation/upgrades/removal,
+conversion-webhook management and operator integrations remain separate work.
+See `documentation/custom-resources.md`, `custom_resources.py` and
+`tests/test_custom_resources.py`.
+
+CRD validation: 140 backend regressions passed, followed by 32 final CRD cases
+including two live-discovered corrections (edit snapshot copy isolation and
+body-bound delete dry runs). The frontend's 29 tests, type checking, lint and
+production build passed. Full Mypy passed across 162 files, and the final CRD service/routes passed
+with untyped function bodies checked; Ruff/format passed. Both production images
+built successfully.
+Live Keycloak operator/viewer browser checks on isolated Fedora CRDs covered
+schema rejection, encrypted reviews, stale in-flight previews, metadata-only
+viewer access/reveal denial, served/unserved versions, namespaced/cluster CRUD,
+status/ownership preservation and finalizers. Delete reviews were explicitly
+checked to leave both resources unchanged before confirmation. Fixtures/reviews
+were removed with UID checks; both nodes and all 17 active pods were Ready.
+Publishable-file and application-log secret checks passed. Migration `0014` is
+applied locally; API, worker, scheduler and UI run the integration. Third-party
+operators and conversion webhooks still require relevant live validation.
 
 ## Local development and checks
 

@@ -7,6 +7,7 @@ from app.modules.credentials.models import Credential
 from app.modules.gitops.models import GitOpsApplication, GitOpsReview
 from app.modules.helm.models import HelmPlan, HelmRepositoryCredential
 from app.modules.infrastructure.models import Machine, ProviderConnection
+from app.modules.kubernetes.custom_resource_models import CustomResourceReview
 from app.modules.kubernetes.remediation_models import RemediationRequest
 from app.modules.organizations.models import (
     BrowserSession,
@@ -26,6 +27,7 @@ __all__ = [
     "Cluster",
     "ClusterMachine",
     "Credential",
+    "CustomResourceReview",
     "GitOpsApplication",
     "GitOpsReview",
     "HelmPlan",

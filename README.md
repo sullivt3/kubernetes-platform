@@ -139,6 +139,7 @@ npm run build
 * [Configuration](documentation/configuration.md): every environment variable, key rotation
 * [API](documentation/api.md): endpoints and conventions (OpenAPI at `/api/v1/docs`)
 * [Backup and restore](documentation/backup-restore.md) covers platform archives, key recovery, and cluster recovery.
+* [Custom resources](documentation/custom-resources.md): installed CRD discovery, schema guidance and reviewed instance CRUD.
 * [GitOps applications](documentation/gitops.md): reviewed/manual or opt-in automatic YAML reconciliation, guarded pruning and encrypted repository authentication.
 * [Helm management](documentation/helm.md): repositories, charts, encrypted reviews and release install/upgrade/rollback/uninstall.
 * [Cluster integrations](documentation/cluster-integrations.md): local/native distributions, managed lifecycle, vSphere, VM inputs and creation-time storage
@@ -156,7 +157,7 @@ npm run build
 | 5 | kubeadm upgrades, cloud VM provisioning, autoscaling policies, AWS load balancers, managed EKS/AKS/GKE create/delete/scale/upgrade; overdue Kind/k3d, K3s/RKE2 and vSphere paths implemented as preview; creation wizard VM, CNI and storage wiring |
 | 6 | Networking and storage ✅: resource management, live DNS diagnostics, PV/PVC, StorageClasses, CSI inventory and NFS CSI install/reconcile/remove (preview); ResourceQuotas and LimitRanges |
 | 7 | In progress: OIDC/session authentication, organization/project memberships, administration UI and application RBAC foundations implemented; Kubernetes security views, reporting, platform recovery and Velero integration implemented. Deployment hardening and provider validation remain |
-| 8 | In progress. Monitoring/logging, approval-controlled stateless pod remediation and Helm management implemented. Helm includes public/private HTTPS repositories, OCI registries, encrypted repository authentication, chart/version browsing, values reviews and release install/upgrade/rollback/uninstall. GitOps supports reviewed manual sync, opt-in automatic reconciliation, guarded pruning and drift checks. Controller integrations, dynamic CRD management and custom workflows remain. [Monitoring setup](documentation/monitoring.md) · [Logging setup](documentation/logging.md) · [Helm setup](documentation/helm.md) · [GitOps setup](documentation/gitops.md) |
+| 8 | In progress. Monitoring/logging, approval-controlled stateless pod remediation and Helm management implemented. Helm includes public/private HTTPS repositories, OCI registries, encrypted repository authentication, chart/version browsing, values reviews and release install/upgrade/rollback/uninstall. GitOps supports reviewed manual sync, opt-in automatic reconciliation, guarded pruning and drift checks. Installed CRD discovery, schema guidance and reviewed custom-resource CRUD are implemented. Definition lifecycle management, controller integrations and custom workflows remain. [Monitoring setup](documentation/monitoring.md) · [Logging setup](documentation/logging.md) · [Helm setup](documentation/helm.md) · [GitOps setup](documentation/gitops.md) |
 
 Scheduled towards the end of Phase 8:
 

@@ -130,7 +130,7 @@ export const NAVIGATION: NavSection[] = [
       { title: "Secrets", href: "/configuration/secrets", description: "Kubernetes Secrets (values revealed only on explicit request)." },
       { title: "Resource quotas", href: "/configuration/resource-quotas", description: "Namespace resource limits." },
       { title: "Limit ranges", href: "/configuration/limit-ranges", description: "Default and maximum container resources." },
-      { title: "Custom resources", href: "/configuration/custom-resources", description: "CRDs and dynamic resource exploration.", phase: 8, keywords: ["crd"] },
+      { title: "Custom resources", href: "/configuration/custom-resources", description: "Discover CRDs, inspect schemas and manage custom resource instances.", keywords: ["crd", "schema", "custom"] },
     ],
   },
   {
