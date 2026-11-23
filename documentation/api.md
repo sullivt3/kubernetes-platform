@@ -323,6 +323,47 @@ or metadata addresses. TLS verification and origin-bound credential handling rem
 mandatory.
 See [Helm management](helm.md) for review, recovery and repository limitations.
 
+### GitOps applications
+
+All endpoints are relative to `/clusters/{id}/gitops/applications`, tenant/project
+scoped. GET requires `clusters.read`; mutations require `clusters.write` and browser
+CSRF protection. Creating/changing private endpoint or CA trust additionally
+requires `organization.manage`.
+
+| Method | Path | Behavior |
+|---|---|---|
+| GET / POST | `/` | List up to 100 application configurations or create one. |
+| PUT | `/{application_id}` | Replace configuration, advancing generation and invalidating reviews. |
+| POST | `/{application_id}/review` | Optional `{prune: false, allow_empty: false}`; fetch branch, encrypt commit-pinned manifests, validate resources and record drift/prune candidates. Returns review ID, SHA, expiry and sanitized resource actions. |
+| POST | `/{application_id}/sync` | `{review_id, confirm: application_name}` queues the reviewed commit as a tracked operation (202). |
+| GET | `/{application_id}/history` | Latest twenty sanitized review entries, commit and operation links. |
+| POST | `/{application_id}/forget` | `{confirm: application_name}` removes registration and saved credentials; retains Kubernetes resources. |
+
+Configuration fields: `name`, HTTPS `url`, `branch` (default `main`), `path`
+(default `.`), existing `namespace`, `allow_private_network` (default false),
+optional `ca_pem`, optional write-only `authentication: {mode, username?, password}`
+and `clear_credentials`. Authentication mode is `basic` or `bearer`; `password`
+holds the password/token. Omitting authentication preserves credentials; changing
+repository URLs requires replacement credentials or explicit removal. Reads expose
+only `authenticated`, never credential material. Manifest snapshots and Secret
+contents are absent from all public responses. Apply migration `0012` and install
+Git 2.46+ on API/worker hosts. Apply migrations through `0013` for automation.
+
+| Method | Path relative to the application | Behavior |
+|---|---|---|
+| PUT | `/automation` | Organization administrators configure `{enabled, prune, allow_empty, interval_seconds, generation, confirm}`. Exact application-name confirmation and current generation are mandatory. |
+| POST | `/automation/pause` | Cluster writers pause scheduling and revoke queued/further mutations by advancing generation. |
+| POST | `/automation/reconcile` | Cluster writers request the next scheduler check under an already approved active policy. Returns `{scheduled: true}`; no approval bypass. |
+
+Automation defaults disabled; pruning defaults false. `interval_seconds` is 60–3,600
+(default 300). `allow_empty` requires `prune`. Source/credential edits pause automation.
+Reads include public policy, next due time, latest operation and observations;
+review/history includes explicit prune and protected-retention plans. Auto execution
+uses the persistent administrator approval; manual pruning still requires review and
+confirmation. Replaced/unowned resources block pruning, while PVCs, StatefulSets,
+custom resources and retention annotations are protected. Deletes use UID/resource-
+version preconditions and preserve finalizers. [GitOps guide](gitops.md)
+
 ### Operational monitoring
 
 `GET /clusters/{id}/monitoring/remediation` returns the opt-in policy, last scan

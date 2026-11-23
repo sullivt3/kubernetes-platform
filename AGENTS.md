@@ -28,7 +28,7 @@ Target environments include existing physical Linux servers over SSH, local Dock
 - **Domain modules:** `backend/app/modules/` contains organizations/identity, credentials, auditing, providers, infrastructure, cluster lifecycle, Kubernetes access and workloads. Networking/storage functionality currently shares the Kubernetes/workload modules; do not create parallel modules just to match a suggested directory tree.
 - **Orchestration:** `backend/app/orchestration/` uses Celery and Redis with PostgreSQL-backed operations, steps, checkpoints, logs and recovery. API, worker and scheduler are separate process roles from the same backend codebase. SSE supplies operation/log updates; WebSockets bridge pod terminals.
 - **Infrastructure:** provider implementations live in `modules/providers/implementations/`; SSH execution and inventory live in `modules/infrastructure/`. Distribution plans and installers live in `modules/cluster_lifecycle/distributions/`.
-- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0011`, adding encrypted, revocable Helm repository credentials after `0010` repository/review plans.
+- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0013`, adding opt-in GitOps reconciliation policy/scheduling after `0012` applications and reviews.
 - **Deployment:** `infrastructure/deployment/docker-compose.yml` supplies PostgreSQL/Redis and optional backend API/worker/scheduler services. The frontend runs separately. `infrastructure/containers/backend.Dockerfile` packages the backend.
 
 Keep infrastructure provisioning, host execution, and Kubernetes distribution installation separate. Add capabilities through the existing provider/distribution contracts and registries instead of scattering provider conditionals through services or UI.
@@ -137,7 +137,7 @@ Context reviewed **2026-11-23**. The monitoring/logging milestone is implemented
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps, dynamic CRD management, command center and custom workflows remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
+| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; controller integrations, dynamic CRD management, command center and custom workflows remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -229,8 +229,10 @@ frontend build passed. [Logging setup](documentation/logging.md)
 ## Remaining work and priorities
 
 The user has progressed into Phase 8. Monitoring/logging, the first bounded
-remediation runbook and Helm release management are implemented. GitOps is next
-in the original roadmap order; wait for the user's instruction before starting it.
+remediation runbook, Helm release management and initial GitOps manual sync/drift
+reviews, opt-in automatic reconciliation and guarded pruning are implemented.
+Continue GitOps only within the user's requested scope; Argo CD/Flux integration
+remains future work.
 External alert notification delivery and observability host-loss recovery are
 explicitly scheduled towards the end of Phase 8 (see the README roadmap).
 The Phase 7 items below remain hardening and integration-validation boundaries.
@@ -401,6 +403,96 @@ The temporary namespace and registry were removed, repository settings restored,
 and fixture credentials revoked. No fixture password was found in publishable
 files or application logs. Migration `0011` is applied locally; API/worker/scheduler
 and UI run this integration. GitOps remains unstarted.
+
+
+GitOps follow-up (2026-11-23): **Workloads → GitOps** now connects an HTTPS Git
+repository/branch/manifest directory to one existing namespace. Migration `0012`
+stores scoped applications and encrypted, user-bound fifteen-minute commit reviews.
+Review shows names/actions, records manual drift observations and flags foreign
+field ownership as Conflict. Typed confirmation queues `cluster.gitops.sync` with
+cluster exclusivity. The worker applies the encrypted snapshot, revalidates live
+UID/state, records inventory after each write and recognizes its own partial writes
+on retry. Resources outside the app's ownership are never adopted; foreign SSA
+conflicts block sync. Creation uses POST to refuse concurrent adoption, then a
+UID/resource-version-guarded handoff relinquishes only its own POST manager after
+non-forced apply establishes shared ownership. Other managers are preserved.
+
+Git 2.46+ is required on API/worker hosts and included in the backend image; local
+Git is installed under ignored `.tools/git`. Fetches pin DNS and TLS through a
+one-destination CONNECT tunnel, isolate Git configuration, disable redirects/local
+protocols/hooks/submodules, and bound time/network/repository/manifest sizes.
+Credentials are write-only/encrypted. Administrators control private endpoint/CA
+trust; operators can use existing profiles. Plain YAML/JSON only: no render/build
+execution. Sync completion means Applied, not workload readiness. Drift checks
+are manual reviews, not background reconciliation. No pruning: removed manifests
+and forgotten application registrations leave Kubernetes resources in place.
+Automatic reconciliation, SSH transport and Argo CD/Flux integrations remain future
+work. See `documentation/gitops.md`, `modules/gitops/` and `test_gitops.py`.
+
+
+GitOps validation: the final 27-case GitOps/migration suite passed, after the wider
+backend run passed 107 cases and exposed one missing test import that was corrected
+and rerun in the final suite. Private Helm-source regressions also passed in the
+preceding combined run. Ruff/format, full Mypy (156 files), an additional check of
+untyped GitOps function bodies, 29 frontend tests, frontend lint/type checks and
+both production builds passed. A real public anonymous Git fetch and TLS/Basic
+private Git fetch passed, including the packaged backend. Browser/operator/worker
+validation on Fedora verified source setup, blank credential readback, immutable
+review execution after branch movement, next-commit updates, InSync observations,
+blocked foreign field conflicts, missing-resource recreation, per-review typed
+confirmation and registration removal retaining its resources. Viewer read/write
+boundaries and encrypted credential/history checks passed. Only the owned fixture
+namespaces/repository were removed; fixture credentials and registrations were
+deleted, with no password found in publishable files or application logs. Both
+Fedora nodes and all active pods were Ready afterwards. Migration `0012` is applied
+locally and API/worker/UI run the implementation.
+
+
+Automatic GitOps/pruning follow-up (2026-11-23): migration `0013` adds the
+per-application automation JSON and persisted next due time. Both automation and
+pruning default off. Administrators approve a generation-bound policy by typing
+the app name (60–3,600 second interval, default 300); a stale generation cannot be
+approved. Operators may pause or request a check under an active policy. Policy
+changes/pause advance generation and revoke pending reviews/further mutations;
+source/credential edits pause automation and require administrator reapproval.
+
+Celery beat dispatches `gitops.reconcile` every 30 seconds. A due app queues
+`cluster.gitops.reconcile` with fetch/review and apply/prune checkpoints, project
+scope and cluster exclusivity. Source failures and conflicts do not prune. No-op
+checks do not rewrite objects. The UI exposes policy, next due time, last operation,
+automatic/manual history and explicit manual prune/allow-empty review options.
+
+Pruning uses only recorded inventory absent from the pinned commit. Ownership,
+UID, namespace, canonical API path, live state and API discovery are revalidated;
+DELETE includes UID/resource-version preconditions. Only explicit built-in stateless
+kinds/versions are eligible. PVCs, StatefulSets, custom resources and live retention
+annotations are retained. Desired supported workloads must be ready before deletion;
+Jobs need completion, with a 120-second gate. Deletion waits up to 120 seconds per
+resource, retains pending inventory, records retry progress and never strips
+finalizers. Empty sources fail closed unless separately approved, and the Git
+directory must still exist (for example with `.gitkeep`). Forgetting registration
+still retains resources. Pausing cannot undo requests already accepted by Kubernetes.
+See `documentation/gitops.md`, `automation.py`, `pruning.py` and
+`tests/test_gitops_automation.py`. Argo CD/Flux integration remains unstarted.
+
+
+Automatic reconciliation/pruning validation: 146 targeted backend regressions
+passed sequentially, including policies, scheduler, pruning, legacy reviews,
+Helm, identity, orchestration and model/migration consistency. Ruff/format,
+full Mypy (159 files) plus checking untyped GitOps bodies, 29 frontend tests,
+frontend type checking/lint and both production builds passed. The real TLS/Basic
+Git fixture and actual Celery beat/worker/Fedora cluster verified scheduled initial
+sync, branch updates, retention with pruning off, owned pruning with it on, no-write
+unchanged checks, protected/untracked retention, operator pause across a scheduler
+tick, administrator-only approval, default empty-source refusal, separately approved
+empty-source pruning, manual prune review/typed confirmation and viewer boundaries.
+Source failures appear in actual operation history without raw output. All fixture
+registrations/namespaces were removed; private Git credentials/certificates were
+cleaned up and secret checks found no matched local secrets in publishable files
+or fixture passwords in application logs. Final Fedora nodes and active pods were
+Ready. Migration `0013` is applied locally; API, worker, scheduler and UI run the
+new integration. Protected data kinds, readiness/finalizer failure paths and UID/
+ownership races have simulator coverage; live pruning used isolated ConfigMaps.
 
 ## Local development and checks
 

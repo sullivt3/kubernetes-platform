@@ -33,6 +33,7 @@ celery_app.conf.update(
         "recover-operations": {"task": "operations.recover", "schedule": 30.0},
         "probe-clusters": {"task": "clusters.probe", "schedule": 60.0},
         "probe-machines": {"task": "machines.probe", "schedule": float(settings.machine_probe_interval_seconds)},
+        "reconcile-gitops": {"task": "gitops.reconcile", "schedule": 30.0},
         "scan-remediation": {"task": "remediation.scan", "schedule": 60.0},
     },
     timezone="UTC",
@@ -115,6 +116,16 @@ def scan_remediation() -> dict:
 
     load_workflows()
     return scan_all(get_session_factory(), get_secret_store())
+
+
+@celery_app.task(name="gitops.reconcile")
+def reconcile_gitops() -> dict:
+    from app.db.session import get_session_factory
+    from app.modules.gitops.automation import tick
+    from app.orchestration.runtime import load_workflows
+
+    load_workflows()
+    return tick(get_session_factory())
 
 
 # `celery -A app.orchestration.celery_app` looks for `app` or `celery` attributes.

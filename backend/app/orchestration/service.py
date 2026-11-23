@@ -73,6 +73,8 @@ class OperationService:
     ) -> Operation:
         if workflow_type in {"platform.backup", "platform.restore"}:
             require(principal, "platform.manage")
+        if workflow_type == "cluster.gitops.reconcile":
+            require(principal, "organization.manage")
         if workflow_type.startswith("cluster.remediation."):
             require(principal, "organization.manage")
         workflow = self.registry.get(workflow_type)

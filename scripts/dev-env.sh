@@ -2,7 +2,7 @@
 # Tooling stays local to the checkout; macOS system tools are left intact.
 KPLATFORM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export KPLATFORM_ROOT
-export PATH="$KPLATFORM_ROOT/.tools/helm/bin:$KPLATFORM_ROOT/.tools/postgres-client/bin:$KPLATFORM_ROOT/.tools/age/bin:$KPLATFORM_ROOT/backend/.venv/bin:$KPLATFORM_ROOT/.tools/node/bin:$KPLATFORM_ROOT/.tools/runtime/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH"
+export PATH="$KPLATFORM_ROOT/.tools/git/bin:$KPLATFORM_ROOT/.tools/helm/bin:$KPLATFORM_ROOT/.tools/postgres-client/bin:$KPLATFORM_ROOT/.tools/age/bin:$KPLATFORM_ROOT/backend/.venv/bin:$KPLATFORM_ROOT/.tools/node/bin:$KPLATFORM_ROOT/.tools/runtime/bin:/Applications/Docker.app/Contents/Resources/bin:$PATH"
 if [ "$(uname -s)" = Darwin ]; then
   export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 LC_CTYPE=en_US.UTF-8
   export KPLATFORM_FRONTEND_CHECKS="${KPLATFORM_FRONTEND_CHECKS:-docker}"

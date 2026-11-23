@@ -2,7 +2,7 @@
 # all run from this image with different commands. Build context: ./backend
 FROM python:3.13-slim-trixie AS base
 ARG TARGETARCH
-RUN apt-get update && apt-get install -y --no-install-recommends age postgresql-client-17 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends age postgresql-client-17 git && rm -rf /var/lib/apt/lists/*
 COPY tools/install_helm.py /tmp/install_helm.py
 RUN python /tmp/install_helm.py --os linux --arch "$TARGETARCH" --destination /usr/local/bin/helm && rm /tmp/install_helm.py
 
