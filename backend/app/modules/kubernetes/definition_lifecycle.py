@@ -80,7 +80,7 @@ def check_ownership(definition, cluster_id):
         raise InvalidStateError("The definition is already being removed")
 
 
-def parse_definition(text, name):
+def parse_definition(text, name, allowed_conversion=None):
     validate_mapping(text)  # Bounded single YAML mapping; parser errors never expose submitted values.
     obj = yaml.safe_load(text)
     if (
@@ -151,7 +151,7 @@ def parse_definition(text, name):
     if len(storage) != 1 or not storage[0]["served"]:
         raise ValidationFailedError("Exactly one served version must be the storage version")
     conversion = spec.get("conversion") or {"strategy": "None"}
-    if not isinstance(conversion, dict) or conversion != {"strategy": "None"}:
+    if not isinstance(conversion, dict) or (conversion != {"strategy": "None"} and conversion != allowed_conversion):
         raise InvalidStateError(
             "Conversion webhooks require a separate operator/migration workflow; only None conversion is supported here"
         )
@@ -261,7 +261,15 @@ class DefinitionLifecycle(CustomResources):
         if body.action == "update" and body.expected_hash != fingerprint(live):
             raise ConflictError("Definition changed since reveal; reveal current YAML and review again")
         identifier = uuid.uuid4()
-        desired = parse_definition(body.manifest.get_secret_value(), body.name) if body.action != "remove" else None
+        desired = (
+            parse_definition(
+                body.manifest.get_secret_value(),
+                body.name,
+                allowed_conversion=(live["spec"].get("conversion") if live and body.action == "update" else None),
+            )
+            if body.action != "remove"
+            else None
+        )
         if desired:
             desired["metadata"].setdefault("labels", {}).update({OWNER: str(cluster_id), MANAGER: MANAGER_VALUE})
         if body.action == "update":

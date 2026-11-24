@@ -4,6 +4,7 @@ from app.db.base import Base
 from app.modules.auditing.models import AuditEvent
 from app.modules.cluster_lifecycle.models import Cluster, ClusterMachine
 from app.modules.credentials.models import Credential
+from app.modules.custom_workflows.models import CustomWorkflow
 from app.modules.gitops.models import GitOpsApplication, GitOpsReview
 from app.modules.helm.models import HelmPlan, HelmRepositoryCredential
 from app.modules.infrastructure.models import Machine, ProviderConnection
@@ -28,6 +29,7 @@ __all__ = [
     "ClusterMachine",
     "Credential",
     "CustomResourceReview",
+    "CustomWorkflow",
     "GitOpsApplication",
     "GitOpsReview",
     "HelmPlan",

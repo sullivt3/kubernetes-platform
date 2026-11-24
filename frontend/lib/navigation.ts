@@ -154,6 +154,7 @@ export const NAVIGATION: NavSection[] = [
       { title: "Events", href: "/ops/events", description: "Recent Kubernetes events for the selected cluster." },
       { title: "Alerts", href: "/ops/alerts", description: "Operational findings and troubleshooting checks." },
       { title: "Backup & restore", href: "/ops/backup", description: "Cluster and platform backups." },
+      { title: "Custom workflows", href: "/ops/workflows", description: "Review and run reusable Kubernetes actions with checkpoints and live progress.", keywords: ["runbooks", "automation", "workflow"] },
       { title: "Command center", href: "/ops/command-center", description: "Embedded terminal with kubectl and Helm.", phase: 8, keywords: ["terminal", "kubectl", "helm", "yaml"] },
     ],
   },

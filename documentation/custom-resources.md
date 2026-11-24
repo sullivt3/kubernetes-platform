@@ -8,8 +8,8 @@ or forbidden APIs are distinguished from an empty inventory.
 
 The page manages instances and the lifecycle of definitions installed through this
 feature. Definition actions require organization administrator and cluster write
-permissions. Operator installation, conversion webhooks and storage migration
-remain separate workflows. Existing generic YAML apply is unchanged. Apply
+permissions. Operator installation remains separate. Storage migration and conversion
+webhook configuration now have dedicated reviewed operation workflows. Existing generic YAML apply is unchanged. Apply
 migration `0014` and restart the API when deploying; definition reviews reuse the
 existing encrypted review table and do not require a newer migration.
 
@@ -18,7 +18,8 @@ existing encrypted review table and do not require a newer migration.
 Administrators can **Install CRD definition** from bounded YAML, review the server
 dry run and type the full definition name to execute it. Only
 `apiextensions.k8s.io/v1` is accepted, with one served storage version, at most 20
-versions, and `None` conversion. The platform records cluster-bound ownership
+versions, and `None` conversion at install time. Dedicated operations can configure
+a webhook afterward. The platform records cluster-bound ownership
 labels. It refuses to adopt existing definitions or change definitions owned by
 Helm, GitOps or an external controller. Externally managed definitions remain
 available for discovery, schema inspection, instance actions and authorized reveal.
@@ -29,8 +30,9 @@ markers. Updates bind the revealed content snapshot. They preserve existing
 ownership/finalizers and recheck UID, content and stored versions at execution.
 API group, names and scope remain fixed. Existing version entries must remain,
 previously served versions must stay served, and changing storage version or
-conversion configuration is refused. This feature does not perform storage
-migration, validate third-party operator compatibility or install webhook servers.
+conversion configuration is refused by the ordinary edit flow. Dedicated
+[CRD operations](crd-operations.md) handle storage changes and conversion configuration. The ordinary definition editor does not perform storage migration or install
+webhook servers. Third-party operator compatibility requires separate validation.
 
 Any specification change requires zero instances across all namespaces, checked
 using the established served storage API. Metadata-only updates can proceed with

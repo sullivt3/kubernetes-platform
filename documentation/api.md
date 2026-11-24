@@ -408,6 +408,42 @@ before using removal. Accepted results report establishment/deletion separately.
 Definition review payloads share migration `0014` encrypted storage; instance and
 definition execution routes cannot consume one another's reviews.
 
+### Reviewed custom workflows and CRD operations
+
+`/clusters/{id}/custom-workflows` supports GET inventory and POST create.
+PUT `/{workflow_id}` replaces an encrypted definition using its current generation.
+Bodies are `{name, document: YAML, generation?}`. Supported steps are cluster.check,
+resource.scale, resource.restart and resource.wait. Definition changes/deletion
+require organization.manage; review/run require clusters.write. Reads are scoped.
+
+| Method | Path relative to custom-workflows | Behavior |
+|---|---|---|
+| POST | `/{workflow_id}/reveal` | Explicit audited YAML reveal; secrets.reveal. |
+| POST | `/{workflow_id}/review` | Dry-run ordered steps; encrypted immutable target review. |
+| POST | `/{workflow_id}/run` | `{review_id, confirm: workflow_name}` returns tracked operation (202). |
+| GET | `/{workflow_id}/history` | Latest twenty safe reviews and operation links. |
+| POST | `/{workflow_id}/forget` | `{confirm: workflow_name}` removes the definition; accepted changes remain. |
+
+Under `/clusters/{id}/custom-resources`, administrator endpoints are:
+
+| Method | Path | Behavior |
+|---|---|---|
+| POST | `/migration-reviews` | `{name, expected_uid, expected_hash, target_version, mode?: certified/rewrite_only}`; preview storage migration and select native/manual capability. |
+| POST | `/conversion-reviews` | The same revealed definition identity plus `{action: configure/probe, strategy: Webhook/None, service_namespace?, service_name?, port?, path?, ca_pem?}`. |
+| POST | `/automation-run` | `{category: storage_migration/conversion_webhook, review_id, confirm: definition_name}` returns tracked operation (202). |
+| GET | `/definition-operations?name=...` | Latest twenty safe migration/conversion reviews, progress and operation links. |
+
+Certified migration requires storagemigration.k8s.io/v1. Explicit rewrite_only
+requires an observable single control plane, uses the current storage version and
+retains all stored-version history with RewrittenUncertified output. Conversion supports Service-backed TLS
+ConversionReview v1. Empty-instance configuration reports lack of protocol proof.
+Incomplete migration never authorizes clearing old stored-version metadata.
+Reviews expire after fifteen minutes before starting and cannot be consumed by
+other execution categories. Workers reauthorize the original user's current
+memberships before every action, retaining cluster exclusivity and cancellation.
+Apply migration `0015` for custom workflow definitions. See
+[Custom workflows](custom-workflows.md) and [CRD operations](crd-operations.md).
+
 ### Operational monitoring
 
 `GET /clusters/{id}/monitoring/remediation` returns the opt-in policy, last scan

@@ -28,7 +28,7 @@ Target environments include existing physical Linux servers over SSH, local Dock
 - **Domain modules:** `backend/app/modules/` contains organizations/identity, credentials, auditing, providers, infrastructure, cluster lifecycle, Kubernetes access and workloads. Networking/storage functionality currently shares the Kubernetes/workload modules; do not create parallel modules just to match a suggested directory tree.
 - **Orchestration:** `backend/app/orchestration/` uses Celery and Redis with PostgreSQL-backed operations, steps, checkpoints, logs and recovery. API, worker and scheduler are separate process roles from the same backend codebase. SSE supplies operation/log updates; WebSockets bridge pod terminals.
 - **Infrastructure:** provider implementations live in `modules/providers/implementations/`; SSH execution and inventory live in `modules/infrastructure/`. Distribution plans and installers live in `modules/cluster_lifecycle/distributions/`.
-- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0014`, adding encrypted custom-resource action reviews after `0013` GitOps automation.
+- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0015`, adding encrypted reusable custom workflows after `0014` custom-resource reviews.
 - **Deployment:** `infrastructure/deployment/docker-compose.yml` supplies PostgreSQL/Redis and optional backend API/worker/scheduler services. The frontend runs separately. `infrastructure/containers/backend.Dockerfile` packages the backend.
 
 Keep infrastructure provisioning, host execution, and Kubernetes distribution installation separate. Add capabilities through the existing provider/distribution contracts and registries instead of scattering provider conditionals through services or UI.
@@ -137,7 +137,7 @@ Context reviewed **2026-11-23**. The monitoring/logging milestone is implemented
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; storage migrations, controller integrations, command center and custom workflows remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
+| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; reviewed custom workflows, native/manual storage migration and Service-backed conversion configuration are implemented; broader workflow actions, controller integrations and command center remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -563,8 +563,73 @@ Only isolated platform-owned fixtures were changed; their UID-matched resources
 and review rows were removed. Both Fedora nodes and all 17 active pods were Ready.
 Publishable-file/application-log secret checks passed; private fixture state was
 removed. API, worker, scheduler and production UI run the integration locally.
-Custom workflows are the next original Phase 8 milestone; external notifications
-and observability host-loss recovery remain scheduled towards the end.
+Custom workflows and advanced CRD operations were subsequently implemented below;
+external notifications and observability host-loss recovery remain scheduled towards the end.
+
+Custom workflows and advanced CRD operations (2026-11-23): migration `0015`
+adds encrypted tenant/cluster-scoped `CustomWorkflow` definitions; immutable runs
+reuse `CustomResourceReview` with separate categories and execution routes. See
+`modules/custom_workflows`, `kubernetes/reviewed_operations.py`, `crd_operations.py`,
+`documentation/custom-workflows.md` and `documentation/crd-operations.md`.
+
+Operations → Custom workflows supports reusable YAML sequences (1–20 steps):
+cluster readiness check, Deployment/StatefulSet scale, Deployment restart, and
+bounded readiness waits for Pods/Jobs/Deployments/StatefulSets/DaemonSets. Admins
+manage definitions; cluster writers review/run. Reviews pin generation, UID and
+content, dry-run mutations, encrypt full plans and require typed confirmation.
+Each step is an operation checkpoint with cluster exclusivity, cancellation,
+retry and history. Worker guards re-resolve the requesting user's current database
+permissions before each action/wait. Template edits/deletion revoke further work.
+No shell/variable interpolation, arbitrary manifests, branching or schedules.
+Completed actions remain on later failure/cancellation; drift can require a fresh
+review. Wait start times survive retry. Full definitions require audited reveal.
+
+CRD migration certification requires native storagemigration.k8s.io/v1 resources,
+with UID/spec/condition checks and retained diagnostics. Other active migrations
+for the resource block approval. Cancellation requests deletion of only the
+owned native job; accepted controller writes remain. Explicit rewrite-only
+maintenance is separately named, requires one observable mirrored API server and
+control-plane node, uses the already selected storage version, and always retains
+old storedVersions with RewrittenUncertified output. It never certifies encoding
+from a manual pass/discovery hash. Inventory caps are 5,000 objects/100 pages.
+None conversion requires identical schemas. Native partial failures retain the
+selected storage and writes; only native success permits history cleanup.
+Status PUT must preserve full metadata: live testing found a minimal metadata
+body erased ownership labels; this is fixed and covered by a realistic status fake.
+
+Conversion operations configure an existing Service-backed TLS ConversionReview
+v1 server, requiring current certificate-only PEM CA input, Service UID, selected
+TCP port and Ready EndpointSlices. No arbitrary URL/ExternalName, private keys or
+traversal paths. Configuration waits for a unique temporary short-name discovery alias in the
+same spec update before probing, then removes that alias with observation. The
+barrier observes API discovery before probing; it does not attest all HA backends. Existing
+instances (up to 200) are probed via every served API and unchanged dry-run writes. Failure/cancellation attempts conditional restoration
+of the prior spec; concurrent changes can block rollback. Zero-instance results
+explicitly lack protocol proof. These features do not generate/deploy business
+conversion logic or retire API versions. Encrypted plans/config stay out of public
+operation parameters, logs, histories and shared query caches; worker API clients
+are reused/closed per step. See `tests/test_advanced_automation.py`.
+
+Automation validation: all 171 final backend regressions passed (workflow/CRD,
+identity, orchestration and migration suites), along with Ruff/format and Mypy
+for 169 files with untyped bodies checked in the new services/routes. The 29
+frontend tests, type checking/lint and both production image builds passed.
+Migration `0015` is applied locally; API, worker, scheduler and UI run the feature.
+Real Keycloak browser/Celery/Fedora validation completed a four-step workflow on
+a zero-replica fixture Deployment (no workload image pulls), operator/viewer
+boundaries, CA/SAN-verified TLS ConversionReview v1 via a temporary scoped Service,
+native storage migration/certification from v1 to v2 with UID/content retained,
+a deliberately failing conversion server causing conditional restoration, and a
+successful post-restoration protocol probe. The HTTP test server must parse the
+request path separately from Kubernetes' timeout query parameter; earlier exact
+URI matching falsely accepted the intended failure route. This was a fixture
+issue, not evidence of stale converter caching. All live fixtures/review rows were
+removed by UID. API-level/native-controller proof is distinct from reading etcd;
+HA/multi-provider validation and arbitrary business conversion semantics remain
+separate. Final publishable-file/application-log secret checks passed; private TLS
+material and fixture state were removed. Both Fedora nodes and all 17 active pods
+were Ready at final verification. Inspect the Git history for the recorded
+automation milestone and any subsequent changes.
 
 ## Local development and checks
 

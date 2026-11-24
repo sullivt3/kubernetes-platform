@@ -9,6 +9,8 @@ import { useCan } from "@/components/providers/auth";
 import { Button } from "@/components/ui/button";
 import { api, ApiError } from "@/lib/api/client";
 
+import { AdvancedCrdOperations } from "./advanced-operations";
+
 type DefinitionIdentity = { name: string; uid: string; managed?: boolean; deletion_timestamp?: string | null };
 export type DefinitionResult = { name: string; uid: string; action: string; status: string };
 type Revealed = { yaml: string; edit_yaml: string; content_hash: string; uid: string };
@@ -95,7 +97,7 @@ export function DefinitionInstall({ base, done }: { base: string; done: (result:
   return open ? <DefinitionForm base={base} action="install" close={() => setOpen(false)} done={(value) => { setOpen(false); done(value); }} /> : <Button variant="outline" onClick={() => setOpen(true)}>Install CRD definition</Button>;
 }
 
-export function DefinitionManagement({ base, definition, done }: { base: string; definition: DefinitionIdentity; done: (result: DefinitionResult) => void }) {
+export function DefinitionManagement({ clusterId, base, definition, done }: { clusterId: string; base: string; definition: DefinitionIdentity; done: (result: DefinitionResult) => void }) {
   const manage = useCan("organization.manage"); const write = useCan("clusters.write"); const canReveal = useCan("secrets.reveal");
   const [revealed, setRevealed] = useState<Revealed | null>(null);
   const [form, setForm] = useState<"update" | "remove" | null>(null);
@@ -114,6 +116,7 @@ export function DefinitionManagement({ base, definition, done }: { base: string;
     <div className="flex flex-wrap gap-2">{canReveal && !revealed && <Button variant="outline" disabled={busy} onClick={() => void reveal()}>Reveal definition YAML</Button>}{canReveal && revealed && <Button variant="outline" onClick={() => { epoch.current += 1; setRevealed(null); setForm(null); setBusy(false); }}>Hide definition YAML</Button>}{mutable && canReveal && revealed && <Button variant="outline" onClick={() => setForm("update")}>Edit CRD definition</Button>}{mutable && <Button variant="outline" onClick={() => setForm("remove")}>Remove CRD definition</Button>}</div>
     {canReveal && revealed && !form && <YamlEditor value={revealed.yaml} readOnly height="380px" />}
     {mutable && form && (form === "remove" || canReveal) && <DefinitionForm key={form} base={base} action={form} definition={definition} revealed={form === "update" ? revealed ?? undefined : undefined} close={() => setForm(null)} done={(value) => { setRevealed(null); setForm(null); done(value); }} />}
+    {mutable && canReveal && revealed && !form && <AdvancedCrdOperations key={revealed.content_hash} clusterId={clusterId} base={base} name={definition.name} uid={definition.uid} snapshot={revealed} />}
     {error !== null && <ErrorState error={error} />}
   </section>;
 }

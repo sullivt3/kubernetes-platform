@@ -608,7 +608,7 @@ class CustomResources:
             .where(CustomResourceReview.id == body.review_id, CustomResourceReview.cluster_id == cluster_id)
             .with_for_update()
         )
-        if row is None or row.created_by != principal.subject or row.specification.get("category") == "definition":
+        if row is None or row.created_by != principal.subject or row.specification.get("category") is not None:
             raise NotFoundError("Custom-resource review not found")
         spec = row.specification
         if body.confirm != spec["name"]:

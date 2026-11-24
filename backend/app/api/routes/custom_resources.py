@@ -1,16 +1,21 @@
 """Scoped CRD inventory and permission-checked, reviewed custom-resource CRUD."""
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Response
 from fastapi import Path as APIPath
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from app.api.auth import get_principal
 from app.api.deps import get_kubernetes_service
+from app.api.routes.operations import OperationDetail
 from app.core.errors import ValidationFailedError
 from app.core.principal import Principal
+from app.modules.kubernetes import crd_operations, reviewed_operations
+from app.modules.kubernetes.crd_operations import ConversionInput, MigrationInput
+from app.modules.kubernetes.custom_resource_models import CustomResourceReview
 from app.modules.kubernetes.custom_resources import (
     DNS,
     NAME,
@@ -189,3 +194,85 @@ def execute_definition(
 ):
     no_store(response)
     return service.execute_definition(principal, cluster_id, body)
+
+
+@router.post("/migration-reviews")
+def migration_review(
+    cluster_id: uuid.UUID,
+    body: MigrationInput,
+    response: Response,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+):
+    no_store(response)
+    return crd_operations.review_migration(service, principal, cluster_id, body)
+
+
+@router.post("/conversion-reviews")
+def conversion_review(
+    cluster_id: uuid.UUID,
+    body: ConversionInput,
+    response: Response,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+):
+    no_store(response)
+    return crd_operations.review_conversion(service, principal, cluster_id, body)
+
+
+class AutomationRun(ExecuteInput):
+    category: Literal["storage_migration", "conversion_webhook"]
+
+
+@router.post("/automation-run", status_code=202)
+def automation_run(
+    cluster_id: uuid.UUID,
+    body: AutomationRun,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+):
+    operation_type = "cluster.crd.migrate" if body.category == "storage_migration" else "cluster.crd.conversion"
+    operation = reviewed_operations.submit(
+        service,
+        principal,
+        cluster_id,
+        body.review_id,
+        body.confirm,
+        body.category,
+        operation_type,
+        lambda _: 3 if body.category == "storage_migration" else 1,
+    )
+    return OperationDetail.model_validate(operation)
+
+
+@router.get("/definition-operations")
+def definition_operations(
+    cluster_id: uuid.UUID,
+    response: Response,
+    name: str = Query(pattern=NAME, max_length=253),
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+):
+    service.cluster(principal, cluster_id)
+    no_store(response)
+    rows = service.session.scalars(
+        select(CustomResourceReview)
+        .where(
+            CustomResourceReview.cluster_id == cluster_id,
+            CustomResourceReview.specification["category"].as_string().in_(["storage_migration", "conversion_webhook"]),
+            CustomResourceReview.specification["name"].as_string() == name,
+        )
+        .order_by(CustomResourceReview.created_at.desc())
+        .limit(20)
+    )
+    return [
+        {
+            "id": r.id,
+            "created_at": r.created_at,
+            "category": r.specification["category"],
+            "summary": r.specification["summary"],
+            "progress": r.specification.get("progress", {}),
+            "operation_id": r.specification.get("operation_id"),
+        }
+        for r in rows
+    ]
