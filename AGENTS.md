@@ -783,6 +783,32 @@ healthy platform readiness, and no matched local secrets/JWTs in publishable fil
 or application logs. This is local Fedora validation, not HA/cloud/CNI certification.
 Inspect Git status/history for this milestone and subsequent work.
 
+Command Center distribution/recovery follow-up (2026-11-24): the manually
+dispatched `.github/workflows/command-runtime.yml` publishes checksum-verified
+amd64/arm64 tools to GHCR with a short-lived Actions package token and pinned
+action commits. Publishing commit `b12f378`, run `45423664082`, produced public
+`ghcr.io/sullivt3/kubernetes-platform/command-runtime@sha256:7393b4a2cf2247d624278ab19ddee1e3100069a023e9b4e043266da389614a20`.
+Anonymous manifest access and direct CRI pulls on both pinned Fedora nodes passed;
+Docker executed kubectl/Helm for amd64 and emulated arm64. The private backend
+configuration and API/worker/scheduler now use this digest, superseding the earlier
+preload-only limitation. Future nodes need registry access; no private pull token
+is needed for this public tools image.
+
+`scripts/check-command-recovery.py` passed five live scenarios with real timers:
+SIGKILL API during browser attachment, worker/beat loss, real Redis pause during
+close, interruption of a temporary registration's TLS pass-through connection,
+and a binding finalizer. Durable Closing state survived outages; cleanup preserved
+finalizers, revoked subjects before deletion and completed after recovery. The
+delegated token lost authorization. Normal cluster connectivity and Fedora hosts
+were not disrupted. The fixture registration/runtimes/grants were removed, native
+processes restored, platform readiness passed and both nodes/all 17 active pods
+were Ready. The 26 session/migration regressions passed. New local process logs
+are in ignored `.tools/command-recovery/`; they use `python -m celery` rather than
+the older CLI executable form. Do not run tests while this drill pauses Redis.
+See `documentation/command-center-recovery.md` for the repeatable harness and
+limits: single local replica/Fedora only, no HA/cloud/host-loss certification.
+The feature extensions and two end-of-Phase-8 items in the roadmap remain planned.
+
 ## Local development and checks
 
 Database credentials have no shared default. Set `DATABASE_URL` explicitly and

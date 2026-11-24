@@ -190,9 +190,10 @@ Simulated transport coverage is distinct from a real browser/cluster exec drill.
 
 Local validation on 2026-11-24 passed 189 final targeted backend regressions,
 Ruff/format, Mypy across 177 files, frontend type checking/lint, 29 frontend tests
-and backend/frontend/runtime image builds. The image was preloaded by digest on
-both pinned Fedora test nodes and the ignored local backend configuration enables
-it. It has not been published; other nodes need a trusted registry or preload.
+and backend/frontend/runtime image builds. The initial image was preloaded on
+both Fedora nodes. The subsequent [distribution and recovery follow-up](command-center-recovery.md)
+published a public multi-architecture GHCR image, verified direct CRI pulls on both
+nodes and changed the ignored local backend configuration to that registry digest.
 
 Real Keycloak/browser/Pod exec checks exercised target confirmation, kubectl node
 reads, Helm version/list, operator denial, and denial of ordinary resource/Secret/
@@ -204,3 +205,8 @@ lease. No active runtime namespaces, grants or leases remained; both Fedora node
 and all 17 active pods were Ready and local platform readiness passed. Closed
 validation leases and lifecycle audit records are retained. HA, other CNIs and
 managed-cloud cluster behavior require their own live validation.
+
+The follow-up also passed five real outage/recovery scenarios (API death,
+worker/scheduler loss, Redis interruption, validation-connection outage and a
+cleanup finalizer), plus 26 session/migration regressions. See the recovery guide
+for the exact checks, repeatable harness and remaining boundaries.

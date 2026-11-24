@@ -188,4 +188,8 @@ Command Center breakdown (staged implementation):
    sessions and external repository access remain extensions. See the interactive
    guide for privilege and cleanup limits.
 
+Interactive runtime distribution now uses a published multi-architecture GHCR
+image verified by direct pulls on both Fedora nodes. Five live management/connection
+outage and cleanup-recovery scenarios passed. See [distribution and recovery](documentation/command-center-recovery.md).
+
 Track implementation and validation in [Command Center](documentation/command-center.md).
