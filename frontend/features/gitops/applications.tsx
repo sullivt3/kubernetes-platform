@@ -16,7 +16,7 @@ import { Phase6Operation } from "@/features/kubernetes/phase6-operation";
 import { api } from "@/lib/api/client";
 import { useClusterNamespaces } from "@/lib/api/kube";
 
-type Config = { url: string; branch: string; path: string; namespace: string; allow_private_network: boolean; ca_pem: string | null };
+type Config = { url: string; branch: string; path: string; namespace: string; allow_private_network: boolean; ca_pem: string | null; ssh_host_key?: string | null };
 type Resource = { kind: string; name: string; namespace: string; action?: string; reason?: string };
 type Automation = { enabled: boolean; prune: boolean; allow_empty: boolean; interval_seconds: number; approved_by?: string; approved_at?: string };
 type Review = { id: string; commit: string; expires_at: string; created_at?: string; resources: Resource[]; retained: Resource[]; prune?: Resource[]; prune_enabled?: boolean; automatic?: boolean; operation_id?: string; completed?: { status: string; pruned?: number } };
@@ -32,34 +32,36 @@ function ApplicationForm({ base, current, close, changed, namespaces }: { base: 
   const [name, setName] = useState(current?.name ?? "");
   const [config, setConfig] = useState<Config>(current?.configuration ?? { url: "", branch: "main", path: ".", namespace: namespaces.includes("default") ? "default" : "", allow_private_network: false, ca_pem: null });
   const [authenticated, setAuthenticated] = useState(current?.authenticated ?? false);
-  const [mode, setMode] = useState("basic");
+  const ssh = config.url.startsWith("ssh://") || /^[^@]+@[^:]+:/.test(config.url);
+  const [mode, setMode] = useState(current && (current.configuration.url.startsWith("ssh://") || /^[^@]+@[^:]+:/.test(current.configuration.url)) ? "ssh" : "basic");
+  const [passphrase, setPassphrase] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const mutation = useMutation({ mutationFn: () => {
-    const body = { ...config, name, clear_credentials: Boolean(current?.authenticated && !authenticated), ...(authenticated && password ? { authentication: { mode, username, password } } : {}) };
+    const body = { ...config, name, clear_credentials: Boolean(current?.authenticated && !authenticated), ...(authenticated && password ? { authentication: mode === "ssh" ? { mode, private_key: password, passphrase: passphrase || null } : { mode, username, password } } : {}) };
     return current ? api.put(base + "/" + current.id, body) : api.post(base, body);
-  }, onSuccess: () => { setPassword(""); changed(); close(); } });
+  }, onSuccess: () => { setPassword(""); setPassphrase(""); changed(); close(); } });
   const field = (key: keyof Config, value: string | boolean | null) => setConfig((old) => ({ ...old, [key]: value }));
   return <form className="space-y-4 rounded-lg border p-4" onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}>
     <h2 className="font-semibold">{current ? "Edit GitOps application" : "New GitOps application"}</h2>
     <div className="grid gap-3 sm:grid-cols-2">
       <label className="space-y-1 text-sm">Application name<Input required maxLength={63} value={name} onChange={(e) => setName(e.target.value)} /></label>
-      <label className="space-y-1 text-sm">Git repository URL<Input required type="url" placeholder="https://github.com/team/repository.git" value={config.url} onChange={(e) => field("url", e.target.value)} /></label>
+      <label className="space-y-1 text-sm">Git repository URL<Input required type="text" placeholder="https://github.com/team/repository.git" value={config.url} onChange={(e) => { const value = e.target.value; setConfig((old) => ({ ...old, url: value, ca_pem: null, ssh_host_key: null })); setMode(value.startsWith("ssh://") || /^[^@]+@[^:]+:/.test(value) ? "ssh" : "basic"); setPassword(""); setPassphrase(""); if (value.startsWith("ssh://") || /^[^@]+@[^:]+:/.test(value)) setAuthenticated(true); }} /></label>
       <label className="space-y-1 text-sm">Branch<Input required value={config.branch} onChange={(e) => field("branch", e.target.value)} /></label>
       <label className="space-y-1 text-sm">Manifest directory<Input required value={config.path} onChange={(e) => field("path", e.target.value)} /></label>
       {current ? <p className="text-sm">Destination namespace: {config.namespace}</p> : <Namespace value={config.namespace} names={namespaces} change={(v) => field("namespace", v)} />}
     </div>
-    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={authenticated} onChange={(e) => setAuthenticated(e.target.checked)} />Use Git repository authentication</label>
+    <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={ssh} checked={authenticated} onChange={(e) => setAuthenticated(e.target.checked)} />Use Git repository authentication</label>
     {authenticated && <div className="grid gap-3 sm:grid-cols-3">
-      <label className="space-y-1 text-sm">Git authentication method<select className="h-9 w-full rounded border bg-background px-2" value={mode} onChange={(e) => setMode(e.target.value)}><option value="basic">Username and password/token</option><option value="bearer">Bearer token</option></select></label>
+      <label className="space-y-1 text-sm">Git authentication method<select className="h-9 w-full rounded border bg-background px-2" value={mode} onChange={(e) => setMode(e.target.value)}>{ssh ? <option value="ssh">SSH private key</option> : <><option value="basic">Username and password/token</option><option value="bearer">Bearer token</option></>}</select></label>
       {mode === "basic" && <label className="space-y-1 text-sm">Git username<Input required={Boolean(password) || !current?.authenticated || current.configuration.url !== config.url} autoComplete="off" value={username} onChange={(e) => setUsername(e.target.value)} /></label>}
-      <label className="space-y-1 text-sm">Git password or token<Input type="password" required={!current?.authenticated || current.configuration.url !== config.url} autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-      <p className="text-xs text-muted-foreground sm:col-span-3">Credentials are encrypted and never returned. Leave blank to preserve them, re-enter to rotate, or disable authentication to remove them.</p>
+      {ssh ? <><label className="space-y-1 text-sm">SSH private key<Textarea required={Boolean(passphrase) || !current?.authenticated || current.configuration.url !== config.url} autoComplete="off" spellCheck={false} value={password} onChange={(e) => setPassword(e.target.value)} /></label><label className="space-y-1 text-sm">SSH key passphrase (optional)<Input type="password" autoComplete="new-password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} /></label></> : <label className="space-y-1 text-sm">Git password or token<Input type="password" required={!current?.authenticated || current.configuration.url !== config.url} autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>}
+      <p className="text-xs text-muted-foreground sm:col-span-3">Credentials are encrypted and never returned. Leave blank to preserve them, re-enter to rotate, or disable HTTPS authentication to remove it. SSH requires a key; switch to anonymous HTTPS to remove SSH credentials. Re-enter the key when changing its passphrase.</p>
     </div>}
-    <details><summary className="cursor-pointer text-sm">Git endpoint trust settings</summary><div className="mt-3 space-y-3">
-      <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={!admin} checked={config.allow_private_network} onChange={(e) => field("allow_private_network", e.target.checked)} />Allow private Git endpoints and custom TLS ports</label>
-      <label className="block space-y-1 text-sm">Git CA certificate bundle<Textarea readOnly={!admin} value={config.ca_pem ?? ""} onChange={(e) => field("ca_pem", e.target.value || null)} /></label>
-      <p className="text-xs text-muted-foreground">Administrators control endpoint trust. TLS verification remains enabled; redirects, loopback, link-local and metadata endpoints are blocked.</p>
+    <details open={ssh}><summary className="cursor-pointer text-sm">Git endpoint trust settings</summary><div className="mt-3 space-y-3">
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={!admin} checked={config.allow_private_network} onChange={(e) => field("allow_private_network", e.target.checked)} />Allow private Git endpoints and custom ports</label>
+      {ssh ? <label className="block space-y-1 text-sm">Trusted SSH host public key<Textarea required readOnly={!admin} placeholder="ssh-ed25519 AAAA…" value={config.ssh_host_key ?? ""} onChange={(e) => field("ssh_host_key", e.target.value || null)} /></label> : <label className="block space-y-1 text-sm">Git CA certificate bundle<Textarea readOnly={!admin} value={config.ca_pem ?? ""} onChange={(e) => field("ca_pem", e.target.value || null)} /></label>}
+      <p className="text-xs text-muted-foreground">Administrators control endpoint trust. Verify SSH host keys through a trusted channel before saving; SSH never accepts unknown or changed keys automatically. TLS verification remains enabled; redirects, loopback, link-local and metadata endpoints are blocked.</p>
     </div></details>
     <div className="flex gap-2"><Button disabled={mutation.isPending || !config.namespace}>Save application</Button><Button type="button" variant="outline" onClick={close}>Cancel application edit</Button></div>
     {mutation.isError && <ErrorState error={mutation.error} />}

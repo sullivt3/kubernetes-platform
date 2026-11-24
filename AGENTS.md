@@ -137,7 +137,7 @@ Context reviewed **2026-11-24**. The monitoring/logging milestone is implemented
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; reviewed custom workflows, native/manual storage migration and Service-backed conversion configuration are implemented; a focused Command Center summary runner is implemented; selected reviewed command mutations are implemented; interactive administrator and namespace-scoped read-only operator sessions, opt-in approved public HTTPS/OCI access and encrypted output recording are implemented; write-capable scoped profiles, broader workflow actions and controller integrations remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
+| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps HTTPS/SSH sources, manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; reviewed custom workflows, native/manual storage migration and Service-backed conversion configuration are implemented; a focused Command Center summary runner is implemented; selected reviewed command mutations are implemented; interactive administrator and namespace-scoped read-only operator sessions, opt-in approved public HTTPS/OCI access and encrypted output recording are implemented; write-capable scoped profiles, broader workflow actions and controller integrations remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -435,8 +435,8 @@ trust; operators can use existing profiles. Plain YAML/JSON only: no render/buil
 execution. Sync completion means Applied, not workload readiness. Drift checks
 are manual reviews, not background reconciliation. No pruning: removed manifests
 and forgotten application registrations leave Kubernetes resources in place.
-Automatic reconciliation, SSH transport and Argo CD/Flux integrations remain future
-work. See `documentation/gitops.md`, `modules/gitops/` and `test_gitops.py`.
+Automatic reconciliation and SSH transport were implemented in subsequent
+milestones below; Argo CD/Flux integration remains future work. See `documentation/gitops.md`, `modules/gitops/` and `test_gitops.py`.
 
 
 GitOps validation: the final 27-case GitOps/migration suite passed, after the wider
@@ -875,6 +875,50 @@ run the new backend; logs remain in ignored `.tools/command-recovery/`. The runt
 image digest is unchanged. The recovery harness now skips unrelated process lines
 that cannot be parsed as shell arguments. Local Fedora evidence does not certify
 HA, managed clouds, other CNIs or arbitrary cluster RBAC policies.
+
+GitOps SSH source milestone (2026-11-24): `gitops/ssh_source.py` adds in-memory
+Ed25519/ECDSA/RSA-2048+ key authentication with optional encrypted-key passphrases,
+and an exact server public-key pin checked before client-key authentication.
+`source.py` accepts explicit ssh:// URLs and common user@host:path URLs, preserving
+SCP-relative versus explicit absolute paths (SCP URLs are retained rather than
+normalized into absolute URLs). SSH username comes from the URL.
+Administrators control new/changed host trust, private targets and custom ports;
+operators may reuse existing trusted sources and rotate encrypted credentials.
+Blank editing fields preserve the key/passphrase; URL changes require re-entry.
+SSH credentials cannot be removed without switching to HTTPS. No schema migration;
+GitOps existing encrypted credential JSON and generation/automation invalidation
+are reused. Existing HTTPS Basic/Bearer behavior is preserved.
+
+The bridge connects only to the DNS-pinned approved address and offers the key
+only after host verification. Private key/passphrase never reach disk or child
+environment/argv. Git's helper is a capability-authenticated binary loopback relay;
+its destination/user/upload-pack command are fixed by the parent, without system
+SSH, agents, SSH config, forwarding, password fallback or remote code execution
+beyond upload-pack. Existing 120s/128MiB/output/manifest limits and cancellation
+apply. Production loopback/metadata policy stays intact; unit loopback exceptions
+exist only in explicitly patched fixture tests. Git 2.46+ and the existing Paramiko
+dependency suffice. Host certificates/agents/Git write-back remain out of scope.
+
+Live Keycloak/browser/private-address SSH fixture/Fedora validation passed encrypted
+key/passphrase form submission, commit-pinned review, manual worker sync, credential
+preservation and blank readback, wrong server-key refusal before auth, and actual
+automatic reconciliation of a second commit. Test repository/server/key/application,
+reviews and UID-owned Fedora namespace were removed; operation/audit metadata stays.
+One interrupted attempt left a temporary namespace after a connection reset; it
+was identified and removed with its exact UID. A clock jump expired a test JWT;
+the identity regression passed on rerun, with no authentication behavior changes.
+Final source hashes matched the built backend/running frontend. Platform readiness,
+both Fedora nodes and all 17 active pods were healthy; no SSH fixtures remained.
+Private credential/JWT/key scans passed, excluding only the unchanged nonparseable
+fake-key marker in `test_cluster_lifecycle.py` from the key-header check.
+Validation: 74 GitOps/SSH/automation/schema cases, 94 overlapping shared
+SSH/identity/orchestration/HTTPS/schema cases, two focused policy/cancellation
+cases and nine URL-validation cases passed. Mypy checked 181 files with GitOps
+untyped bodies included; Ruff/format, frontend type/lint/29 tests and production
+backend/frontend builds passed. RSA and Ed25519 encrypted/plain keys were exercised
+through actual Git/SSH transfers, and a capability-less local relay connection was
+refused before key use. See `documentation/gitops.md` for live evidence and limits. Stop after SSH: Helm rendering is the next listed feature,
+and must wait for the user's instruction.
 
 ## Local development and checks
 

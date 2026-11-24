@@ -1,13 +1,15 @@
-"""Isolated HTTPS Git fetches: TLS/DNS pinning, no checkout, hooks or submodules."""
+"""Isolated HTTPS/SSH Git fetches: TLS/DNS pinning, no checkout, hooks or submodules."""
 
 from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
@@ -17,10 +19,23 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.errors import InvalidStateError
+from app.modules.gitops.ssh_source import RELAY, PinnedSSH, SSHAuthentication, host_key
 from app.modules.gitops.tunnel import PinnedTunnel
 from app.modules.helm.catalog import Repository, values
 from app.modules.helm.credentials import Authentication
 from app.modules.helm.transport import check_url, permitted_address
+
+
+def split_url(value):
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}@[A-Za-z0-9.-]+:[A-Za-z0-9_./-]+", value):
+        user_host, path = value.split(":", 1)
+        return urlsplit("ssh://" + user_host + (path if path.startswith("/") else "/" + path)), path
+    parsed = urlsplit(value)
+    return parsed, parsed.path
+
+
+def is_ssh(value):
+    return split_url(value)[0].scheme == "ssh"
 
 
 class Configuration(BaseModel):
@@ -30,13 +45,42 @@ class Configuration(BaseModel):
     namespace: str = Field(pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)
     allow_private_network: bool = False
     ca_pem: str | None = Field(default=None, max_length=65536)
+    ssh_host_key: str | None = Field(default=None, max_length=8192)
 
     @model_validator(mode="after")
     def valid(self):
-        self.url = check_url(self.url, repository=True, private=self.allow_private_network)
-        if urlsplit(self.url).scheme != "https":
-            raise ValueError("Git repositories require HTTPS")
-        Repository(name="git", url=self.url, allow_private_network=self.allow_private_network, ca_pem=self.ca_pem)
+        parsed, remote_path = split_url(self.url)
+        if parsed.scheme == "ssh":
+            if (
+                not parsed.hostname
+                or not re.fullmatch(r"[A-Za-z0-9:.-]+", parsed.hostname)
+                or parsed.hostname.startswith("-")
+                or (parsed.port is not None and not 1 <= parsed.port <= 65535)
+                or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", parsed.username or "")
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or "\\" in self.url
+            ):
+                raise ValueError("Use ssh://user@host/path or user@host:path without passwords or query parameters")
+            check_url("https://" + parsed.netloc.split("@", 1)[-1] + parsed.path, repository=True, private=True)
+            if (parsed.port or 22) != 22 and not self.allow_private_network:
+                raise ValueError("Custom SSH ports require administrator endpoint trust approval")
+            if (
+                not re.fullmatch(r"/[A-Za-z0-9_./-]+", parsed.path)
+                or any(p in {"", ".", ".."} for p in parsed.path[1:].split("/"))
+                or remote_path.startswith("-")
+            ):
+                raise ValueError("Use a repository path without traversal or shell syntax")
+            if self.ca_pem or not self.ssh_host_key:
+                raise ValueError("SSH requires a trusted host public key and no TLS CA bundle")
+            key = host_key(self.ssh_host_key)
+            self.ssh_host_key = key.get_name() + " " + key.get_base64()
+        else:
+            self.url = check_url(self.url, repository=True, private=self.allow_private_network)
+            if parsed.scheme != "https" or self.ssh_host_key:
+                raise ValueError("Use HTTPS without an SSH host key, or configure SSH explicitly")
+            Repository(name="git", url=self.url, allow_private_network=self.allow_private_network, ca_pem=self.ca_pem)
         if (
             ".." in self.branch
             or "@{" in self.branch
@@ -56,17 +100,17 @@ class Configuration(BaseModel):
 
 class ApplicationInput(Configuration):
     name: str = Field(pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)
-    authentication: Authentication | None = None
+    authentication: Authentication | SSHAuthentication | None = None
     clear_credentials: bool = False
 
 
 class GitSource:
-    def __init__(self, config: Configuration, authorization: str | None = None, ctx=None):
+    def __init__(self, config: Configuration, authorization: str | SSHAuthentication | None = None, ctx=None):
         self.config, self.authorization, self.ctx = config, authorization, ctx
         self.temp = tempfile.TemporaryDirectory(prefix="kplatform-gitops-")
         self.root = Path(self.temp.name)
         self.binary = shutil.which("git")
-        self.tunnel: PinnedTunnel | None = None
+        self.tunnel: PinnedTunnel | PinnedSSH | None = None
         self.deadline = time.monotonic() + 120
         self.env = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT", "WINDIR", "LANG", "LC_ALL") if k in os.environ}
         self.env.update(
@@ -85,22 +129,23 @@ class GitSource:
                 raise InvalidStateError("Install Git 2.46 or newer on the API and worker hosts")
             match = re.search(rb"(\d+)\.(\d+)", self.run(["--version"]))
             if not match or tuple(map(int, match.groups())) < (2, 46):
-                raise InvalidStateError("Install Git 2.46 or newer for verified DNS-pinned HTTPS fetches")
-            parsed = urlsplit(self.config.url)
+                raise InvalidStateError("Install Git 2.46 or newer for verified DNS-pinned Git fetches")
+            parsed, remote_path = split_url(self.config.url)
             host = parsed.hostname or ""
-            port = parsed.port or 443
+            port = parsed.port or (22 if parsed.scheme == "ssh" else 443)
             addresses = sorted({str(r[4][0]) for r in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)})
             if not addresses or any(not permitted_address(a, self.config.allow_private_network) for a in addresses):
                 raise InvalidStateError("Repository endpoint is blocked by network policy")
             address = addresses[0]
             if ":" in address:
                 address = "[" + address + "]"
-            self.tunnel = PinnedTunnel(host, port, addresses[0], self.deadline)
+            if parsed.scheme == "https":
+                self.tunnel = PinnedTunnel(host, port, addresses[0], self.deadline)
             settings = {
                 "protocol.allow": "never",
                 "protocol.https.allow": "always",
                 "http.followRedirects": "false",
-                "http.proxy": self.tunnel.url,
+                "http.proxy": self.tunnel.url if isinstance(self.tunnel, PinnedTunnel) else "",
                 "http.sslVerify": "true",
                 "http.curloptResolve": f"{host}:{port}:{address}",
                 "http.lowSpeedLimit": "1024",
@@ -113,7 +158,30 @@ class GitSource:
                 "maintenance.auto": "false",
                 "http.maxRequests": "1",
             }
-            if self.authorization:
+            if parsed.scheme == "ssh":
+                if not isinstance(self.authorization, SSHAuthentication):
+                    raise InvalidStateError("SSH repositories require a private-key credential")
+                self.tunnel = PinnedSSH(
+                    host,
+                    port,
+                    addresses[0],
+                    parsed.username,
+                    remote_path,
+                    self.config.ssh_host_key,
+                    self.authorization,
+                    self.deadline,
+                )
+                relay = self.root / "ssh-relay.py"
+                relay.write_text(RELAY)
+                relay.chmod(0o600)
+                self.env["GIT_SSH_COMMAND"] = shlex.join(
+                    [Path(sys.executable).as_posix(), relay.as_posix(), str(self.tunnel.port)]
+                )
+                self.env["GIT_SSH_VARIANT"] = "ssh"
+                self.env["KPLATFORM_GIT_SSH_TOKEN"] = self.tunnel.capability.hex()
+                settings["protocol.https.allow"] = "never"
+                settings["protocol.ssh.allow"] = "always"
+            elif isinstance(self.authorization, str):
                 settings["http.extraHeader"] = "Authorization: " + self.authorization
             if self.config.ca_pem:
                 ca = self.root / "ca.pem"
@@ -168,7 +236,8 @@ class GitSource:
                     time.sleep(0.1)
                 if process.returncode:
                     raise InvalidStateError(
-                        "Git request failed; check URL, branch, authentication and TLS trust. Raw output withheld."
+                        "Git request failed; check URL, branch, authentication and TLS/SSH host trust. "
+                        "Raw output withheld."
                     )
                 output.seek(0)
                 data = output.read(limit + 1)

@@ -27,16 +27,16 @@ Do not reopen these as unfinished preload-only work.
 ## Delivery order
 
 The user intends to finish the remaining capabilities one feature at a time.
-The three interactive features are implemented and validated. The next listed
-extension is GitOps SSH authentication; wait for the user's instruction before
-starting it. The user can steer the proposed sequence below.
+The three interactive features and GitOps SSH authentication are implemented and
+validated. The next listed extension is Helm rendering; wait for the user's
+instruction before starting it. The user can steer the proposed sequence below.
 
 | Order | Feature | Status |
 |---|---|---|
 | 1 | Namespace-scoped read-only operator sessions | Implemented; 34 scoped/session/migration tests, 29 frontend tests and live operator browser/token/revocation checks passed |
 | 2 | Controlled external repository access in interactive sessions | Implemented; 25 repository/scoped tests and live HTTPS/OCI, default-deny and destination checks passed |
 | 3 | Opt-in terminal transcript recording | Implemented; live encrypted recording, authorization, download/delete, real scheduled expiry and combined browser controls passed |
-| 4 | GitOps SSH repository authentication | Planned |
+| 4 | GitOps SSH repository authentication | Implemented; encrypted keys/passphrases, pinned host keys, bounded fetches and live manual/automatic sync verified |
 | 5 | GitOps Helm rendering | Planned |
 | 6 | GitOps Kustomize rendering | Planned |
 | 7 | GitOps webhook triggers | Planned |

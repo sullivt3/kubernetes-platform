@@ -16,7 +16,7 @@ A portable installation can use an isolated conda-forge environment:
 micromamba create -p .tools/git -c conda-forge 'git>=2.46'
 ```
 
-Add an application with an HTTPS repository URL, branch, relative manifest directory
+Add an application with an HTTPS or SSH repository URL, branch, relative manifest directory
 (`.` for the repository root), and one existing destination namespace. All YAML,
 YML and JSON files beneath that directory are interpreted as Kubernetes manifests.
 Use a directory containing only manifests. Each document needs `apiVersion`,
@@ -26,13 +26,14 @@ wrappers, generated names, owner references and server metadata/status are rejec
 Namespace creation remains a separate Kubernetes operation.
 
 The first milestone does not render Helm/Kustomize or execute repository code,
-hooks, filters, plugins or submodules. Bundle rendered manifests in Git. SSH Git
-URLs, Git write-back, webhooks and Argo CD/Flux controller integration remain future work.
+hooks, filters, plugins or submodules. Bundle rendered manifests in Git. Git
+write-back, webhooks and Argo CD/Flux controller integration remain future work.
 
 ## Authentication and network policy
 
-Anonymous HTTPS, Basic username/password-token and direct Bearer tokens are
-supported. Credentials are encrypted with the existing SecretStore and never
+Anonymous HTTPS, Basic username/password-token, direct Bearer tokens and SSH
+private keys with optional passphrases are supported. Credentials are encrypted
+with the existing SecretStore and never
 returned by list/history APIs. Editing leaves credential fields blank: preserve
 them, re-enter credentials to rotate, or explicitly disable authentication to
 remove them. Changing the repository URL requires re-entering or removing existing
@@ -44,10 +45,54 @@ Organization/platform administrators control private RFC1918/ULA endpoints,
 custom TLS ports and CA bundles. Operators can use existing profiles without
 changing trust. TLS verification stays enabled. Loopback, metadata and link-local
 addresses are rejected. Each fetch resolves and pins an approved IP; an isolated
-single-destination CONNECT tunnel prevents alternate Git repository URLs from
-bypassing that policy. Redirects are disabled. Git runs with an isolated home,
-configuration and environment; credentials travel through runtime configuration
-in the child environment, never process arguments or command output.
+single-destination CONNECT tunnel prevents HTTPS alternate URLs from bypassing
+that policy, while the SSH relay fixes its destination and remote command.
+Redirects are disabled. Git runs with an isolated home,
+configuration and environment. HTTPS authorization travels through runtime
+configuration in the child environment, never arguments or public command output.
+SSH private keys remain in the parent process as described below.
+
+### SSH repositories
+
+Use `ssh://git@git.example.com/team/manifests.git` or the common
+`git@git.example.com:team/manifests.git` form. SCP-style paths remain relative to
+the SSH user's home; explicit SSH URL paths are absolute. The URL supplies the SSH username; passwords in URLs, traversal,
+shell syntax and query parameters are rejected. Standard SSH port 22 is allowed;
+private RFC1918/ULA addresses or other ports require administrator endpoint approval.
+Loopback, link-local and metadata endpoints stay blocked even with private access.
+
+An organization/platform administrator must set **Trusted SSH host public key**
+under **Git endpoint trust settings**. Supply exactly `algorithm base64` for the
+server's Ed25519, ECDSA or RSA-2048+ public key. A fingerprint alone or an entire
+known_hosts line is not accepted. Obtain the key through a trusted server console
+or independently verified provider information. An unauthenticated key scan alone
+does not establish trust. Unknown/changed keys never receive automatic acceptance.
+Operators may use an existing trusted source, but cannot change its endpoint trust.
+
+Enable authentication and paste a repository read-only private/deploy key, with its
+passphrase if encrypted. Ed25519 OpenSSH, ECDSA and RSA-2048+ keys are supported by
+the existing Paramiko dependency. No system SSH binary, SSH agent, known_hosts
+setup, local SSH config or additional database migration is required. Editing
+returns blank key/passphrase fields. Leave both blank to preserve them; re-enter
+the key and passphrase together to rotate. SSH requires a key; use anonymous HTTPS
+if credentials must be removed. Repository URL changes require credential re-entry.
+
+The platform resolves and approves the endpoint before connecting to one pinned
+address. It verifies the exact supplied server key before private-key
+authentication. The private key/passphrase stay in the parent process; they are
+never written into the temporary repository or passed to Git in arguments or
+environment variables. Git uses a capability-authenticated local binary relay,
+with no agent forwarding, password fallback or arbitrary SSH command selection.
+The only remote command is quoted `git-upload-pack` for the validated repository
+path. Git/SSH stderr and raw failures are withheld from public operations.
+
+The same 120-second deadline, 128 MiB transfer/repository cap, bounded output,
+cancellation and temporary-directory cleanup apply to SSH. Review, manual sync,
+drift, pruning and automatic reconciliation share the existing encrypted source
+credential. Source/key/host-pin changes advance generation, revoke old reviews
+and pause automation until an administrator reapproves it. Host certificates,
+SSH agents, interactive password/keyboard authentication and Git write-back are
+outside this feature.
 
 Fetches have a 120-second deadline and 128 MiB network/repository limit. Selected
 manifest blobs are limited to 1 MiB each, 4 MiB total and 100 objects; each YAML
@@ -171,6 +216,38 @@ and untracked resources remain untouched, including with this option enabled.
 
 The platform's encrypted database backup includes application credentials and
 review ciphertext. Retain the corresponding encryption keys for recovery.
+
+
+## SSH validation
+
+The SSH milestone passed a 74-case GitOps/SSH/automation/schema suite, a 94-case
+SSH/identity/orchestration/HTTPS/schema suite (overlapping coverage), two focused
+network-policy/cancellation checks and additional URL rejection cases. Coverage
+includes actual Git/SSH transfers with RSA and Ed25519 server/client keys, encrypted
+PEM/OpenSSH keys, changed host pins before authentication, wrong client keys,
+capability refusal, SCP-relative path preservation, credential encryption/
+preservation/rotation, administrator trust controls and viewer denial. Mypy passed
+181 source files with GitOps untyped bodies checked; lint/format, frontend type
+checks, 29 tests and production frontend/backend builds passed.
+
+Actual Keycloak/browser/private-address fixture SSH server/Fedora checks passed
+private-key/passphrase form submission, commit-pinned review, worker manual sync,
+credential preservation/blank editing fields, changed-host rejection before auth
+and automatic reconciliation of a second commit. The private repository, server,
+keys, platform application/reviews and UID-owned Fedora namespace were removed.
+Only operation/audit metadata remains. The final UI additionally verified SCP
+credential-editing mode and the key re-entry requirement for passphrase changes.
+The running frontend and backend image matched final source hashes; platform
+readiness, both Fedora nodes and all 17 active pods were healthy. Private credential,
+JWT and key scans passed; the unchanged, nonparseable fake key in an existing test
+was excluded only from the key-header check. A clock jump interrupted one run and expired
+a test token; those checks passed on rerun without authentication changes.
+
+This proves the local SSH Git protocol path with a real private fixture server;
+it does not certify every Git hosting provider, SSH algorithm/certificate option,
+Windows runtime or HA deployment. Provider-specific read-only deploy-key setup is
+still an administrator responsibility. Helm/Kustomize rendering, webhooks and
+Argo CD/Flux are separate next milestones.
 
 Git transport configuration references:
 [Git configuration](https://git-scm.com/docs/git-config) documents runtime

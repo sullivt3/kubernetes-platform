@@ -16,7 +16,8 @@ from app.modules.cluster_lifecycle.models import Cluster, ClusterLifecycleState
 from app.modules.gitops import pruning, resources
 from app.modules.gitops.models import GitOpsApplication, GitOpsReview
 from app.modules.gitops.policy import Policy, validate
-from app.modules.gitops.source import ApplicationInput, Configuration, GitSource
+from app.modules.gitops.source import ApplicationInput, Configuration, GitSource, is_ssh
+from app.modules.gitops.ssh_source import SSHAuthentication
 from app.modules.helm.credentials import Authentication
 from app.modules.kubernetes.service import api_for
 from app.modules.kubernetes.workflows import ConnectParams
@@ -90,10 +91,21 @@ def save(service, principal, cluster_id, body: ApplicationInput, application_id=
         if row.configuration["namespace"] != body.namespace:
             raise InvalidStateError("Create a separate application to change the destination namespace")
     config = Configuration.model_validate(body.model_dump()).model_dump()
-    if (body.allow_private_network or body.ca_pem) and (
-        row is None or any(row.configuration[k] != config[k] for k in ("url", "allow_private_network", "ca_pem"))
+    if (body.allow_private_network or body.ca_pem or body.ssh_host_key) and (
+        row is None
+        or any(
+            row.configuration.get(k) != config[k] for k in ("url", "allow_private_network", "ca_pem", "ssh_host_key")
+        )
     ):
         require(principal, "organization.manage")
+    ssh = is_ssh(body.url)
+    if body.authentication and isinstance(body.authentication, SSHAuthentication) != ssh:
+        raise InvalidStateError("Use a private key for SSH or password/token authentication for HTTPS")
+    if ssh and (
+        body.clear_credentials
+        or (not body.authentication and not (row and row.ciphertext and is_ssh(row.configuration["url"])))
+    ):
+        raise InvalidStateError("SSH requires a private key; use HTTPS for anonymous access")
     if body.authentication and body.clear_credentials:
         raise InvalidStateError("Choose credential replacement or removal")
     if (
@@ -124,11 +136,15 @@ def save(service, principal, cluster_id, body: ApplicationInput, application_id=
     row.next_reconcile_at = None
     if body.authentication:
         auth = body.authentication
-        sealed = service.secret_store.seal(
-            json.dumps(
-                {"mode": auth.mode, "username": auth.username, "password": auth.password.get_secret_value()}
-            ).encode()
-        )
+        if isinstance(auth, SSHAuthentication):
+            payload = {
+                "mode": "ssh",
+                "private_key": auth.private_key.get_secret_value(),
+                "passphrase": auth.passphrase.get_secret_value() if auth.passphrase else None,
+            }
+        else:
+            payload = {"mode": auth.mode, "username": auth.username, "password": auth.password.get_secret_value()}
+        sealed = service.secret_store.seal(json.dumps(payload).encode())
         row.key_id, row.ciphertext = sealed.key_id, sealed.ciphertext
     elif body.clear_credentials:
         row.key_id = None
@@ -149,7 +165,13 @@ def save(service, principal, cluster_id, body: ApplicationInput, application_id=
 def auth_header(row, store):
     if not row.ciphertext:
         return None
-    auth = Authentication.model_validate_json(store.unseal(SealedSecret(row.key_id, row.ciphertext)))
+    payload = store.unseal(SealedSecret(row.key_id, row.ciphertext))
+    try:
+        if is_ssh(row.configuration["url"]):
+            return SSHAuthentication.model_validate_json(payload)
+        auth = Authentication.model_validate_json(payload)
+    except ValueError:
+        raise InvalidStateError("Saved repository credentials are invalid; replace authentication") from None
     if auth.mode == "bearer":
         return "Bearer " + auth.password.get_secret_value()
     return "Basic " + base64.b64encode((auth.username + ":" + auth.password.get_secret_value()).encode()).decode()
