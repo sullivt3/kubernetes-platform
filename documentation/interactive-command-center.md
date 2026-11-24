@@ -19,6 +19,45 @@ ordinary resource inventories, so inspect lifecycle audit for this temporary acc
 
 ## Enable the runtime
 
+### Registry distribution
+
+The manually dispatched **Publish Command Center runtime** GitHub Actions workflow
+(`.github/workflows/command-runtime.yml`) builds Linux amd64 and arm64 images and
+publishes `ghcr.io/<owner>/<repository>/command-runtime:sha-<commit>` using the
+workflow's short-lived package token. It does not require a personal registry
+password or publish on pull requests. Action dependencies are pinned to commits.
+The run summary records the immutable multi-architecture manifest digest; use
+that digest, rather than the convenience tag, in platform configuration.
+
+Run it from the repository's **Actions** tab or with:
+
+```sh
+gh workflow run command-runtime.yml --ref main
+```
+
+A new GHCR package is private by default even for a public source repository.
+For this public tools-only image, a package administrator can change its visibility
+to **Public** in the package settings. Confirm an unauthenticated pull from each
+node architecture before enabling it. Private images instead require node-side
+registry authentication; platform GitHub login does not grant kubelet pull access.
+The build context excludes local `.env` files and contains only the tools copied
+by the runtime Dockerfile; cluster credentials are injected separately per session.
+
+Verify the exact configured reference without relying on a local preload:
+
+```sh
+docker buildx imagetools inspect ghcr.io/<owner>/<repository>/command-runtime@sha256:<digest>
+# On each node, with its normal registry trust/auth configuration:
+sudo crictl pull ghcr.io/<owner>/<repository>/command-runtime@sha256:<digest>
+```
+
+Record the publishing commit, workflow run and verified digest in the deployment
+handoff. A replacement node needs working HTTPS/DNS access to the registry and
+the same trust/auth configuration. Registry availability is independent of the
+management workstation and its Docker image cache.
+
+### Manual build and configuration
+
 Build the tools image using `backend/` as the build context:
 
 ```sh

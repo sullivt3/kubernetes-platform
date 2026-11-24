@@ -1,0 +1,58 @@
+name: Publish Command Center runtime
+
+# Deliberate publication only; pull requests cannot publish or access package tokens.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: command-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build and publish digest-pinned tools
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/command-runtime"
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          unset GHCR_TOKEN
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --file infrastructure/containers/command-runtime.Dockerfile \
+            --tag "$image:sha-$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --metadata-file "$RUNNER_TEMP/command-runtime.json" \
+            --push backend
+          digest="$(jq -er '.["containerimage.digest"] | select(test("^sha256:[a-f0-9]{64}$"))' "$RUNNER_TEMP/command-runtime.json")"
+          docker buildx imagetools inspect "$image@$digest"
+          {
+            echo '### Command Center runtime published'
+            echo
+            echo 'Configure this manifest digest on API, worker and scheduler:'
+            echo '```text'
+            echo "COMMAND_CENTER_RUNTIME_IMAGE=$image@$digest"
+            echo 'COMMAND_CENTER_KUBECTL_MINOR=37'
+            echo '```'
+            echo
+            echo 'Architectures: linux/amd64 and linux/arm64. Inspect package visibility and verify an anonymous node pull before enabling sessions.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf '%s@%s\n' "$image" "$digest" > "$RUNNER_TEMP/command-runtime-reference.txt"
+      - name: Retain digest in run output
+        run: cat "$RUNNER_TEMP/command-runtime-reference.txt"
