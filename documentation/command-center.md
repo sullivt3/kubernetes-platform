@@ -81,8 +81,9 @@ frontend query cache. No raw tool/API errors are returned.
   truncation. Recent history shows the latest 20 reviews. There is no new automatic
   result-retention policy.
 
-This integration does not provide full kubectl/Helm CLI compatibility, arbitrary
-commands, other mutations, logs, streaming or an interactive shell. Use the
+The reviewed runner does not provide arbitrary shell commands or other mutations.
+Platform administrators can separately use [interactive sessions](interactive-command-center.md)
+with full-access consent; the reviewed runner keeps its strict allowlist. Use the
 existing workload, YAML apply, logs and Helm management pages for those supported
 operations.
 
@@ -130,8 +131,8 @@ switching cluster discards the frontend review.
 
 1. Extend the explicitly supported mutations only through reviewed domain actions.
    Install/upgrade/uninstall remain on the existing Helm release management page.
-2. Design interactive sessions separately: isolated per-user execution, short-lived
-   credentials, streaming, disconnect cleanup, cancellation and session audit.
+2. Initial admin-only interactive sessions are implemented separately; scoped
+   interactive roles and external repository egress remain extensions.
 3. Validate each expansion against role/tenant boundaries and a real cluster.
 
 ## Validation

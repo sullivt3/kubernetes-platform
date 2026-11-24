@@ -34,6 +34,7 @@ celery_app.conf.update(
         "probe-clusters": {"task": "clusters.probe", "schedule": 60.0},
         "probe-machines": {"task": "machines.probe", "schedule": float(settings.machine_probe_interval_seconds)},
         "reconcile-gitops": {"task": "gitops.reconcile", "schedule": 30.0},
+        "cleanup-command-sessions": {"task": "command.sessions.reap", "schedule": 10.0},
         "scan-remediation": {"task": "remediation.scan", "schedule": 60.0},
     },
     timezone="UTC",
@@ -130,3 +131,17 @@ def reconcile_gitops() -> dict:
 
 # `celery -A app.orchestration.celery_app` looks for `app` or `celery` attributes.
 app = celery_app
+
+
+@celery_app.task(name="command.sessions.cleanup")
+def cleanup_command_session(session_id: str):
+    from app.modules.command_center.sessions import cleanup
+
+    return cleanup(uuid.UUID(session_id))
+
+
+@celery_app.task(name="command.sessions.reap")
+def reap_command_sessions():
+    from app.modules.command_center.sessions import reap
+
+    return reap()

@@ -292,6 +292,11 @@ async def pod_terminal(
     ):
         await websocket.close(code=4400, reason="invalid pod reference")
         return
+    from app.modules.kubernetes.reserved import is_reserved
+
+    if is_reserved(namespace):
+        await websocket.close(code=4403, reason="use Command Center session attachment")
+        return
     principal = await run_in_threadpool(get_principal, websocket)
 
     def prepare() -> tuple[Any, Any]:

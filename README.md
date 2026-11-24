@@ -139,6 +139,7 @@ npm run build
 * [Configuration](documentation/configuration.md): every environment variable, key rotation
 * [API](documentation/api.md): endpoints and conventions (OpenAPI at `/api/v1/docs`)
 * [Backup and restore](documentation/backup-restore.md) covers platform archives, key recovery, and cluster recovery.
+* [Interactive Command Center](documentation/interactive-command-center.md): admin-confirmed disposable kubectl/Helm sessions, short-lived tokens and cleanup.
 * [Command Center](documentation/command-center.md): reviewed Kubernetes/Helm summaries, selected changes and the remaining staged plan.
 * [Custom workflows](documentation/custom-workflows.md): reusable reviewed Kubernetes actions with tracked runs.
 * [CRD migrations and conversion](documentation/crd-operations.md): native/manual storage migration and Service-backed conversion reviews.
@@ -160,7 +161,7 @@ npm run build
 | 5 | kubeadm upgrades, cloud VM provisioning, autoscaling policies, AWS load balancers, managed EKS/AKS/GKE create/delete/scale/upgrade; overdue Kind/k3d, K3s/RKE2 and vSphere paths implemented as preview; creation wizard VM, CNI and storage wiring |
 | 6 | Networking and storage ✅: resource management, live DNS diagnostics, PV/PVC, StorageClasses, CSI inventory and NFS CSI install/reconcile/remove (preview); ResourceQuotas and LimitRanges |
 | 7 | In progress: OIDC/session authentication, organization/project memberships, administration UI and application RBAC foundations implemented; Kubernetes security views, reporting, platform recovery and Velero integration implemented. Deployment hardening and provider validation remain |
-| 8 | In progress. Monitoring/logging, approval-controlled stateless pod remediation and Helm management implemented. Helm includes public/private HTTPS repositories, OCI registries, encrypted repository authentication, chart/version browsing, values reviews and release install/upgrade/rollback/uninstall. GitOps supports reviewed manual sync, opt-in automatic reconciliation, guarded pruning and drift checks. Installed CRD discovery, schema guidance and reviewed custom-resource CRUD are implemented. Platform-installed definitions support reviewed installation, guarded updates and empty-only removal. Reviewed custom workflows, CRD storage migration and conversion configuration/probing are implemented. A focused Command Center summary runner is implemented; selected reviewed command mutations are implemented; interactive sessions, broader command/workflow actions and controller integrations remain. [Monitoring setup](documentation/monitoring.md) · [Logging setup](documentation/logging.md) · [Helm setup](documentation/helm.md) · [GitOps setup](documentation/gitops.md) |
+| 8 | In progress. Monitoring/logging, approval-controlled stateless pod remediation and Helm management implemented. Helm includes public/private HTTPS repositories, OCI registries, encrypted repository authentication, chart/version browsing, values reviews and release install/upgrade/rollback/uninstall. GitOps supports reviewed manual sync, opt-in automatic reconciliation, guarded pruning and drift checks. Installed CRD discovery, schema guidance and reviewed custom-resource CRUD are implemented. Platform-installed definitions support reviewed installation, guarded updates and empty-only removal. Reviewed custom workflows, CRD storage migration and conversion configuration/probing are implemented. A focused Command Center summary runner is implemented; selected reviewed command mutations are implemented; admin-confirmed disposable interactive sessions are implemented; broader scoped interactive roles, command/workflow actions and controller integrations remain. [Monitoring setup](documentation/monitoring.md) · [Logging setup](documentation/logging.md) · [Helm setup](documentation/helm.md) · [GitOps setup](documentation/gitops.md) |
 
 Scheduled towards the end of Phase 8:
 
@@ -181,8 +182,10 @@ Command Center breakdown (staged implementation):
    and explicit-revision Helm rollback. Kubernetes server dry runs, Helm simulation,
    identity/content guards and typed target confirmation precede changes. See the
    Command Center guide for simulation, concurrency and recovery limits.
-3. Planned interactive sessions: design isolated per-user runtimes, credential lifetime,
-   streaming, disconnect cleanup, cancellation and session audit before enabling
-   an interactive terminal or broader CLI compatibility.
+3. Implemented initial interactive sessions: platform-admin-confirmed disposable
+   pods, pod-bound short-lived tokens, streamed terminal input/output, bounded
+   leases, disconnect/cancellation cleanup and lifecycle audit. Scoped operator
+   sessions and external repository access remain extensions. See the interactive
+   guide for privilege and cleanup limits.
 
 Track implementation and validation in [Command Center](documentation/command-center.md).

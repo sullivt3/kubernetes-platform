@@ -28,7 +28,7 @@ Target environments include existing physical Linux servers over SSH, local Dock
 - **Domain modules:** `backend/app/modules/` contains organizations/identity, credentials, auditing, providers, infrastructure, cluster lifecycle, Kubernetes access and workloads. Networking/storage functionality currently shares the Kubernetes/workload modules; do not create parallel modules just to match a suggested directory tree.
 - **Orchestration:** `backend/app/orchestration/` uses Celery and Redis with PostgreSQL-backed operations, steps, checkpoints, logs and recovery. API, worker and scheduler are separate process roles from the same backend codebase. SSE supplies operation/log updates; WebSockets bridge pod terminals.
 - **Infrastructure:** provider implementations live in `modules/providers/implementations/`; SSH execution and inventory live in `modules/infrastructure/`. Distribution plans and installers live in `modules/cluster_lifecycle/distributions/`.
-- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0015`, adding encrypted reusable custom workflows after `0014` custom-resource reviews.
+- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0016`, adding durable interactive Command Center leases/cleanup metadata after encrypted custom workflows and custom-resource reviews.
 - **Deployment:** `infrastructure/deployment/docker-compose.yml` supplies PostgreSQL/Redis and optional backend API/worker/scheduler services. The frontend runs separately. `infrastructure/containers/backend.Dockerfile` packages the backend.
 
 Keep infrastructure provisioning, host execution, and Kubernetes distribution installation separate. Add capabilities through the existing provider/distribution contracts and registries instead of scattering provider conditionals through services or UI.
@@ -137,7 +137,7 @@ Context reviewed **2026-11-24**. The monitoring/logging milestone is implemented
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; reviewed custom workflows, native/manual storage migration and Service-backed conversion configuration are implemented; a focused Command Center summary runner is implemented; selected reviewed command mutations are implemented; interactive sessions, broader workflow actions and controller integrations remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
+| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; reviewed custom workflows, native/manual storage migration and Service-backed conversion configuration are implemented; a focused Command Center summary runner is implemented; selected reviewed command mutations are implemented; initial admin-only interactive sessions are implemented; scoped interactive roles, broader workflow actions and controller integrations remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -692,7 +692,7 @@ must be paused, because revision checks do not fence them. Current human access,
 review expiry and revision content are rechecked before mutation. Existing owned
 revision recovery avoids repeating a completed rollback. Accepted changes remain
 on failure/cancellation. Install/upgrade/uninstall remain on Helm management UI;
-interactive sessions remain planned. See `documentation/command-center.md` and
+initial interactive sessions were subsequently implemented below. See `documentation/command-center.md` and
 `tests/test_command_mutations.py`. No new migration is required.
 Validation: 80 final mutation/workflow tests passed, including all new parser,
 confirmation, encryption, UID/spec/admission drift, resourceVersion race,
@@ -713,6 +713,74 @@ The UID-owned temporary namespace/release and private fixture reviews/plans were
 removed; operation/audit history remains. Both Fedora nodes and all 17 active
 pods were Ready after cleanup; platform readiness and publishable-file/log secret
 checks passed. API, worker, scheduler and production UI run this milestone.
+Inspect Git status/history for this milestone and subsequent work.
+
+
+Interactive Command Center (2026-11-24): `sessions.py`, `session_models.py`,
+`api/routes/command_sessions.py` and migration `0016` add author/tenant/project-bound
+leases and tracked `cluster.command.session.prepare` operations. Platform-admin
+access plus terminal/write/reveal permissions, explicit full-cluster acknowledgement
+and typed cluster name are required. Operators retain reviewed commands only.
+Ordinary management API paths hide/reject UUID-shaped session namespaces and
+grants (`kubernetes/reserved.py`); generic pod exec and rendered Helm inventories
+are also guarded. Session lifecycle handlers explicitly opt out after admin/author
+authorization. The reviewed command runner retains bounded-response reads through
+the guard. The interactive shell intentionally has cluster-admin access and bypasses per-change
+reviews; it is for trusted administrators, not a hostile-code sandbox. User-created
+resources/grants are not rolled back on session close.
+
+Each session gets a unique restricted namespace, non-root read-only tools pod,
+service account, owned grant, API-only NetworkPolicy and ephemeral credential
+Secret. Only a short-lived TokenRequest bound to the pod UID is mounted, never the
+parent client key/token; responses exceeding the requested expiry bound fail closed.
+The supplied runtime image contains checksum-pinned kubectl 1.37.2/Helm 4.3.2;
+`COMMAND_CENTER_RUNTIME_IMAGE` is required and must pin a trusted image digest.
+`COMMAND_CENTER_KUBECTL_MINOR` must match that image; observed server skew >1 minor
+or unknown versions are refused. Runtime CPU/memory/storage and input/output are
+bounded. API-only egress requires a NetworkPolicy-capable CNI and limits external
+Helm repository operations. No backend Docker socket or host-shell access is used.
+
+Sessions are single-attach, at most 10 minutes, with a 60-second Ready attachment
+window and 2-minute input-idle limit. Current auth/context/lease is checked every
+5 seconds. Disconnect/cancellation writes durable Closing state under cancellation
+shielding. Cross-replica advisory locks serialize provisioning/cleanup; row locks
+preserve newly recorded UIDs and recheck reaper eligibility. Cleanup binds the
+cluster's kube-system namespace UID, revokes owned grant subjects, and removes only
+UID-owned grant/namespace objects, preserving finalizers. Closed requires observed
+absence of both. Beat reaps every 10 seconds, including heartbeat abandonment after
+20 seconds; unavailable targets retain cleanup-pending state for retry. Token expiry
+and pod active deadline are independent backstops. Deletion, unregister and connection
+changes are blocked until sessions are closed. Closed history cascades with cluster
+unregistration. Metadata/lifecycle is audited; tokens, stdin/output and transcripts
+are never stored in the platform DB or ordinary logs.
+
+See `documentation/interactive-command-center.md`, the reviewed runner guide and
+`tests/test_command_sessions.py`. Local testing builds the public tools image and
+preloads its digest on both pinned Fedora nodes; it is not published to a registry.
+The ignored backend `.env` now enables that exact cached image. Other/new nodes need
+a trusted registry image or the same preload. Migration `0016` is applied locally;
+API, worker, scheduler and production UI run the session implementation. The real
+Keycloak GUI/Pod exec drill passed kubectl nodes, Helm version/list, operator denial,
+full target confirmation, grant/namespace cleanup and delegated-token revocation.
+Closed validation leases/audit history are retained; no active validation grants or
+runtimes remain.
+
+Final validation: 189 targeted backend regressions passed (session leases, reserved
+resource paths, reviewed commands/mutations, workloads/terminals, Helm, GitOps and
+migration consistency). Earlier identity/orchestration/lifecycle regressions also
+passed; the local-image setting required correcting the disabled-feature fixture
+and the corrected session/migration suite passed. Ruff/format, full Mypy for 177
+files with untyped new services/routes/reserved API bodies checked, frontend type
+checks/lint, 29 frontend tests and all three production/runtime image builds passed.
+Built backend and running frontend source hashes match final implementation.
+
+Live Keycloak/Fedora checks additionally denied ordinary Secret/pod-detail/pod-exec
+access to an active privileged runtime, verified actual browser-navigation cleanup,
+confirmed signed-token expiry/Pod UID claims, and exercised the real beat/worker
+cleanup task with an accelerated unattached lease. Final checks found no active
+leases, runtime namespaces or grants, both Fedora nodes and all 17 active pods Ready,
+healthy platform readiness, and no matched local secrets/JWTs in publishable files
+or application logs. This is local Fedora validation, not HA/cloud/CNI certification.
 Inspect Git status/history for this milestone and subsequent work.
 
 ## Local development and checks

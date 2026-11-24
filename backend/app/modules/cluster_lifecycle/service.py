@@ -466,6 +466,10 @@ class ClusterService:
         destroy_machines: bool = False,
     ) -> Operation:
         cluster = self.get(principal, cluster_id)
+        self.session.refresh(cluster, with_for_update=True)
+        from app.modules.command_center.session_models import require_closed_sessions
+
+        require_closed_sessions(self.session, cluster_id)
         if cluster.origin is not ClusterOrigin.PROVISIONED:
             raise ValidationFailedError("Only clusters created by the platform can be deleted here")
         nodes = [

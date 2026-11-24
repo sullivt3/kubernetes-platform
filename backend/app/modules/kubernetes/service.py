@@ -105,7 +105,9 @@ def _managed_token_provider(session: Session, secret_store: SecretStore, cluster
     return token
 
 
-def api_for(session: Session, secret_store: SecretStore, cluster: Cluster) -> kclient.ClusterAPI:
+def api_for(
+    session: Session, secret_store: SecretStore, cluster: Cluster, *, allow_command_sessions: bool = False
+) -> kclient.ClusterAPI:
     """Pooled API client for a cluster. Decrypts the kubeconfig only when (re)building."""
     if cluster.access_credential_id is None:
         raise InvalidStateError(
@@ -144,7 +146,10 @@ def api_for(session: Session, secret_store: SecretStore, cluster: Cluster) -> kc
             token_provider=_managed_token_provider(session, secret_store, cluster),
         )
 
-    return kclient.client_for(key, target)
+    from app.modules.kubernetes.reserved import ReservedAPI
+
+    api = kclient.client_for(key, target)
+    return api if allow_command_sessions else ReservedAPI(api)
 
 
 def connection_target(session: Session, secret_store: SecretStore, cluster: Cluster) -> kclient.ConnectionTarget:
@@ -494,6 +499,10 @@ class KubernetesService:
     ) -> Operation:
         validate_connection_settings(server_override, tls_server_name)
         cluster = self.cluster(principal, cluster_id)
+        self.session.refresh(cluster, with_for_update=True)
+        from app.modules.command_center.session_models import require_closed_sessions
+
+        require_closed_sessions(self.session, cluster_id)
         before = {"server_override": cluster.api_server_override, "tls_server_name": cluster.tls_server_name}
         cluster.api_server_override = server_override or None
         cluster.tls_server_name = tls_server_name or None
@@ -533,6 +542,10 @@ class KubernetesService:
 
     def unregister(self, principal: Principal, cluster_id: uuid.UUID, *, confirm: str | None) -> None:
         cluster = self.cluster(principal, cluster_id)
+        self.session.refresh(cluster, with_for_update=True)
+        from app.modules.command_center.session_models import require_closed_sessions
+
+        require_closed_sessions(self.session, cluster_id)
         if cluster.origin is not ClusterOrigin.IMPORTED:
             raise ValidationFailedError(
                 "Clusters created by the platform are removed with Delete, which also resets their nodes"

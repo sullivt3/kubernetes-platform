@@ -3,6 +3,7 @@
 from app.modules.backups import workflows as backup_workflows  # noqa: F401
 from app.modules.cluster_lifecycle import workflows as cluster_workflows  # noqa: F401
 from app.modules.command_center import service as command_workflows  # noqa: F401
+from app.modules.command_center import sessions as command_sessions  # noqa: F401
 from app.modules.custom_workflows import service as custom_workflows  # noqa: F401
 from app.modules.gitops import automation as gitops_automation  # noqa: F401
 from app.modules.gitops import service as gitops_workflows  # noqa: F401

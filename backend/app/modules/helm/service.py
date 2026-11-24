@@ -105,6 +105,9 @@ def inventory(rendered: bytes, namespace: str) -> list[dict]:
                     add(item, depth + 1)
                 return
             meta = obj.get("metadata") or {}
+            from app.modules.kubernetes.reserved import check_manifest
+
+            check_manifest(obj)
             rows.append(
                 {
                     "kind": str(obj.get("kind", "Unknown"))[:128],

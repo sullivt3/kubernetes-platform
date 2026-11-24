@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # Network discovery only scans private, loopback and link-local ranges unless enabled.
     discovery_allow_public_ranges: bool = False
     machine_probe_interval_seconds: int = Field(default=30, ge=10, le=300)
+    # Interactive sessions are disabled until a trusted runtime image is pinned.
+    command_center_runtime_image: str | None = Field(
+        default=None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9./:_-]*@sha256:[a-f0-9]{64}$"
+    )
+    command_center_kubectl_minor: int = Field(default=37, ge=20, le=99)
 
     # --- Orchestration -------------------------------------------------------
     # When true, operations execute in-process instead of via Celery (tests only).

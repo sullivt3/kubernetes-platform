@@ -486,3 +486,22 @@ for the supported summary/mutation command subset and limits.
 Operation metadata never includes raw command output. Use the existing operation
 cancellation endpoint to request cancellation; a pending Kubernetes read may finish
 its bounded socket request before observing it.
+
+### Interactive Command Center sessions
+
+`/clusters/{cluster_id}/command-sessions` is **platform-admin-only** and separate
+from the operator-accessible reviewed command runner. All session records are
+scope/author-bound. See [Interactive Command Center](interactive-command-center.md)
+for the full-access consent, runtime image setup, credential/lease limits and
+cleanup guarantees.
+
+- `GET /`: enabled state, cluster name, lifetime and the author's latest 20 sessions.
+- `POST /`: `{confirm, acknowledge_cluster_admin: true}` → session (`202`) and
+  linked preparation operation. The confirmation is the cluster name.
+- `POST /{session_id}/close`: requests durable Closing state and asynchronous cleanup (`202`).
+- WebSocket `/{session_id}/attach`: origin-checked, authenticated, single-use
+  attachment to a Ready session. Uses the existing JSON input/resize/output/exit
+  terminal protocol with stricter input/output limits. No credentials in URLs.
+
+The API reports Closed only when grant and namespace removal are observed.
+Lifecycle audit records are retained; transcripts and delegated tokens are not.

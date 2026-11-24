@@ -314,7 +314,9 @@ def kubernetes_read(api, plan):
     if plan["name"]:
         path += "/" + plan["name"]
     kwargs: dict[str, Any] = {"params": {} if plan["name"] else {"limit": 100}, "timeout": 10}
-    if isinstance(api, KubeClient):
+    if hasattr(api, "bounded_request"):
+        status, raw = api.bounded_request("GET", path, **kwargs, max_response_bytes=RAW_LIMIT)
+    elif isinstance(api, KubeClient):
         status, raw = api.request("GET", path, **kwargs, max_response_bytes=RAW_LIMIT)
     else:
         status, raw = api.request("GET", path, **kwargs)

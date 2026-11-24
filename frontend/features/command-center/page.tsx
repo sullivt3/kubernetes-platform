@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ClusterScope } from "@/features/kubernetes/shared";
 import { api } from "@/lib/api/client";
+import { InteractiveSessions } from "./interactive";
 
 type Review = { id: string; name: string; expires_at: string; command: string; read_only: boolean; cluster_name?: string; kind?: string; namespace?: string; target?: string;
   uid?: string; before_replicas?: number; replicas?: number; expected_revision?: number; revision?: number;
@@ -26,6 +27,7 @@ const EXAMPLES = ["kubectl get nodes", "kubectl get pods -A", "kubectl get deplo
 
 function ClusterCommands({ id }: { id: string }) {
   const base = `/clusters/${id}/commands`;
+  const admin = useCan("platform.manage");
   const [command, setCommand] = useState(EXAMPLES[0]);
   const [review, setReview] = useState<Review | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -86,6 +88,7 @@ function ClusterCommands({ id }: { id: string }) {
     {error !== null && <ErrorState error={error} />}
     {output && <section aria-label="Command output" className="space-y-2 rounded border p-4"><div className="flex items-center justify-between"><h2 className="font-semibold">Command output</h2><Button variant="ghost" onClick={() => setOutput(null)}>Hide output</Button></div>{output.result ? <><p className="text-sm">{output.result.row_count} rows · Observed {new Date(output.result.observed_at).toLocaleString()}</p>{output.result.truncated && <p role="alert" className="text-sm text-amber-600">Results were truncated. Narrow the namespace or resource name.</p>}<pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-3 text-xs">{output.result.output}</pre></> : <p className="text-sm">No output is available yet. Check operation progress, then open this history entry again.</p>}</section>}
     <section className="space-y-2"><h2 className="font-semibold">Your recent commands</h2>{history.isError && <ErrorState error={history.error} />}{history.isPending && <p>Loading command history…</p>}{history.data?.length === 0 && <p className="text-sm text-muted-foreground">No command reviews for this cluster yet.</p>}{history.data?.map((row) => <div key={row.id} className="flex flex-wrap items-center gap-3 rounded border p-3 text-sm"><code className="break-all">{row.command}</code><span className="text-muted-foreground">{new Date(row.created_at).toLocaleString()}</span>{row.operation_id ? <><Link className="underline" href={`/operations/${row.operation_id}`}>Operation</Link><Button variant="outline" size="sm" disabled={busy} onClick={() => void act("output", row)}>View output</Button></> : <span>Reviewed; not submitted</span>}</div>)}</section>
+    {admin && <InteractiveSessions key={id} clusterId={id} />}
     <ConfirmDialog key={review?.id} open={confirm && !!review} onOpenChange={setConfirm} title={review?.read_only === false ? "Apply reviewed cluster change" : "Run reviewed command"} description={review?.read_only === false ? `Change ${review.kind} ${review.namespace}/${review.target} on ${review.cluster_name}. ${review.notice} Type the target name to confirm this specific reviewed action.` : "Read the selected cluster using its platform connection. Only this reviewed command will run. Output is private to your account; operation history contains execution metadata. Type the cluster name to confirm."} confirmText={review?.name} confirmLabel="Run command" pending={busy} onConfirm={() => void act("run")} />
   </div>;
 }

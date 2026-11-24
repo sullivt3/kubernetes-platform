@@ -70,13 +70,19 @@ def decode_frame(frame: bytes | str) -> dict[str, Any] | None:
 
 
 async def bridge(
-    browser: BrowserSocket, target: ConnectionTarget, namespace: str, pod: str, container: str | None
+    browser: BrowserSocket,
+    target: ConnectionTarget,
+    namespace: str,
+    pod: str,
+    container: str | None,
+    *,
+    max_seconds: float = MAX_SESSION_SECONDS,
 ) -> str:
     """Run one terminal session. Returns a short outcome description for the audit log."""
     from websockets.asyncio.client import connect
     from websockets.exceptions import ConnectionClosed, InvalidStatus
 
-    token = target.token_provider() if target.token_provider else target.kubeconfig.token
+    token = await asyncio.to_thread(target.token_provider) if target.token_provider else target.kubeconfig.token
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     host = urlsplit(target.server).hostname
     try:
@@ -126,7 +132,7 @@ async def bridge(
 
     tasks = [asyncio.create_task(from_cluster()), asyncio.create_task(from_browser())]
     try:
-        done, _pending = await asyncio.wait(tasks, timeout=MAX_SESSION_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+        done, _pending = await asyncio.wait(tasks, timeout=max_seconds, return_when=asyncio.FIRST_COMPLETED)
         if not done:
             outcome = "session time limit reached"
             await browser.send_json({"type": "exit", "status": "Timeout", "message": "Session time limit reached"})
@@ -136,5 +142,8 @@ async def bridge(
         for task in tasks:
             task.cancel()
     finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await k8s.close()
     return outcome
