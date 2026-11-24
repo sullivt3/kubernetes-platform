@@ -228,6 +228,14 @@ frontend build passed. [Logging setup](documentation/logging.md)
 
 ## Remaining work and priorities
 
+The user intends to finish Phase 8 extensions **one feature at a time**. The
+complete remaining-work plan is `documentation/phase-8-remaining.md`, including
+scope, proposed sequence, security decisions, acceptance criteria and validation
+gaps. Next is namespace-scoped read-only operator interactive access. Documenting
+the plan did not start implementation. Do not relax the current admin-only guard
+until Kubernetes namespace-scoped credentials and negative access tests exist.
+Runtime GHCR distribution and the five-scenario recovery drill are already done.
+
 The user has progressed into Phase 8. Monitoring/logging, the first bounded
 remediation runbook, Helm release management and initial GitOps manual sync/drift
 reviews, opt-in automatic reconciliation and guarded pruning are implemented.

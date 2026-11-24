@@ -163,6 +163,10 @@ npm run build
 | 7 | In progress: OIDC/session authentication, organization/project memberships, administration UI and application RBAC foundations implemented; Kubernetes security views, reporting, platform recovery and Velero integration implemented. Deployment hardening and provider validation remain |
 | 8 | In progress. Monitoring/logging, approval-controlled stateless pod remediation and Helm management implemented. Helm includes public/private HTTPS repositories, OCI registries, encrypted repository authentication, chart/version browsing, values reviews and release install/upgrade/rollback/uninstall. GitOps supports reviewed manual sync, opt-in automatic reconciliation, guarded pruning and drift checks. Installed CRD discovery, schema guidance and reviewed custom-resource CRUD are implemented. Platform-installed definitions support reviewed installation, guarded updates and empty-only removal. Reviewed custom workflows, CRD storage migration and conversion configuration/probing are implemented. A focused Command Center summary runner is implemented; selected reviewed command mutations are implemented; admin-confirmed disposable interactive sessions are implemented; broader scoped interactive roles, command/workflow actions and controller integrations remain. [Monitoring setup](documentation/monitoring.md) · [Logging setup](documentation/logging.md) · [Helm setup](documentation/helm.md) · [GitOps setup](documentation/gitops.md) |
 
+The [Phase 8 remaining-work plan](documentation/phase-8-remaining.md) records every
+discussed extension, implementation boundaries and acceptance criteria. Continue
+one feature at a time, starting with namespace-scoped read-only operator sessions.
+
 Scheduled towards the end of Phase 8:
 
 - External alert notifications: configure destinations such as email or webhooks,
