@@ -25,14 +25,16 @@ def protected_object(obj):
         return False
     meta = obj.get("metadata") or {}
     return is_reserved(meta.get("namespace")) or (
-        obj.get("kind") in {"Namespace", "ClusterRoleBinding"} and is_reserved(meta.get("name"))
+        obj.get("kind") in {"Namespace", "ClusterRoleBinding", "Role", "RoleBinding"} and is_reserved(meta.get("name"))
     )
 
 
 def check_path(path):
     parts = unquote(urlsplit(path).path).split("/")
     if any(
-        part in {"namespaces", "clusterrolebindings"} and i + 1 < len(parts) and is_reserved(parts[i + 1])
+        part in {"namespaces", "clusterrolebindings", "roles", "rolebindings"}
+        and i + 1 < len(parts)
+        and is_reserved(parts[i + 1])
         for i, part in enumerate(parts)
     ):
         raise PermissionDeniedError("Interactive runtime resources are reserved; use Command Center session controls")

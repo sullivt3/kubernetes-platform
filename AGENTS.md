@@ -28,7 +28,7 @@ Target environments include existing physical Linux servers over SSH, local Dock
 - **Domain modules:** `backend/app/modules/` contains organizations/identity, credentials, auditing, providers, infrastructure, cluster lifecycle, Kubernetes access and workloads. Networking/storage functionality currently shares the Kubernetes/workload modules; do not create parallel modules just to match a suggested directory tree.
 - **Orchestration:** `backend/app/orchestration/` uses Celery and Redis with PostgreSQL-backed operations, steps, checkpoints, logs and recovery. API, worker and scheduler are separate process roles from the same backend codebase. SSE supplies operation/log updates; WebSockets bridge pod terminals.
 - **Infrastructure:** provider implementations live in `modules/providers/implementations/`; SSH execution and inventory live in `modules/infrastructure/`. Distribution plans and installers live in `modules/cluster_lifecycle/distributions/`.
-- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0016`, adding durable interactive Command Center leases/cleanup metadata after encrypted custom workflows and custom-resource reviews.
+- **Persistence:** Alembic migrations live in `backend/migrations/`. Current migration head is `0018`: `0016` added interactive session leases, `0017` explicit user/namespace grants and `0018` encrypted transcript chunks.
 - **Deployment:** `infrastructure/deployment/docker-compose.yml` supplies PostgreSQL/Redis and optional backend API/worker/scheduler services. The frontend runs separately. `infrastructure/containers/backend.Dockerfile` packages the backend.
 
 Keep infrastructure provisioning, host execution, and Kubernetes distribution installation separate. Add capabilities through the existing provider/distribution contracts and registries instead of scattering provider conditionals through services or UI.
@@ -137,7 +137,7 @@ Context reviewed **2026-11-24**. The monitoring/logging milestone is implemented
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; reviewed custom workflows, native/manual storage migration and Service-backed conversion configuration are implemented; a focused Command Center summary runner is implemented; selected reviewed command mutations are implemented; initial admin-only interactive sessions are implemented; scoped interactive roles, broader workflow actions and controller integrations remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
+| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; reviewed custom workflows, native/manual storage migration and Service-backed conversion configuration are implemented; a focused Command Center summary runner is implemented; selected reviewed command mutations are implemented; interactive administrator and namespace-scoped read-only operator sessions, opt-in approved public HTTPS/OCI access and encrypted output recording are implemented; write-capable scoped profiles, broader workflow actions and controller integrations remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -231,9 +231,10 @@ frontend build passed. [Logging setup](documentation/logging.md)
 The user intends to finish Phase 8 extensions **one feature at a time**. The
 complete remaining-work plan is `documentation/phase-8-remaining.md`, including
 scope, proposed sequence, security decisions, acceptance criteria and validation
-gaps. Next is namespace-scoped read-only operator interactive access. Documenting
-the plan did not start implementation. Do not relax the current admin-only guard
-until Kubernetes namespace-scoped credentials and negative access tests exist.
+gaps. Namespace-scoped read-only operator access, approved public repository access
+and opt-in encrypted output recording are now implemented; see the current
+interactive handoff below. Do not start the next GitOps/workflow extensions until
+the user directs it. Preserve the full-access administrator guard.
 Runtime GHCR distribution and the five-scenario recovery drill are already done.
 
 The user has progressed into Phase 8. Monitoring/logging, the first bounded
@@ -759,8 +760,10 @@ absence of both. Beat reaps every 10 seconds, including heartbeat abandonment af
 20 seconds; unavailable targets retain cleanup-pending state for retry. Token expiry
 and pod active deadline are independent backstops. Deletion, unregister and connection
 changes are blocked until sessions are closed. Closed history cascades with cluster
-unregistration. Metadata/lifecycle is audited; tokens, stdin/output and transcripts
-are never stored in the platform DB or ordinary logs.
+unregistration. The original slice audited lifecycle metadata only; the later
+opt-in encrypted output recording below supersedes its no-transcript limitation.
+Provisioning never copies the parent key/token, and terminal content stays out of
+ordinary logs.
 
 See `documentation/interactive-command-center.md`, the reviewed runner guide and
 `tests/test_command_sessions.py`. Local testing builds the public tools image and
@@ -816,6 +819,62 @@ the older CLI executable form. Do not run tests while this drill pauses Redis.
 See `documentation/command-center-recovery.md` for the repeatable harness and
 limits: single local replica/Fedora only, no HA/cloud/host-loss certification.
 The feature extensions and two end-of-Phase-8 items in the roadmap remain planned.
+
+Interactive extensions (2026-11-24): `command_center/access.py` and migration
+`0017` add platform-admin-managed user/namespace assignments bound to cluster,
+project and namespace UID. Operators receive a separate disposable runtime SA and
+namespaced read-only Role/RoleBinding, with an explicit resource allowlist. Secrets,
+logs, writes, RBAC, nodes, exec/attach, port forwarding, proxy and TokenRequests
+are excluded. Grant/current membership is checked at start, preparation, attach
+and heartbeat. Revocation commits Closing leases with assignment deletion and
+queues owned grant/Role/runtime cleanup. Ordinary resource routing also reserves
+UUID-shaped session Role/RoleBinding names. Full administrator sessions remain
+acknowledged cluster-admin; broader platform operator permissions outside the shell
+are unchanged. Existing cluster grants to authenticated SA groups can augment RBAC.
+
+`command_center/repositories.py` adds admin-managed per-cluster public hostnames,
+explicit per-session opt-in, public-only DNS checks, pinned host aliases and TCP443
+NetworkPolicy rules. No general DNS is opened. Mixed/private/metadata/mapped answers
+fail closed. Saving policy closes opted-in leases; worker/attach/heartbeat recheck
+policy. This is an IP allowlist, not an HTTP hostname firewall: shared/CDN IPs may
+serve other hosts. Private network targets/custom CA and stored credential copying
+are excluded; full cluster administrators can deliberately alter network policies.
+Real Fedora checks passed default internet denial, approved Bedag HTTPS index and
+GHCR podinfo OCI chart downloads, metadata/unlisted destination denial and cleanup.
+The original repository policy was restored.
+
+`command_center/transcripts.py` and migration `0018` add explicit-consent terminal
+output recording, off by default. Raw input events are not hooked, but TTY output
+can echo commands/passwords and any printed Secret. Encrypt each frame before
+browser delivery; recording failure closes the session. Bounds: 2MiB/4096 frames,
+24h from session creation. Author/current terminal+reveal permissions or scoped
+platform admin access govern audited no-store JSON export; metadata is paginated,
+admin can include other authors, closed recordings can be deleted. Expiry denies
+reads immediately; the ten-second session reaper purges expired ciphertext when
+services return. Keep encryption keys for retained data/backups. Downloads/backups
+have independent retention, and abrupt API loss can truncate output. All session
+history/operation/audit payloads retain metadata only, except the separate encrypted
+chunk table. Native live checks passed real recording, ciphertext persistence,
+operator/viewer denial, export/deletion and real beat purge with an accelerated
+owned expired recording. Validation recordings were removed; closed audit retained.
+
+Scoped access passed 34 scoped/session/migration tests, 29 frontend tests and real
+Keycloak/Fedora operator browser, delegated-token denial and admin revocation checks.
+Repository/scoped tests passed 25 cases. The initial combined suite passed 56 tests;
+the final shared regression suite passed 359 tests, followed by two additional
+namespaced binding-finalizer/Role-UID cleanup tests. Full Mypy passed 180 files with
+strict changed-module checks; Ruff/format, frontend type/lint/29 tests and both
+production builds passed. Final real UI checks covered assignment/revocation,
+operator confirmation/shell, repository policy/opt-in and Helm HTTPS download,
+recording consent/status and JSON download/delete. Native dependencies and both
+Fedora nodes/all 17 pods were healthy, with no active validation resources or
+recording chunks; source hashes matched built backend/running UI. Private-secret
+and JWT scans found no matches in publishable files or native/build/live logs.
+See the interactive guide for exact validation boundaries. Migration `0018` is applied locally, native API/worker/beat
+run the new backend; logs remain in ignored `.tools/command-recovery/`. The runtime
+image digest is unchanged. The recovery harness now skips unrelated process lines
+that cannot be parsed as shell arguments. Local Fedora evidence does not certify
+HA, managed clouds, other CNIs or arbitrary cluster RBAC policies.
 
 ## Local development and checks
 

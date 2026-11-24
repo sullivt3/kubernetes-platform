@@ -131,8 +131,10 @@ switching cluster discards the frontend review.
 
 1. Extend the explicitly supported mutations only through reviewed domain actions.
    Install/upgrade/uninstall remain on the existing Helm release management page.
-2. Initial admin-only interactive sessions are implemented separately; scoped
-   interactive roles and external repository egress remain extensions.
+2. Interactive sessions are implemented separately, including namespace-scoped
+   read-only operator access, approved public HTTPS/OCI destinations and opt-in
+   encrypted output recordings. See [interactive sessions](interactive-command-center.md).
+   Write-capable scoped profiles remain a separately designed extension.
 3. Validate each expansion against role/tenant boundaries and a real cluster.
 
 ## Validation

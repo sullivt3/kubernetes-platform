@@ -7,9 +7,10 @@ import contextlib
 import json
 import time
 import uuid
+from typing import cast
 
 import anyio
-from fastapi import APIRouter, Depends, Response, WebSocket
+from fastapi import APIRouter, Depends, Query, Response, WebSocket
 from starlette.concurrency import run_in_threadpool
 
 from app.api.auth import get_principal
@@ -19,12 +20,65 @@ from app.core.errors import InvalidStateError, PlatformError
 from app.core.principal import Principal
 from app.core.secrets import get_secret_store
 from app.db.session import get_session_factory
-from app.modules.command_center import sessions
+from app.modules.command_center import access, repositories, sessions, transcripts
 from app.modules.kubernetes.service import KubernetesService
 from app.modules.organizations.scope import scope_session
 from app.modules.workloads import terminal
+from app.orchestration.service import OperationService
 
 router = APIRouter(prefix="/clusters/{cluster_id}/command-sessions", tags=["interactive command center"])
+
+
+@router.get("/transcripts")
+def transcript_inventory(
+    cluster_id: uuid.UUID,
+    response: Response,
+    offset: int = Query(default=0, ge=0, le=100000),
+    all_users: bool = False,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+):
+    response.headers["Cache-Control"] = "no-store"
+    return transcripts.inventory(service, principal, cluster_id, offset, all_users)
+
+
+@router.put("/repository-policy")
+def repository_policy(
+    cluster_id: uuid.UUID,
+    body: repositories.Policy,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+):
+    return repositories.update(service, principal, cluster_id, body)
+
+
+@router.get("/namespace-assignments")
+def namespace_assignments(
+    cluster_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+):
+    return {"items": access.assignments(service, principal, cluster_id)}
+
+
+@router.post("/namespace-assignments", status_code=201)
+def assign_namespace(
+    cluster_id: uuid.UUID,
+    body: access.Assignment,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+):
+    return access.assign(service, principal, cluster_id, body)
+
+
+@router.delete("/namespace-assignments/{grant_id}", status_code=204)
+def revoke_namespace(
+    cluster_id: uuid.UUID,
+    grant_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+):
+    access.revoke(service, principal, cluster_id, grant_id)
 
 
 @router.get("")
@@ -60,11 +114,35 @@ def close(
     return sessions.close(service, principal, cluster_id, session_id)
 
 
-class SessionSocket:
-    """Bounded transport only; no command text/output is persisted or audited."""
+@router.get("/{session_id}/transcript")
+def export_transcript(
+    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
+    response: Response,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Disposition"] = f'attachment; filename="session-{session_id}.json"'
+    return transcripts.export(service, principal, cluster_id, session_id)
 
-    def __init__(self, websocket):
+
+@router.delete("/{session_id}/transcript", status_code=204)
+def delete_transcript(
+    cluster_id: uuid.UUID,
+    session_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    service: KubernetesService = Depends(get_kubernetes_service),
+):
+    transcripts.remove(service, principal, cluster_id, session_id)
+
+
+class SessionSocket:
+    """Bounded transport with optional encrypted output recording before delivery."""
+
+    def __init__(self, websocket, session_id=None):
         self.websocket = websocket
+        self.session_id = session_id
         self.last_input = time.monotonic()
         self.output_bytes = 0
         self.input_bytes = 0
@@ -100,6 +178,12 @@ class SessionSocket:
             if self.output_bytes > 2 * 1024 * 1024:
                 self.outcome = "output_limit"
                 raise InvalidStateError("Output limit exceeded")
+            if self.session_id:
+                try:
+                    await run_in_threadpool(transcripts.append, self.session_id, message.get("data", ""))
+                except Exception:
+                    self.outcome = "recording_failed"
+                    raise InvalidStateError("Transcript recording failed; session ended") from None
         await self.websocket.send_json(message)
 
 
@@ -115,17 +199,21 @@ async def attach(websocket: WebSocket, cluster_id: uuid.UUID, session_id: uuid.U
     def claim():
         with get_session_factory()() as session:
             scope_session(session, principal)
-            service = KubernetesService(session, get_secret_store(), None)  # type: ignore[arg-type]  # Attach performs no operation submission.
-            return sessions.attach(service, principal, cluster_id, session_id)
+            service = KubernetesService(
+                session, get_secret_store(), cast(OperationService, None)
+            )  # Attach performs no operation submission.
+            row = sessions.find(service, principal, cluster_id, session_id)
+            name, target = sessions.attach(service, principal, cluster_id, session_id)
+            return name, target, row.specification.get("record_transcript", False)
 
     try:
-        name, target = await run_in_threadpool(claim)
+        name, target, recording = await run_in_threadpool(claim)
     except PlatformError:
         await websocket.close(code=4403, reason="session not available")
         return
     outcome = "closed"
     bridge = None
-    adapter = SessionSocket(websocket)
+    adapter = SessionSocket(websocket, session_id if recording else None)
     try:
         await websocket.accept()
         bridge = asyncio.create_task(

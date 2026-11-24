@@ -1,8 +1,9 @@
 # Phase 8 remaining work
 
-Updated 2026-11-24 after commit `ccc08e1`. This is the implementation backlog for
-the remaining Phase 8 capabilities discussed with the user. All items below are
-planned unless explicitly marked complete. Implement one feature at a time; finish
+Updated 2026-11-24 with the interactive access/repository/transcript milestone.
+This is the implementation backlog for
+the remaining Phase 8 capabilities discussed with the user. Items below are
+planned unless their status states otherwise. Implement one feature at a time; finish
 its tests, live checks and handoff before starting another. Documenting an item
 does not implement it or authorize an infrastructure change needed later.
 
@@ -12,7 +13,9 @@ Monitoring/logging, approval-controlled stateless pod replacement, Helm manageme
 native platform GitOps manual/automatic reconciliation and pruning, CRD discovery
 and reviewed lifecycle/CRUD, bounded custom workflows, storage migration and
 existing-Service conversion configuration/probes are implemented. Command Center
-provides reviewed summaries, selected mutations and admin-only interactive sessions.
+provides reviewed summaries, selected mutations, full administrator and scoped
+read-only operator sessions, approved public repository access and optional
+encrypted terminal-output recording.
 Their detailed guides remain authoritative about supported scope and limits.
 
 Runtime distribution and the initial outage-recovery follow-up are **complete**:
@@ -24,14 +27,15 @@ Do not reopen these as unfinished preload-only work.
 ## Delivery order
 
 The user intends to finish the remaining capabilities one feature at a time.
-**Next: namespace-scoped, read-only operator interactive sessions.** The order
-below is a proposed sequence after that first slice; the user can steer it.
+The three interactive features are implemented and validated. The next listed
+extension is GitOps SSH authentication; wait for the user's instruction before
+starting it. The user can steer the proposed sequence below.
 
 | Order | Feature | Status |
 |---|---|---|
-| 1 | Namespace-scoped read-only operator sessions | Planned; next implementation |
-| 2 | Controlled external repository access in interactive sessions | Planned |
-| 3 | Opt-in terminal transcript recording | Planned; storage/security decisions required |
+| 1 | Namespace-scoped read-only operator sessions | Implemented; 34 scoped/session/migration tests, 29 frontend tests and live operator browser/token/revocation checks passed |
+| 2 | Controlled external repository access in interactive sessions | Implemented; 25 repository/scoped tests and live HTTPS/OCI, default-deny and destination checks passed |
+| 3 | Opt-in terminal transcript recording | Implemented; live encrypted recording, authorization, download/delete, real scheduled expiry and combined browser controls passed |
 | 4 | GitOps SSH repository authentication | Planned |
 | 5 | GitOps Helm rendering | Planned |
 | 6 | GitOps Kustomize rendering | Planned |
@@ -49,7 +53,7 @@ below is a proposed sequence after that first slice; the user can steer it.
 
 ## 1. Scoped operator interactive sessions
 
-The existing shell deliberately grants cluster-admin to acknowledged platform
+The full-access shell deliberately grants cluster-admin to acknowledged platform
 administrators. Do not enable it for operators by simply relaxing the platform
 permission check. Kubernetes credentials must enforce the selected scope.
 
@@ -80,6 +84,15 @@ Later write-capable scoped profiles require their own resource/verb design and
 review; they are not part of this first read-only slice.
 
 ## 2–3. Interactive repository access and transcripts
+
+Implemented choices and verification are in [the interactive guide](interactive-command-center.md).
+Repository rules approve pinned public IPs over HTTPS, not HTTP hostname isolation.
+Recording captures output (including any echoed input), defaults off, requires
+consent, encrypts before display and expires after 24 hours. The combined milestone
+passed 359 shared backend regressions plus two additional cleanup safety cases,
+29 frontend tests, full Mypy for 180 files with strict changed-module checks,
+lint/format/type checks, both production builds and live Keycloak/Fedora UI tests.
+Remaining operational boundaries are tracked at the bottom of this document.
 
 **External repositories:** add opt-in administrator-managed destinations for chart
 downloads. Decide how DNS, destination pinning, redirects and registry layer hosts

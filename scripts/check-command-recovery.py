@@ -73,7 +73,11 @@ class LocalProcesses:
                 continue
             pid, command = parts
             role = None
-            argv = shlex.split(command)
+            try:
+                argv = shlex.split(command)
+            except ValueError:
+                # ps renders unrelated process arguments without shell quoting.
+                continue
             if len(argv) < 2:
                 continue
             local_python = argv[0] in {"python", sys.executable}

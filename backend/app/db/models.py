@@ -3,7 +3,7 @@
 from app.db.base import Base
 from app.modules.auditing.models import AuditEvent
 from app.modules.cluster_lifecycle.models import Cluster, ClusterMachine
-from app.modules.command_center.session_models import CommandSession
+from app.modules.command_center.session_models import CommandNamespaceGrant, CommandSession, CommandTranscriptChunk
 from app.modules.credentials.models import Credential
 from app.modules.custom_workflows.models import CustomWorkflow
 from app.modules.gitops.models import GitOpsApplication, GitOpsReview
@@ -28,7 +28,9 @@ __all__ = [
     "BrowserSession",
     "Cluster",
     "ClusterMachine",
+    "CommandNamespaceGrant",
     "CommandSession",
+    "CommandTranscriptChunk",
     "Credential",
     "CustomResourceReview",
     "CustomWorkflow",

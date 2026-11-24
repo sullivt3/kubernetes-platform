@@ -1,12 +1,44 @@
 # Interactive Command Center
 
 Operations → Command center now offers disposable interactive sessions for
-**platform administrators**. Operators continue to use reviewed summary/mutation
-commands. Interactive access requires `platform.manage`, `clusters.write`,
-`terminal.exec` and `secrets.reveal`, plus an explicit full-access acknowledgement
-and typing the selected cluster's name.
+**platform administrators**, plus namespace-scoped read-only sessions for explicitly
+assigned operators. Both require `clusters.write` and `terminal.exec`. Full access
+additionally requires `platform.manage`, `secrets.reveal`, an explicit full-access
+acknowledgement and typing the selected cluster's name.
 
-An interactive shell has **cluster-admin privileges** and can read Secrets,
+## Namespace-scoped operator access
+
+Apply migrations through `0018`, then restart API/worker/scheduler. In Command center,
+platform administrators open **Manage read-only namespace assignments**, choose an
+existing platform user and application namespace, and assign access. The user
+must already have operator permissions in the cluster's organization/project.
+Assignment does not promote a viewer or grant access to another project.
+
+Operators choose an **Assigned namespace**, acknowledge read-only access and type
+the cluster name. Their shell's kubeconfig defaults to that namespace. Its bound
+service-account token receives a dedicated Role/RoleBinding there; the runtime
+stays in a separate disposable namespace. No ClusterRoleBinding is created.
+Allowed reads are get/list/watch for Pods, Services, Events, PVCs, ResourceQuotas,
+LimitRanges, Deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs and CronJobs.
+Secrets, ConfigMaps, pod logs, writes, RBAC, TokenRequests, exec/attach, port
+forwarding, API proxies, nodes and other namespaces are excluded. Existing
+cluster-wide grants to all authenticated identities can augment Kubernetes RBAC;
+administrators must keep cluster authorization consistent with this profile.
+
+Assignments pin namespace UID, user and cluster identity. Recreating a namespace
+requires a new assignment. Creation, worker preparation, attachment and heartbeats
+check current permissions/assignment. Revoking an assignment atomically marks its
+sessions Closing and queues cleanup. Cleanup revokes subjects and removes only
+owned RoleBindings/Roles and the runtime, retaining pending state on outages or
+finalizers. Runtime grant names are protected from ordinary platform resource APIs.
+The five-second socket checks and asynchronous cleanup are not instantaneous
+revocation; token expiry remains an independent bound during outages.
+
+This profile restricts the delegated shell credential. It does not replace the
+platform's existing operator permissions in other management pages, or constrain
+cluster administrators who can modify RBAC directly.
+
+A full-access administrator shell has **cluster-admin privileges** and can read Secrets,
 change workloads and create persistent resources or credentials. Commands bypass
 individual reviews. This mode is for trusted platform administrators; a disposable
 pod is not a hostile-code sandbox against someone who controls the cluster.
@@ -78,7 +110,7 @@ that image is available on eligible cluster nodes. Unsetting it prevents new
 sessions; end existing sessions separately. Private registry access requires
 node-side authentication or preloading; this slice does not copy registry passwords
 to the runtime. It uses `IfNotPresent` with the pinned digest. Apply Alembic migration
-`0016`, then restart API, worker and scheduler. A running Celery scheduler is needed
+through `0018`, then restart API, worker and scheduler. A running Celery scheduler is needed
 for unattended cleanup.
 
 The supplied image contains checksum-verified **kubectl 1.37.2** and **Helm 4.3.2**,
@@ -89,7 +121,8 @@ sessions for older/newer clusters. An image digest alone does not establish trus
 review/build the image before configuring it.
 
 The management connection must be able to create namespaces, service accounts,
-cluster-admin ClusterRoleBindings, NetworkPolicies, pods, Secrets, TokenRequests,
+cluster-admin ClusterRoleBindings (administrator mode), namespaced Roles/RoleBindings,
+NetworkPolicies, pods, Secrets, TokenRequests,
 and pod exec connections. Granting a role requires the corresponding Kubernetes
 bind/escalation authority; the platform does not bypass Kubernetes authorization.
 A failed setup is cleaned up rather than falling back to long-lived credentials.
@@ -106,15 +139,16 @@ Sessions are single-use. A disconnected session cannot be reattached; create a n
 one after cleanup. Changing cluster or closing the terminal tab disconnects the
 socket. An unclaimed runtime is removed after its attachment window. If navigation
 occurs while preparation is pending, that window and the absolute lease still apply.
-One non-closed session per administrator/cluster and at most four per cluster are
+One non-closed session per user/cluster and at most four per cluster are
 allowed. Cleanup-pending sessions count toward the limit.
 
-The terminal can reach only the cluster API under the installed NetworkPolicy.
+By default, the terminal can reach only the cluster API under the installed NetworkPolicy.
 It uses the API Service IP with verified `kubernetes.default.svc` TLS identity,
 plus allow rules for the observed API endpoint addresses/ports. There is no DNS
 or internet egress rule. Enforcement requires a NetworkPolicy-capable CNI; the
 platform installs the policy but does not attest every CNI implementation.
-Use the Helm management page for downloading charts from external repositories.
+Optional repository access is described below; Helm management remains available
+without enabling terminal repository egress.
 A trusted cluster administrator can change these policies using their cluster
 privileges; they are not protection against malicious administrators.
 
@@ -137,14 +171,17 @@ The parent cluster kubeconfig's client key/token is never copied into the pod.
 Instead, the backend requests a **600-second TokenRequest bound to the runtime
 pod UID** and refuses a response whose expiry exceeds the requested bound. Only
 that delegated token and cluster CA go into an ephemeral Secret-mounted kubeconfig.
-The service account does not automount or refresh tokens. No session token or
-terminal transcript is stored in the platform database. See Kubernetes'
+The service account does not automount or refresh tokens. Credential provisioning
+does not persist the delegated token in the platform database. Opt-in terminal
+recordings can contain credentials a user prints; treat their output as sensitive.
+See Kubernetes'
 [service-account token documentation](https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/)
 for TokenRequest and bound-token semantics.
 
 Namespace/pod isolation does not limit an acknowledged cluster administrator's
 Kubernetes permissions: the token intentionally grants cluster-admin. The initial
-runtime is platform-admin-only; scoped interactive roles remain future work.
+full-access profile remains platform-admin-only. The read-only operator profile
+uses the separate namespace Role described above.
 
 ## Limits, revocation and recovery
 
@@ -174,10 +211,66 @@ runtime is platform-admin-only; scoped interactive roles remain future work.
   other credentials or grants; automatic cleanup does not undo that activity.
 
 Session creation, readiness, attachment and closure are audited, with the session
-ID linking to its requesting administrator and preparation operation. Raw stdin,
-stdout, commands and Secret values are not retained. Kubernetes request auditing,
-if needed, must be configured on the cluster; this feature does not claim a
-command-by-command shell transcript.
+ID linking to its requesting user and preparation operation. Without explicit
+recording consent, terminal input/output is not retained. Kubernetes request
+auditing is separate from optional output recordings and must be configured on
+the cluster when needed.
+
+## Controlled external repository access
+
+Platform administrators use **Manage repository destinations** to configure up to
+10 exact public DNS hostnames per cluster. Sessions stay API-only unless the user
+selects **Enable HTTPS repository access** before preparation. The selected policy
+is bound to the lease; saving a policy ends sessions that opted into repository
+access, and preparation/attachment/heartbeats reject a changed policy.
+
+Preparation resolves the approved names and rejects empty, oversized, mixed
+public/private, metadata, loopback and mapped-address answers. The pod gets pinned
+host aliases and NetworkPolicy rules for those public addresses on TCP 443 only.
+General DNS and unrestricted internet access remain closed. Normal client TLS
+verification remains enabled. Include every index, chart download, authentication,
+OCI blob and redirect host needed by the repository; unlisted dependencies fail
+rather than opening wider egress. Address changes require a new session.
+
+This is an **IP-level HTTPS allowlist**, not a hostname or URL firewall. Other
+virtual hosts on an approved shared/CDN IP can be reachable; do not use it as a
+guarantee against that access or against data sent to an approved destination.
+Loopback is the disposable pod itself, not the management host. Full cluster
+administrators can change Kubernetes policies; read-only operator tokens cannot.
+Enforcement requires a working NetworkPolicy-capable CNI. Private network
+repositories, custom CA configuration and automatic copying of stored Helm/GitHub
+credentials are excluded. User-supplied CLI credentials/files stay in the ephemeral
+home; recording output can expose anything echoed or printed.
+
+## Opt-in terminal transcripts
+
+Recording is **off by default**. Select the explicit consent checkbox before
+preparing a session. The UI shows recording ON/OFF while attached. Recording stores
+terminal output, including commands/passwords echoed by the TTY; it does not hook
+raw input events or provide a complete structured command audit. Redaction cannot
+make arbitrary shell output safe. Session creation records the opt-in metadata.
+
+Each output frame is encrypted with the platform SecretStore before delivery to
+the browser. Frames have bounded ordering/count, a cumulative 2 MiB limit and a
+24-hour retention deadline measured from session creation. At 4,096 frames or on
+storage/encryption failure, the session ends rather than displaying unrecorded
+output. Retain the relevant encryption keys while recordings or backups need them.
+
+**Recorded terminal output** offers paginated metadata, an explicit audited JSON
+download and deletion after the session is Closed. The author needs current
+terminal/Secret-reveal permissions and cluster/project access. Platform
+administrators can include other users' recordings within the selected scope.
+Other operators/viewers cannot download those records. Decrypted output is fetched
+only on download, outside shared query caches; responses use `no-store` and an
+attachment filename. Active downloads may be partial, and abrupt API loss can
+truncate a recording. The export includes the session status and termination reason.
+
+Expired recordings become unavailable immediately, even during a scheduler outage.
+The session reaper deletes expired encrypted chunks every ten seconds when
+worker/scheduler/database access is available. Early deletion removes chunks and
+prevents further export; lifecycle/export/delete audit metadata remains. Database
+backups and downloaded copies have independent retention. Encrypted recordings are
+included in database backups; backup access/retention must account for them.
 
 ## Validation
 
@@ -210,3 +303,20 @@ The follow-up also passed five real outage/recovery scenarios (API death,
 worker/scheduler loss, Redis interruption, validation-connection outage and a
 cleanup finalizer), plus 26 session/migration regressions. See the recovery guide
 for the exact checks, repeatable harness and remaining boundaries.
+
+The scoped-access/repository/transcript milestone subsequently passed 359 shared
+backend regressions plus two namespaced cleanup safety cases, Mypy across 180 files
+with untyped bodies checked in the new modules/routes, Ruff/format, frontend type
+checking/lint, 29 frontend tests and both production image builds. Source hashes
+were checked against the backend image and running frontend.
+
+Real Keycloak/Fedora checks covered administrator assignment/revocation controls,
+operator namespace selection and shell, delegated-token forbidden endpoint attempts,
+default internet denial, public HTTPS index and OCI chart downloads, metadata and
+unlisted destination denial, repository policy/opt-in, recording consent/status,
+encrypted persistence, author/admin export, other-operator/viewer denial, UI JSON
+download/deletion and real beat purge of an accelerated expired validation record.
+Only owned temporary resources were changed; fixtures/recordings were removed and
+the original repository policy restored. Migration `0018` is applied locally.
+Platform dependencies, both Fedora nodes and all 17 active pods were healthy after
+verification. These checks are local Fedora evidence, not HA/cloud certification.

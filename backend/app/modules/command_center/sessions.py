@@ -1,4 +1,4 @@
-"""Disposable, admin-only cluster runtimes with durable leases and owned cleanup."""
+"""Disposable administrator or scoped runtimes with durable leases and owned cleanup."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import time
 import uuid
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,7 +24,8 @@ from app.core.secrets import get_secret_store
 from app.db.session import get_engine, get_session_factory
 from app.modules.auditing import service as audit
 from app.modules.cluster_lifecycle.models import Cluster, ClusterLifecycleState
-from app.modules.command_center.session_models import CommandSession
+from app.modules.command_center import access, repositories
+from app.modules.command_center.session_models import CommandNamespaceGrant, CommandSession
 from app.modules.kubernetes.custom_resources import request
 from app.modules.kubernetes.service import api_for, connection_target
 from app.modules.kubernetes.workflows import ConnectParams
@@ -52,14 +54,19 @@ def now():
 
 
 def permissions(principal):
-    for permission in ("platform.manage", "terminal.exec", "clusters.write", "secrets.reveal"):
+    for permission in ("terminal.exec", "clusters.write"):
         require(principal, permission)
 
 
 class Start(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirm: str
-    acknowledge_cluster_admin: bool = Field(strict=True)
+    acknowledge_cluster_admin: bool = Field(default=False, strict=True)
+    profile: Literal["admin", "namespace-readonly"] = "admin"
+    target_namespace: str | None = None
+    repository_access: bool = Field(default=False, strict=True)
+    record_transcript: bool = Field(default=False, strict=True)
+    acknowledge_transcript: bool = Field(default=False, strict=True)
 
 
 class SessionParams(ConnectParams):
@@ -71,6 +78,13 @@ def namespace(row):
 
 
 def binding_path(row):
+    if row.specification.get("profile", "admin") == "namespace-readonly":
+        return (
+            "/apis/rbac.authorization.k8s.io/v1/namespaces/"
+            + row.specification["target_namespace"]
+            + "/rolebindings/"
+            + namespace(row)
+        )
     return "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/" + namespace(row)
 
 
@@ -88,6 +102,15 @@ def public(row):
         "operation_id": row.operation_id,
         "outcome": row.specification.get("outcome"),
         "image": row.specification["image"],
+        "profile": row.specification.get("profile", "admin"),
+        "target_namespace": row.specification.get("target_namespace"),
+        "repository_access": row.specification.get("repository_access", False),
+        "record_transcript": row.specification.get("record_transcript", False),
+        "transcript_available": bool(
+            row.specification.get("record_transcript")
+            and not row.specification.get("transcript_deleted")
+            and row.created_at + timedelta(hours=24) > now()
+        ),
     }
 
 
@@ -98,6 +121,18 @@ def list_sessions(service, principal, cluster_id):
         "cluster_name": cluster.name,
         "enabled": bool(get_settings().command_center_runtime_image),
         "lifetime_seconds": LIFETIME,
+        "admin": access.is_admin(principal),
+        "repository_policy": repositories.get_policy(cluster),
+        "namespaces": sorted(
+            set(
+                service.session.scalars(
+                    select(CommandNamespaceGrant.namespace).where(
+                        CommandNamespaceGrant.cluster_id == cluster_id,
+                        CommandNamespaceGrant.user_id == principal.user_id,
+                    )
+                )
+            )
+        ),
         "items": [
             public(r)
             for r in service.session.scalars(
@@ -127,9 +162,33 @@ def find(service, principal, cluster_id, session_id):
 
 def start(service, principal, cluster_id, body):
     permissions(principal)
+    if body.profile == "admin":
+        require(principal, "platform.manage")
     cluster = service.cluster(principal, cluster_id)
-    if body.confirm != cluster.name or body.acknowledge_cluster_admin is not True:
+    if body.confirm != cluster.name or (body.profile == "admin" and body.acknowledge_cluster_admin is not True):
         raise ConfirmationRequiredError("Acknowledge full cluster access and repeat the cluster name")
+    if body.record_transcript and not body.acknowledge_transcript:
+        raise ConfirmationRequiredError("Acknowledge sensitive terminal output recording before starting")
+    scope = {"profile": body.profile, "record_transcript": body.record_transcript}
+    hosts = repositories.get_policy(cluster)["hosts"]
+    if body.repository_access and not hosts:
+        raise InvalidStateError("No approved repository destinations are configured")
+    scope.update(repository_access=body.repository_access, repository_hosts=hosts if body.repository_access else [])
+    if body.profile == "admin":
+        require(principal, "platform.manage")
+        require(principal, "secrets.reveal")
+    else:
+        access.namespace_allowed(body.target_namespace or "")
+        grant = service.session.scalar(
+            select(CommandNamespaceGrant).where(
+                CommandNamespaceGrant.cluster_id == cluster_id,
+                CommandNamespaceGrant.user_id == principal.user_id,
+                CommandNamespaceGrant.namespace == body.target_namespace,
+            )
+        )
+        if not grant:
+            raise InvalidStateError("An administrator must assign this namespace first")
+        scope.update(grant_id=str(grant.id), target_namespace=grant.namespace, target_namespace_uid=grant.namespace_uid)
     settings = get_settings()
     if not settings.command_center_runtime_image:
         raise InvalidStateError("Configure a trusted digest-pinned COMMAND_CENTER_RUNTIME_IMAGE first")
@@ -169,6 +228,7 @@ def start(service, principal, cluster_id, body):
         expires_at=now() + timedelta(seconds=LIFETIME),
         specification={
             "image": settings.command_center_runtime_image,
+            **scope,
             "uids": {},
             "context_project_id": str(principal.project_id) if principal.project_id else None,
         },
@@ -181,7 +241,12 @@ def start(service, principal, cluster_id, body):
         action="command_session.create",
         resource_type="command_session",
         resource_id=row.id,
-        details={"cluster_id": str(cluster.id), "privilege": "cluster-admin"},
+        details={
+            "cluster_id": str(cluster.id),
+            "privilege": body.profile,
+            "record_transcript": body.record_transcript,
+            "repository_access": body.repository_access,
+        },
     )
     service.session.commit()
     op = service.operations.submit(
@@ -224,7 +289,8 @@ def guard(ctx):
             or cluster.lifecycle_state in {ClusterLifecycleState.DELETING, ClusterLifecycleState.DELETED}
         ):
             raise InvalidStateError("Session lease, target or requesting user changed")
-        permissions(resolve_principal(session, user, row.organization_id, row.project_id))
+        access.authorize(session, resolve_principal(session, user, row.organization_id, row.project_id), row)
+        repositories.authorize(row, cluster)
         return row.id
 
 
@@ -314,6 +380,8 @@ def provision(ctx):
             record.specification = {**record.specification, "cluster_uid": cluster_uid}
         row.specification = {**row.specification, "cluster_uid": cluster_uid}
         address, egress = api_egress(api)
+        host_aliases, repository_egress = repositories.pinned(row.specification.get("repository_hosts", []))
+        egress.extend(repository_egress)
         guard(ctx)
         ensure(
             api,
@@ -340,15 +408,40 @@ def provision(ctx):
             "account",
         )
         guard(ctx)
+        if row.specification.get("profile", "admin") == "namespace-readonly":
+            target_ns = row.specification["target_namespace"]
+            observed = request(api, "GET", "/api/v1/namespaces/" + target_ns)
+            if observed["metadata"]["uid"] != row.specification["target_namespace_uid"] or observed["metadata"].get(
+                "deletionTimestamp"
+            ):
+                raise InvalidStateError("Assigned namespace identity changed")
+            collection = "/apis/rbac.authorization.k8s.io/v1/namespaces/" + target_ns
+            ensure(
+                api,
+                row,
+                collection + "/roles",
+                {
+                    "apiVersion": "rbac.authorization.k8s.io/v1",
+                    "kind": "Role",
+                    "metadata": {"name": name},
+                    "rules": access.RULES,
+                },
+                "role",
+            )
+            binding_kind, role_kind, role_name = "RoleBinding", "Role", name
+            binding_collection = collection + "/rolebindings"
+        else:
+            binding_kind, role_kind, role_name = "ClusterRoleBinding", "ClusterRole", "cluster-admin"
+            binding_collection = "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings"
         ensure(
             api,
             row,
-            "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings",
+            binding_collection,
             {
                 "apiVersion": "rbac.authorization.k8s.io/v1",
-                "kind": "ClusterRoleBinding",
+                "kind": binding_kind,
                 "metadata": {"name": name},
-                "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "cluster-admin"},
+                "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": role_kind, "name": role_name},
                 "subjects": [{"kind": "ServiceAccount", "name": "session", "namespace": name}],
             },
             "binding",
@@ -376,6 +469,7 @@ def provision(ctx):
                 "metadata": {"name": "runtime"},
                 "spec": {
                     "restartPolicy": "Never",
+                    "hostAliases": host_aliases,
                     "activeDeadlineSeconds": LIFETIME,
                     "terminationGracePeriodSeconds": 1,
                     "serviceAccountName": "session",
@@ -457,7 +551,14 @@ def provision(ctx):
             ],
             "users": [{"name": "session", "user": {"token": issued["status"]["token"]}}],
             "contexts": [
-                {"name": "session", "context": {"cluster": "cluster", "user": "session", "namespace": "default"}}
+                {
+                    "name": "session",
+                    "context": {
+                        "cluster": "cluster",
+                        "user": "session",
+                        "namespace": row.specification.get("target_namespace", "default"),
+                    },
+                }
             ],
         }
         guard(ctx)
@@ -607,6 +708,17 @@ def cleanup_owned(session_id):
             system = request(api, "GET", "/api/v1/namespaces/kube-system")
             if system["metadata"]["uid"] != row.specification["cluster_uid"]:
                 return False
+        if row.specification.get("profile", "admin") == "namespace-readonly":
+            status, raw = api.request("GET", "/api/v1/namespaces/" + row.specification["target_namespace"])
+            if status == 200 and json.loads(raw)["metadata"]["uid"] != row.specification["target_namespace_uid"]:
+                # A replacement namespace must never inherit or lose any grant.
+                # If no session objects exist there, the old namespace already
+                # removed them and it is safe to clean only the disposable runtime.
+                for path in (binding_path(row), binding_path(row).replace("/rolebindings/", "/roles/")):
+                    if api.request("GET", path)[0] != 404:
+                        return False
+            if status not in {200, 404}:
+                return False
         # Revoke subjects before deletion, so a finalizer cannot retain the grant.
         path = binding_path(row)
         status, raw = api.request("GET", path)
@@ -631,6 +743,25 @@ def cleanup_owned(session_id):
             status, _ = api.request("GET", path)
         if status != 404:
             return False
+        if row.specification.get("profile", "admin") == "namespace-readonly":
+            path = binding_path(row).replace("/rolebindings/", "/roles/")
+            status, raw = api.request("GET", path)
+            if status == 200:
+                role = owned(json.loads(raw), row, "role")
+                request(
+                    api,
+                    "DELETE",
+                    path,
+                    body={
+                        "preconditions": {
+                            "uid": role["metadata"]["uid"],
+                            "resourceVersion": role["metadata"]["resourceVersion"],
+                        }
+                    },
+                )
+                status, _ = api.request("GET", path)
+            if status != 404:
+                return False
         status, raw = api.request("GET", ns_path(row))
         if status == 200:
             obj = owned(json.loads(raw), row, "namespace")
@@ -692,6 +823,7 @@ def close(service, principal, cluster_id, session_id):
 
 def attach(service, principal, cluster_id, session_id):
     row = find(service, principal, cluster_id, session_id)
+    access.authorize(service.session, principal, row)
     service.session.refresh(row)
     if (
         row.status != "ready"
@@ -700,6 +832,7 @@ def attach(service, principal, cluster_id, session_id):
     ):
         raise InvalidStateError("Session already attached or expired")
     cluster = service.cluster(principal, cluster_id)
+    repositories.authorize(row, cluster)
     api = api_for(service.session, service.secret_store, cluster, allow_command_sessions=True)
     pod = owned(request(api, "GET", ns_path(row) + "/pods/runtime"), row, "pod")
     if pod.get("status", {}).get("phase") != "Running":
@@ -730,6 +863,7 @@ def heartbeat(principal, session_id):
     with get_session_factory()() as session:
         scope_session(session, principal)
         row = get_row(session, session_id, lock=True)
+        access.authorize(session, principal, row)
         if (
             row.created_by != principal.subject
             or row.status != "active"
@@ -740,11 +874,15 @@ def heartbeat(principal, session_id):
         cluster = session.get(Cluster, row.cluster_id)
         if not cluster or cluster.lifecycle_state in {ClusterLifecycleState.DELETING, ClusterLifecycleState.DELETED}:
             raise InvalidStateError("Cluster is being deleted")
+        repositories.authorize(row, cluster)
         row.heartbeat_at = now()
         session.commit()
 
 
 def reap():
+    from app.modules.command_center import transcripts
+
+    transcripts.purge()
     # Filter in SQL so live sessions cannot hide later closing/expired sessions.
     stamp = now()
     with get_session_factory()() as session:

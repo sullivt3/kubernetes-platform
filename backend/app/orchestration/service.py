@@ -80,7 +80,6 @@ class OperationService:
         if workflow_type.startswith("cluster.crd."):
             require(principal, "organization.manage")
         if workflow_type == "cluster.command.session.prepare":
-            require(principal, "platform.manage")
             require(principal, "terminal.exec")
             require(principal, "clusters.write")
         if workflow_type in {"cluster.command", "cluster.command.mutate"}:
@@ -249,7 +248,8 @@ class OperationService:
     def retry(self, principal: Principal, operation_id: uuid.UUID) -> Operation:
         op = self._get_for_update(principal, operation_id)
         if op.type == "cluster.command.session.prepare":
-            require(principal, "platform.manage")
+            require(principal, "terminal.exec")
+            require(principal, "clusters.write")
         if op.type in {"cluster.command", "cluster.command.mutate"}:
             require(principal, "terminal.exec")
             require(principal, "clusters.write")
