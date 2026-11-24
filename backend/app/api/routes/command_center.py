@@ -41,7 +41,7 @@ def run(
     principal: Principal = Depends(get_principal),
     service: KubernetesService = Depends(get_kubernetes_service),
 ):
-    commands.find(service, principal, cluster_id, body.review_id)
+    row = commands.find(service, principal, cluster_id, body.review_id)
     return OperationDetail.model_validate(
         tasks.submit(
             service,
@@ -50,7 +50,7 @@ def run(
             body.review_id,
             body.confirm,
             commands.CATEGORY,
-            "cluster.command",
+            "cluster.command" if row.specification["summary"]["read_only"] else "cluster.command.mutate",
             lambda _: 1,
         )
     )

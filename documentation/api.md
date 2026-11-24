@@ -470,12 +470,14 @@ tracked operation for namespace grant/configuration reconciliation.
 
 All endpoints are cluster-scoped under `/clusters/{cluster_id}/commands` and
 require operator/administrator command access. See [Command Center](command-center.md)
-for the supported read-only command subset and limits.
+for the supported summary/mutation command subset and limits.
 
 - `POST /reviews`: `{command}` → canonical command, target name, review ID and expiry;
-  creates an author-bound encrypted review without executing a cluster request.
+  creates an author-bound encrypted review. Reads do not contact the cluster; mutations
+  inspect targets and run Kubernetes dry runs or Helm server simulation without applying the change.
 - `POST /run`: `{review_id, confirm}` → tracked operation (`202`); confirmation is
-  the cluster name. A review can be submitted once, idempotently.
+  the cluster name for reads or the target workload/release name for mutations.
+  A review can be submitted once, idempotently. Mutations use `cluster.command.mutate`.
 - `GET /history`: current author's latest 20 command reviews and operation links.
 - `GET /{review_id}/output`: explicitly audited private output retrieval. `result`
   remains null until a result is available; completed output includes timestamp,

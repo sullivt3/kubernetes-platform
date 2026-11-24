@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -258,6 +259,10 @@ def submit(
 
 def execute(ctx: StepContext) -> dict:
     p: HelmParams = ctx.params  # type: ignore[assignment]
+    return execute_plan(ctx, p)
+
+
+def execute_plan(ctx: StepContext, p: HelmParams, before_mutation: Callable[[], None] | None = None) -> dict:
     ctx.check_cancelled()
     with ctx.db() as session:
         cluster = session.get(Cluster, p.cluster_id)
@@ -358,6 +363,8 @@ def execute(ctx: StepContext) -> dict:
             ):
                 raise StepFailedError("Release changed while preparing the action; preview again")
             ctx.info(f"Executing Helm {p.action} for {ns}/{release}; values and raw Helm output are withheld")
+            if before_mutation:
+                before_mutation()
             helm.run(args, timeout=spec["timeout_seconds"] + 30)
             current = helm.release(ns, release)
             if p.action == "uninstall":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import time
 import uuid
@@ -191,6 +192,70 @@ def check_cluster(api):
     return {"ready_nodes": len(nodes)}
 
 
+def mutation_fingerprint(obj):
+    """Diff normalization alone omits UID and last-applied; writes must bind both."""
+    metadata = obj.get("metadata") or {}
+    material = {
+        "content": fingerprint(obj),
+        "uid": metadata.get("uid"),
+        "last_applied": (metadata.get("annotations") or {}).get("kubectl.kubernetes.io/last-applied-configuration"),
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+
+
+def prepare_mutation(api, step, live, marker):
+    """Review one bounded change, preserving all unrelated fields and metadata."""
+    if step.action not in {"resource.scale", "resource.restart"} or live["metadata"].get("deletionTimestamp"):
+        raise InvalidStateError("Invalid or deleting mutation target")
+    desired = copy.deepcopy(live)
+    desired.pop("status", None)
+    desired["metadata"].pop("managedFields", None)
+    if step.action == "resource.scale":
+        desired.setdefault("spec", {})["replicas"] = step.replicas
+    else:
+        desired["spec"]["template"].setdefault("metadata", {}).setdefault("annotations", {})[
+            "kubectl.kubernetes.io/restartedAt"
+        ] = datetime.now(UTC).isoformat()
+    desired["metadata"].setdefault("annotations", {})[MARKER] = marker
+    path = path_for(step)
+    planned = request(api, "PUT", path, body=desired, params={"dryRun": "All", "fieldValidation": "Strict"})
+    if mutation_fingerprint(planned) != mutation_fingerprint(desired):
+        raise InvalidStateError("Admission changes fields beyond the bounded action")
+    return {
+        "path": path,
+        "uid": live["metadata"]["uid"],
+        "before": mutation_fingerprint(live),
+        "desired": desired,
+        "after": mutation_fingerprint(planned),
+        "hash_version": 2,
+        "marker": marker,
+    }, planned
+
+
+def apply_mutation(api, item, reauthorize):
+    """UID/content guards plus resourceVersion CAS; replay only an exact owned result."""
+    reauthorize()
+    if item.get("hash_version") != 2:
+        raise InvalidStateError("Mutation review predates stronger content guards; review again")
+    live = request(api, "GET", item["path"])
+    if live["metadata"]["uid"] != item["uid"] or live["metadata"].get("deletionTimestamp"):
+        raise InvalidStateError("Mutation target identity changed")
+    already = (live["metadata"].get("annotations") or {}).get(MARKER) == item["marker"]
+    if mutation_fingerprint(live) != (item["after"] if already else item["before"]):
+        raise ConflictError("Mutation target changed after review")
+    if not already:
+        desired = copy.deepcopy(item["desired"])
+        desired["metadata"]["resourceVersion"] = live["metadata"]["resourceVersion"]
+        planned = request(api, "PUT", item["path"], body=desired, params={"dryRun": "All", "fieldValidation": "Strict"})
+        if mutation_fingerprint(planned) != item["after"]:
+            raise ConflictError("Admission changed after review; review again")
+        reauthorize()
+        live = request(api, "PUT", item["path"], body=desired, params={"fieldValidation": "Strict"})
+    if mutation_fingerprint(live) != item["after"]:
+        raise ConflictError("Admission changed the accepted action; completed writes are retained")
+    return live
+
+
 def preview(service, principal, cluster_id, workflow_id):
     require(principal, "clusters.write")
     cluster, api = service.api(principal, cluster_id)
@@ -211,20 +276,8 @@ def preview(service, principal, cluster_id, workflow_id):
                 raise InvalidStateError("A workflow target is being deleted")
             item.update(path=path, uid=live["metadata"]["uid"], before=fingerprint(live))
             if step.action in {"resource.scale", "resource.restart"}:
-                desired = copy.deepcopy(live)
-                desired.pop("status", None)
-                desired["metadata"].pop("managedFields", None)
-                if step.action == "resource.scale":
-                    desired.setdefault("spec", {})["replicas"] = step.replicas
-                else:
-                    desired["spec"]["template"].setdefault("metadata", {}).setdefault("annotations", {})[
-                        "kubectl.kubernetes.io/restartedAt"
-                    ] = datetime.now(UTC).isoformat()
-                desired["metadata"].setdefault("annotations", {})[MARKER] = nonce + ":" + str(index)
-                planned = request(api, "PUT", path, body=desired, params={"dryRun": "All", "fieldValidation": "Strict"})
-                if fingerprint(planned) != fingerprint(desired):
-                    raise InvalidStateError("Admission changes fields beyond the bounded workflow action")
-                item.update(desired=desired, after=fingerprint(planned), marker=nonce + ":" + str(index))
+                prepared, planned = prepare_mutation(api, step, live, nonce + ":" + str(index))
+                item.update(prepared)
                 snapshots[path] = planned
         steps.append(item)
     service.session.refresh(row)
@@ -281,17 +334,12 @@ def execute_step(ctx):
                     raise InvalidStateError("Wait target changed")
             result = {"ready": True, "uid": item["uid"]}
         else:
-            already = (live["metadata"].get("annotations") or {}).get(MARKER) == item["marker"]
-            if fingerprint(live) != (item["after"] if already else item["before"]):
-                raise ConflictError("Workflow target changed after review")
-            if not already:
-                desired = copy.deepcopy(item["desired"])
-                desired["metadata"]["resourceVersion"] = live["metadata"]["resourceVersion"]
+
+            def reauthorize():
                 tasks.access(ctx, "custom_workflow")
                 guard(ctx, payload)
-                live = request(api, "PUT", item["path"], body=desired, params={"fieldValidation": "Strict"})
-            if fingerprint(live) != item["after"]:
-                raise ConflictError("Admission changed the accepted action after review; completed writes are retained")
+
+            live = apply_mutation(api, item, reauthorize)
             result = {"uid": live["metadata"]["uid"], "accepted": True}
     tasks.progress(ctx, **{ctx.step_key: "complete"})
     if index == ctx.params.step_count - 1:

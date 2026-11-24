@@ -1,4 +1,4 @@
-"""Reviewed, read-only command subset. Kubernetes commands use the REST transport."""
+"""Reviewed bounded command subset. Kubernetes commands use the REST transport."""
 
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ from typing import Any, NoReturn
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy import select
 
-from app.core.errors import InvalidStateError, NotFoundError, ValidationFailedError
+from app.core.errors import InvalidStateError, NotFoundError, PlatformError, ValidationFailedError
 from app.core.secrets import SealedSecret
 from app.modules.auditing import service as audit
 from app.modules.cluster_lifecycle.models import Cluster
+from app.modules.command_center import mutations
 from app.modules.helm.runtime import Runner, public_history, public_release
 from app.modules.kubernetes import reviewed_operations as tasks
 from app.modules.kubernetes.client import KubeClient
@@ -67,7 +68,9 @@ def invalid() -> NoReturn:
     raise ValidationFailedError(
         "Supported: kubectl get RESOURCE [NAME] [-n NAMESPACE | -A], "
         "helm list [-n NAMESPACE | -A], helm history RELEASE [-n NAMESPACE]. "
-        "Only documented resource summaries are supported; other flags and shell syntax are refused."
+        "Mutations: kubectl scale deployment|statefulset NAME --replicas=N [-n NAMESPACE], "
+        "kubectl rollout restart deployment NAME [-n NAMESPACE], helm rollback RELEASE REVISION [-n NAMESPACE]. "
+        "Other flags and shell syntax are refused."
     )
 
 
@@ -78,8 +81,17 @@ def parse(text: str) -> dict[str, Any]:
     if len(tokens) < 2:
         invalid()
     tool, verb, *rest = tokens
-    if (tool, verb) not in {("kubectl", "get"), ("helm", "list"), ("helm", "history")}:
+    if (tool, verb) not in {
+        ("kubectl", "get"),
+        ("helm", "list"),
+        ("helm", "history"),
+        ("kubectl", "scale"),
+        ("kubectl", "rollout"),
+        ("helm", "rollback"),
+    }:
         invalid()
+    replicas = None
+    revision = None
     positional = []
     namespace = None
     all_namespaces = False
@@ -96,6 +108,13 @@ def parse(text: str) -> dict[str, Any]:
                 invalid()
             if not DNS.fullmatch(namespace):
                 invalid()
+        elif token == "--replicas" or token.startswith("--replicas="):
+            if (tool, verb) != ("kubectl", "scale") or replicas is not None:
+                invalid()
+            value = token.split("=", 1)[1] if "=" in token else rest.pop(0) if rest else ""
+            if not re.fullmatch(r"[0-9]{1,4}", value) or int(value) > 1000:
+                invalid()
+            replicas = int(value)
         elif token in {"-A", "--all-namespaces"}:
             if namespace is not None or all_namespaces:
                 invalid()
@@ -105,10 +124,23 @@ def parse(text: str) -> dict[str, Any]:
         else:
             positional.append(token)
     resource = name = None
+    mutating = verb in {"scale", "rollout", "rollback"}
+    if mutating and all_namespaces:
+        invalid()
     if tool == "kubectl":
+        if verb == "rollout" and (not positional or positional.pop(0) != "restart"):
+            invalid()
         if not 1 <= len(positional) <= 2:
             invalid()
         resource = ALIASES.get(positional[0], positional[0])
+        if mutating:
+            resource = {"deployment": "deployments", "statefulset": "statefulsets"}.get(resource, resource)
+            if len(positional) != 2 or resource not in {"deployments", "statefulsets"}:
+                invalid()
+            if verb == "rollout" and resource != "deployments":
+                invalid()
+            if verb == "scale" and replicas is None:
+                invalid()
         if resource not in RESOURCES:
             invalid()
         if len(positional) == 2:
@@ -119,6 +151,10 @@ def parse(text: str) -> dict[str, Any]:
         if positional:
             invalid()
     else:
+        if verb == "rollback":
+            if len(positional) != 2 or not re.fullmatch(r"[1-9][0-9]{0,5}", positional[1]):
+                invalid()
+            revision = int(positional.pop())
         if len(positional) != 1 or all_namespaces:
             invalid()
         name = positional[0]
@@ -127,11 +163,15 @@ def parse(text: str) -> dict[str, Any]:
     if name and (not NAME.fullmatch(name) or ".." in name or all_namespaces):
         invalid()
     namespace = None if all_namespaces or (resource and not RESOURCES[resource][1]) else namespace or "default"
-    canonical = f"{tool} {verb}"
+    canonical = f"{tool} {verb}" + (" restart" if verb == "rollout" else "")
     if resource:
         canonical += " " + resource
     if name:
         canonical += " " + name
+    if replicas is not None:
+        canonical += " --replicas=" + str(replicas)
+    if revision is not None:
+        canonical += " " + str(revision)
     if all_namespaces:
         canonical += " -A"
     elif namespace:
@@ -144,6 +184,8 @@ def parse(text: str) -> dict[str, Any]:
         "name": name,
         "namespace": namespace,
         "all_namespaces": all_namespaces,
+        **({"replicas": replicas} if replicas is not None else {}),
+        **({"revision": revision} if revision is not None else {}),
     }
 
 
@@ -152,6 +194,26 @@ def review(service, principal, cluster_id, body):
     require(principal, "clusters.write")
     cluster = service.cluster(principal, cluster_id)
     plan = parse(body.command.get_secret_value())
+    if mutations.is_mutation(plan):
+        try:
+            payload, summary = mutations.review(service, principal, cluster, plan)
+        except PlatformError as exc:
+            error = PlatformError(
+                "Mutation review failed. Check target identity, permissions, admission, revision and API readiness. "
+                "Raw responses withheld."
+            )
+            error.status_code = exc.status_code
+            error.code = "command_review_failed"
+            raise error from None
+        return tasks.persist(
+            service,
+            principal,
+            cluster,
+            CATEGORY,
+            plan["name"],
+            payload,
+            {"command": plan["command"], "read_only": False, "cluster_name": cluster.name, **summary},
+        )
     return tasks.persist(
         service, principal, cluster, CATEGORY, cluster.name, plan, {"command": plan["command"], "read_only": True}
     )
@@ -267,13 +329,21 @@ def kubernetes_read(api, plan):
 
 def execute(ctx):
     api, payload, _ = tasks.access(ctx, CATEGORY)
-    if parse(payload["command"]) != {key: value for key, value in payload.items() if key != "result"}:
+    plan = parse(payload["command"])
+    changing = mutations.is_mutation(plan)
+    expected_step = "mutate" if changing else "read"
+    if ctx.step_key != expected_step:
+        raise InvalidStateError("Command execution mode differs from review")
+    if plan != {key: value for key, value in payload.items() if key not in {"result", "mutation"}}:
         raise InvalidStateError("Command plan changed")
     tasks.progress(ctx, started=True)
     if "result" in payload:
         result = payload["result"]
     else:
-        if payload["tool"] == "kubectl":
+        if changing:
+            rows = [mutations.execute(ctx, api, payload)]
+            truncated = False
+        elif payload["tool"] == "kubectl":
             rows, truncated = kubernetes_read(api, payload)
         else:
             with ctx.db() as session:
@@ -326,5 +396,17 @@ workflow_registry.register(
         destructive=True,
         target=lambda p: OperationTarget("cluster", str(p.cluster_id), p.cluster_name),
         plan=lambda p: [StepDefinition("read", "Read reviewed cluster summary", tasks.safe_step(execute))],
+    )
+)
+
+workflow_registry.register(
+    WorkflowDefinition(
+        type="cluster.command.mutate",
+        title="Reviewed cluster change",
+        description="Execute a dry-run-reviewed, identity-bound cluster change.",
+        params_model=tasks.ReviewedParams,
+        destructive=True,
+        target=lambda p: OperationTarget("cluster", str(p.cluster_id), p.cluster_name),
+        plan=lambda p: [StepDefinition("mutate", "Apply and verify reviewed cluster change", tasks.safe_step(execute))],
     )
 )

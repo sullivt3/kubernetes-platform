@@ -125,7 +125,7 @@ These are existing decisions/deviations from the original prompt. Do not replace
 
 ## Current status
 
-Context reviewed **2026-11-23**. The monitoring/logging milestone is implemented and live-validated. Phase 8 remains in progress. Check current HEAD and update this file when milestones change.
+Context reviewed **2026-11-24**. The monitoring/logging milestone is implemented and live-validated. Phase 8 remains in progress. Check current HEAD and update this file when milestones change.
 
 | Phase | Implemented scope / remaining boundary |
 |---|---|
@@ -137,7 +137,7 @@ Context reviewed **2026-11-23**. The monitoring/logging milestone is implemented
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; reviewed custom workflows, native/manual storage migration and Service-backed conversion configuration are implemented; a focused Command Center summary runner is implemented; reviewed command mutations, interactive sessions, broader workflow actions and controller integrations remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
+| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; reviewed custom workflows, native/manual storage migration and Service-backed conversion configuration are implemented; a focused Command Center summary runner is implemented; selected reviewed command mutations are implemented; interactive sessions, broader workflow actions and controller integrations remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -655,13 +655,65 @@ in the new service/routes. Frontend type checks/lint, 29 tests and both producti
 image builds passed. Actual Keycloak operator browser/Celery/Fedora validation
 passed review, typed confirmation, node-summary retrieval, edited-preview
 invalidation, viewer denial and cross-author output isolation. Real pinned Helm
-list passed; no existing Fedora release was available for live history, which
-retains simulator coverage only. Both Fedora nodes and all 17 active pods were
+list passed. The user subsequently confirmed successful live Helm history
+retrieval through Command Center on the Fedora test cluster; this closes the
+initial history-validation gap (user-reported verification). Both Fedora nodes and all 17 active pods were
 Ready afterwards; local platform readiness passed. API, worker, scheduler and
 production UI run this slice. Publishable-file local-secret checks passed.
 Read-only command history from the live drill is retained; no cluster workloads
 were created or changed. Inspect Git history/status for this milestone and later
 changes.
+
+
+Command Center reviewed mutations (2026-11-24): supports Deployment/StatefulSet
+scale (0–1,000 replicas), Deployment rollout restart and Helm rollback to an
+explicit older successful revision. Parser remains a strict allowlist with no
+shell, credentials/context flags, arbitrary files, hooks, force or deletion.
+Reads retain cluster-name confirmation; mutations require target workload/release
+name confirmation and display cluster, namespace, identity and intended changes.
+Mode is selected from the stored review and uses `cluster.command.mutate`.
+
+Kubernetes commands share `prepare_mutation`/`apply_mutation` with custom workflows:
+review server dry-run, UID/content binding, repeat dry-run before mutation,
+resourceVersion CAS and exact recovery marker/content recognition. Version 2
+mutation fingerprints additionally bind UID and last-applied annotations omitted
+from display diffs. Older pending mutation reviews require a fresh review; reads
+and completed results remain usable. Admission drift
+now prevents a custom-workflow write rather than only reporting a changed accepted
+write; the regression assertion was updated accordingly. Results report Accepted,
+not rollout readiness. Whole reviewed objects remain encrypted, never public logs.
+
+Helm rollback reuses `HelmPlan` and the existing executor via `execute_plan` with a
+final command guard. Current/target revision Secret contents and plan spec are
+bound. Review displays target inventory and current resources absent from it.
+Review/execution use Helm server simulation with hooks disabled. This does not
+prove admission on every resource or all deletion effects; external Helm writers
+must be paused, because revision checks do not fence them. Current human access,
+review expiry and revision content are rechecked before mutation. Existing owned
+revision recovery avoids repeating a completed rollback. Accepted changes remain
+on failure/cancellation. Install/upgrade/uninstall remain on Helm management UI;
+interactive sessions remain planned. See `documentation/command-center.md` and
+`tests/test_command_mutations.py`. No new migration is required.
+Validation: 80 final mutation/workflow tests passed, including all new parser,
+confirmation, encryption, UID/spec/admission drift, resourceVersion race,
+StatefulSet, retry-after-acceptance, role revocation (queued and after dry run),
+Helm history-content and review-error redaction cases. The earlier broad run
+passed 209 backend cases; its obsolete admission-after-write expectation was
+updated and passed in the final run. Ruff/format, Mypy for 173 files (untyped
+bodies checked in command services/routes and shared workflow helpers), frontend
+type checks/lint, 29 frontend tests and both production images passed. Built
+backend and running frontend hashes match final source.
+
+Actual Keycloak GUI/worker/Fedora validation passed typed target confirmation,
+non-mutating Kubernetes review, scale/restart at zero replicas, stale-content
+refusal, Helm server simulation without revision writes, and rollback of a new
+isolated zero-replica chart from revision 2 to revision 1 creating deployed
+revision 3. Viewer mutation review was denied. No fixture pods were started.
+The UID-owned temporary namespace/release and private fixture reviews/plans were
+removed; operation/audit history remains. Both Fedora nodes and all 17 active
+pods were Ready after cleanup; platform readiness and publishable-file/log secret
+checks passed. API, worker, scheduler and production UI run this milestone.
+Inspect Git status/history for this milestone and subsequent work.
 
 ## Local development and checks
 

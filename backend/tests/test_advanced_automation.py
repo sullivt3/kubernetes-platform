@@ -133,8 +133,8 @@ class AutomationStore(DefinitionStore):
             result["status"] = payload["status"]
             result["metadata"] = copy.deepcopy(payload["metadata"])
             return self._ok(self.put(result))
-        if path == DEPLOY and method == "PUT":
-            current = self.objects[DEPLOY]
+        if path.startswith("/apis/apps/v1/namespaces/") and path in self.objects and method == "PUT":
+            current = self.objects[path]
             if payload["metadata"]["resourceVersion"] != current["metadata"]["resourceVersion"]:
                 return self._err(409, SENTINEL)
             result = copy.deepcopy(payload)
@@ -836,7 +836,7 @@ def test_unreviewed_admission_mutations_block_bounded_actions(env):
     assert response.status_code == 409 and env[2].objects[DEPLOY]["spec"]["replicas"] == 0
 
 
-def test_changed_admission_after_review_stops_later_workflow_steps(env):
+def test_changed_admission_after_review_stops_before_workflow_write(env):
     row = save_workflow(
         env,
         [{"action": "resource.scale", "name": "proof", "replicas": 2}, {"action": "resource.restart", "name": "proof"}],
@@ -847,7 +847,7 @@ def test_changed_admission_after_review_stops_later_workflow_steps(env):
     env[2].mutate_workload = True
     submitted = env[0].post(path + "/run", json={"review_id": preview.json()["id"], "confirm": row["name"]})
     operation = env[0].get("/api/v1/operations/" + submitted.json()["id"]).json()
-    assert operation["status"] == "failed" and env[2].objects[DEPLOY]["spec"]["replicas"] == 7
+    assert operation["status"] == "failed" and env[2].objects[DEPLOY]["spec"]["replicas"] == 0
     assert (
         not env[2]
         .objects[DEPLOY]["spec"]["template"]["metadata"]
