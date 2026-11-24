@@ -265,6 +265,17 @@ def _target(
 
 
 class TestHttpsClient:
+    def test_bounded_response_over_verified_tls(self, tls_server: dict[str, Any]) -> None:
+        api = kclient.KubeClient(_target(tls_server, server_name="kube.test", token="t0k"))
+        try:
+            status, data = api.request("GET", "/version", max_response_bytes=1024, timeout=2)
+            assert status == 200 and json.loads(data)["gitVersion"] == "v1.37.2"
+            with pytest.raises(kclient.KubernetesAPIError, match="size limit"):
+                api.request("GET", "/version", max_response_bytes=5, timeout=2)
+            assert kclient.get_json(api, "/version")["gitVersion"] == "v1.37.2"
+        finally:
+            api.close()
+
     def test_tls_server_name_allows_reaching_through_another_address(self, tls_server: dict[str, Any]) -> None:
         api = kclient.KubeClient(_target(tls_server, server_name="kube.test", token="t0k"))
         assert kclient.get_json(api, "/version") == {"gitVersion": "v1.37.2"}

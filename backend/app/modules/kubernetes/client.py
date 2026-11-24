@@ -147,6 +147,7 @@ class KubeClient:
         body: Any = None,
         content_type: str = "application/json",
         timeout: float | None = None,
+        max_response_bytes: int | None = None,
     ) -> tuple[int, bytes]:
         url = self._base + path
         if params:
@@ -159,13 +160,14 @@ class KubeClient:
         if body is not None:
             headers["Content-Type"] = content_type
             payload = body if isinstance(body, bytes) else json.dumps(body).encode()
+        deadline = time.monotonic() + (timeout or 20)
         try:
             response = self._pool.request(
                 method,
                 url,
                 body=payload,
                 headers=headers,
-                preload_content=True,
+                preload_content=max_response_bytes is None,
                 timeout=urllib3.Timeout(connect=self._timeout.connect_timeout, read=timeout) if timeout else None,
             )
         except urllib3.exceptions.SSLError as exc:
@@ -176,12 +178,30 @@ class KubeClient:
             ) from exc
         except urllib3.exceptions.HTTPError as exc:
             raise ClusterUnreachableError(f"Cannot reach the Kubernetes API at {self.target.server}: {exc}") from exc
+        if max_response_bytes is not None:
+            try:
+                chunks = bytearray()
+                while True:
+                    if time.monotonic() > deadline:
+                        raise KubernetesAPIError("Kubernetes response exceeded the configured time limit")
+                    chunk = response.read1(min(65536, max_response_bytes + 1 - len(chunks)), decode_content=True)
+                    if not chunk:
+                        break
+                    chunks.extend(chunk)
+                    if len(chunks) > max_response_bytes:
+                        raise KubernetesAPIError("Kubernetes response exceeded the configured size limit")
+                data = bytes(chunks)
+            finally:
+                response.close()
+                response.release_conn()
+        else:
+            data = response.data
         if response.status in (401, 403):
             raise ClusterAuthError(
                 f"The Kubernetes API rejected the platform's credentials (HTTP {response.status})",
                 details={"path": path},
             )
-        return response.status, response.data
+        return response.status, data
 
     def stream(self, path: str, params: dict[str, Any] | None = None, *, max_seconds: float = 900) -> Any:
         """Yield decoded lines from a long-lived response (e.g. pod logs with follow=true)."""

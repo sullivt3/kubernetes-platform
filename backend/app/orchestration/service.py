@@ -79,6 +79,9 @@ class OperationService:
             require(principal, "organization.manage")
         if workflow_type.startswith("cluster.crd."):
             require(principal, "organization.manage")
+        if workflow_type == "cluster.command":
+            require(principal, "terminal.exec")
+            require(principal, "clusters.write")
         if workflow_type == "cluster.custom_workflow" or workflow_type.startswith("cluster.crd."):
             require(principal, "clusters.write")
         workflow = self.registry.get(workflow_type)
@@ -241,6 +244,9 @@ class OperationService:
 
     def retry(self, principal: Principal, operation_id: uuid.UUID) -> Operation:
         op = self._get_for_update(principal, operation_id)
+        if op.type == "cluster.command":
+            require(principal, "terminal.exec")
+            require(principal, "clusters.write")
         if op.type.startswith(("cluster.remediation.", "cluster.crd.")):
             require(principal, "organization.manage")
         if op.status not in (OperationStatus.FAILED, OperationStatus.CANCELLED):

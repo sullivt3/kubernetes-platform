@@ -465,3 +465,22 @@ disk usage, disk I/O, network receive and network transmit.
 namespaces and available namespaces. `POST /clusters/{id}/logs/collection`
 accepts `{namespaces: [...]}`, requires cluster write access, and returns a
 tracked operation for namespace grant/configuration reconciliation.
+
+### Command Center
+
+All endpoints are cluster-scoped under `/clusters/{cluster_id}/commands` and
+require operator/administrator command access. See [Command Center](command-center.md)
+for the supported read-only command subset and limits.
+
+- `POST /reviews`: `{command}` → canonical command, target name, review ID and expiry;
+  creates an author-bound encrypted review without executing a cluster request.
+- `POST /run`: `{review_id, confirm}` → tracked operation (`202`); confirmation is
+  the cluster name. A review can be submitted once, idempotently.
+- `GET /history`: current author's latest 20 command reviews and operation links.
+- `GET /{review_id}/output`: explicitly audited private output retrieval. `result`
+  remains null until a result is available; completed output includes timestamp,
+  selected summary rows and truncation. Returns `Cache-Control: no-store`.
+
+Operation metadata never includes raw command output. Use the existing operation
+cancellation endpoint to request cancellation; a pending Kubernetes read may finish
+its bounded socket request before observing it.

@@ -137,7 +137,7 @@ Context reviewed **2026-11-23**. The monitoring/logging milestone is implemented
 | 5 — Lifecycle | Node add/remove, HA, load balancing, upgrades/deletion, cloud VM provisioning, managed EKS/AKS/GKE lifecycle and additional distribution paths implemented, with preview boundaries. |
 | 6 — Networking/storage | Services, Ingress, Gateway API, NetworkPolicies, DNS diagnostics, PV/PVC/StorageClasses/attachments/CSI inventory, NFS CSI lifecycle, quotas and limits implemented. Dedicated CSI integrations beyond NFS are absent. |
 | 7 — Enterprise | **In progress.** OIDC, browser sessions, database-controlled organization/project memberships, application permissions, tenant scoping and administration UI implemented. Validation and further features remain pending. |
-| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; reviewed custom workflows, native/manual storage migration and Service-backed conversion configuration are implemented; broader workflow actions, controller integrations and command center remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
+| 8 — Advanced operations | **In progress.** Monitoring/logging, approval-controlled stateless pod remediation and Helm release management implemented. Helm covers public/private HTTPS repositories and OCI registries, encrypted authentication, chart/version browsing, editable values reviews and install/upgrade/rollback/uninstall. GitOps manual sync, opt-in automatic reconciliation and guarded pruning are implemented; installed CRD discovery and reviewed instance CRUD are implemented; guarded lifecycle of platform-installed definitions is implemented; reviewed custom workflows, native/manual storage migration and Service-backed conversion configuration are implemented; a focused Command Center summary runner is implemented; reviewed command mutations, interactive sessions, broader workflow actions and controller integrations remain planned. External alert notifications and observability host-loss recovery are scheduled towards the end of Phase 8. |
 
 Preview integrations perform real operations; they are not demonstrations. Documentation records live local Docker/kubeadm validation, including HA failover. Cloud providers, Proxmox, vSphere, newer distribution paths and NFS CSI still require relevant live validation. Simulator tests do not establish production readiness.
 
@@ -630,6 +630,38 @@ separate. Final publishable-file/application-log secret checks passed; private T
 material and fixture state were removed. Both Fedora nodes and all 17 active pods
 were Ready at final verification. Inspect the Git history for the recorded
 automation milestone and any subsequent changes.
+
+
+Command Center first stage (2026-11-23): Operations → Command center provides
+reviewed, read-only summary commands: `kubectl get` for an explicit built-in
+resource allowlist and `helm list`/`helm history`. Kubernetes syntax uses the
+existing REST client (no kubectl executable); Helm uses the pinned private runner.
+See `documentation/command-center.md`, `modules/command_center/service.py` and
+`tests/test_command_center.py`. Reviews/results reuse the encrypted `0014` table;
+no migration. The worker rechecks the original human's current permissions and
+expiry; output/history are author-bound. Ordinary operation data contains only
+execution metadata. Output is explicitly fetched outside the shared query cache.
+The parser rejects arbitrary flags, Secrets/configuration, endpoints, kubeconfigs,
+impersonation, files, shell syntax and mutations. Lists/output/network reads and
+Helm execution are bounded; cancellation uses the existing operation engine.
+The staged roadmap is in README: focused summaries first, then selected reviewed
+mutations, then separately designed isolated interactive sessions. Broader CLI
+compatibility, streaming and interactive shell access are not implemented here.
+Validation: 112 final Command Center/Kubernetes/Helm backend tests passed; the
+preceding shared regression run also passed identity, orchestration and advanced
+automation cases (its two Command Center fixture failures were corrected and
+rerun). Ruff/format and full Mypy for 172 files passed, with untyped bodies checked
+in the new service/routes. Frontend type checks/lint, 29 tests and both production
+image builds passed. Actual Keycloak operator browser/Celery/Fedora validation
+passed review, typed confirmation, node-summary retrieval, edited-preview
+invalidation, viewer denial and cross-author output isolation. Real pinned Helm
+list passed; no existing Fedora release was available for live history, which
+retains simulator coverage only. Both Fedora nodes and all 17 active pods were
+Ready afterwards; local platform readiness passed. API, worker, scheduler and
+production UI run this slice. Publishable-file local-secret checks passed.
+Read-only command history from the live drill is retained; no cluster workloads
+were created or changed. Inspect Git history/status for this milestone and later
+changes.
 
 ## Local development and checks
 

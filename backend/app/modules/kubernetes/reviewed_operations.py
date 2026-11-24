@@ -23,7 +23,7 @@ from app.modules.organizations.policy import require
 from app.orchestration.models import Operation
 from app.orchestration.workflow import OperationCancelledError, StepFailedError
 
-CATEGORIES = {"custom_workflow", "storage_migration", "conversion_webhook"}
+CATEGORIES = {"custom_workflow", "storage_migration", "conversion_webhook", "command_center"}
 
 
 class ReviewedParams(ConnectParams):
@@ -54,7 +54,9 @@ def persist(service, principal, cluster, category, name, payload, summary):
 
 def submit(service, principal, cluster_id, review_id, confirm, category, operation_type, count):
     require(principal, "clusters.write")
-    if category != "custom_workflow":
+    if category == "command_center":
+        require(principal, "terminal.exec")
+    elif category != "custom_workflow":
         require(principal, "organization.manage")
     cluster = service.cluster(principal, cluster_id)
     row = service.session.scalar(
@@ -116,9 +118,13 @@ def access(ctx, category):
             raise InvalidStateError("The requesting user is no longer active")
         principal = resolve_principal(session, user, row.organization_id, row.project_id)
         require(principal, "clusters.write")
-        if category != "custom_workflow":
+        if category == "command_center":
+            require(principal, "terminal.exec")
+        elif category != "custom_workflow":
             require(principal, "organization.manage")
-        if not row.specification.get("progress") and row.expires_at < datetime.now(UTC):
+        if (category == "command_center" or not row.specification.get("progress")) and row.expires_at < datetime.now(
+            UTC
+        ):
             raise InvalidStateError("Review expired before execution")
         payload = json.loads(ctx.secret_store.unseal(SealedSecret(row.key_id, row.ciphertext)))
         api = getattr(ctx, "_reviewed_api", None)

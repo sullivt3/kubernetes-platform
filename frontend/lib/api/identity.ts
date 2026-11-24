@@ -33,6 +33,7 @@ export interface Memberships {
 export const getAuthSession = () => api.get<AuthSession>("/auth/session");
 
 export function pagePermission(path: string): string {
+  if (path === "/ops/command-center") return "terminal.exec";
   if (path === "/administration/users") return "platform.manage";
   if (path === "/administration/organizations") return "organization.manage";
   if (path === "/administration/audit-log") return "audit.read";
